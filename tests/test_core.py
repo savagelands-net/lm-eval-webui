@@ -258,11 +258,24 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("clearSelectedJobs", script)
         self.assertIn("max_concurrent_jobs", script)
         self.assertIn("function modelForEntry", script)
+        self.assertIn("categoryBadge", script)
+        self.assertNotIn("compatibility: ${compatibility}", script)
+        self.assertIn("task.category", script)
+        self.assertIn("Jobs", index)
+        self.assertIn("<summary>Jobs", index)
         self.assertIn("Could not load results", script)
         server = Path("lm_eval_webui/server.py").read_text(encoding="utf-8")
         self.assertIn("Cache-Control", server)
         self.assertIn("no-store", server)
         self.assertIn("BrokenPipeError", server)
+
+    def test_common_tasks_have_categories(self):
+        common_tasks = symbol("lm_eval_webui.server", "COMMON_TASKS")
+        by_name = {task["name"]: task for task in common_tasks}
+
+        self.assertEqual(by_name["gsm8k"]["category"], "Math")
+        self.assertEqual(by_name["ifeval"]["category"], "Instruction Following")
+        self.assertEqual(by_name["truthfulqa_gen"]["category"], "Reasoning")
 
 
 if __name__ == "__main__":

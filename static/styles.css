@@ -170,6 +170,10 @@ summary {
 	border-radius: 12px;
 	padding: 12px;
 }
+.item {
+	grid-template-columns: 1fr auto;
+	align-items: center;
+}
 .item label,
 .job label {
 	display: flex;
@@ -197,6 +201,9 @@ summary {
 }
 .badge.compatibility.unknown {
 	color: var(--warn);
+}
+.badge.category {
+	color: var(--accent-2);
 }
 .selected-panel {
 	margin-top: 16px;

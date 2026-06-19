@@ -110,7 +110,7 @@ function renderTasks() {
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideUnknown && task.compatibility === "unknown") return false;
-		return `${task.name} ${task.description || ""} ${task.compatibility || ""}`
+		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
 			.toLowerCase()
 			.includes(filter);
 	});
@@ -140,7 +140,13 @@ function renderTasks() {
 			renderSelectedTasks();
 		});
 		label.append(checkbox, summaryBlock(task.name, taskMeta(task)));
-		item.append(label, compatibilityBadge(task.compatibility));
+		item.append(
+			label,
+			badgeRowNode([
+				compatibilityBadge(task.compatibility),
+				categoryBadge(task.category),
+			]),
+		);
 		list.append(item);
 	});
 }
@@ -459,17 +465,23 @@ function modelMeta(model) {
 		.join(" · ");
 }
 function taskMeta(task) {
-	return [
-		task.description || "",
-		`compatibility: ${task.compatibility || "unknown"}`,
-	]
-		.filter(Boolean)
-		.join(" · ");
+	return task.description || "";
+}
+function badgeRowNode(nodes) {
+	const row = document.createElement("div");
+	nodes.filter(Boolean).forEach((node) => row.append(node));
+	return row;
 }
 function compatibilityBadge(compatibility = "unknown") {
 	const badge = document.createElement("span");
 	badge.className = `badge compatibility ${compatibility}`;
 	badge.textContent = compatibility;
+	return badge;
+}
+function categoryBadge(category = "Other") {
+	const badge = document.createElement("span");
+	badge.className = "badge category";
+	badge.textContent = category || "Other";
 	return badge;
 }
 function modelForEntry(entry) {

@@ -24,22 +24,32 @@ COMMON_TASKS = [
         "name": "gsm8k",
         "description": "Grade-school math, generate_until",
         "compatibility": "compatible",
+        "category": "Math",
     },
     {
         "name": "ifeval",
         "description": "Instruction following, generate_until",
         "compatibility": "compatible",
+        "category": "Instruction Following",
     },
     {
         "name": "truthfulqa_gen",
         "description": "TruthfulQA generation",
         "compatibility": "compatible",
+        "category": "Reasoning",
     },
     {
         "name": "bbh_cot_zeroshot",
         "description": "BIG-Bench Hard CoT generation group",
         "compatibility": "compatible",
+        "category": "Reasoning",
     },
+]
+TASK_CATEGORY_PATTERNS = [
+    ("Math", ("gsm8k", "math", "aime", "amc", "minerva")),
+    ("Coding / Structured Output", ("json", "schema", "code", "humaneval", "mbpp")),
+    ("Instruction Following", ("ifeval", "instruction")),
+    ("Reasoning", ("arc", "bbh", "truthful", "mmlu", "hellaswag", "winogrande")),
 ]
 _OUTPUT_TYPE_RE = re.compile(
     r"^\s*output_type\s*:\s*['\"]?([A-Za-z0-9_-]+)", re.MULTILINE
@@ -92,10 +102,19 @@ def _merge_tasks(
                 "name": name,
                 "description": task.get("description", ""),
                 "compatibility": task.get("compatibility", "unknown"),
+                "category": task.get("category") or task_category(name),
             }
         )
         seen.add(name)
     return merged
+
+
+def task_category(name: str) -> str:
+    normalized = name.lower()
+    for category, needles in TASK_CATEGORY_PATTERNS:
+        if any(needle in normalized for needle in needles):
+            return category
+    return "Other"
 
 
 def load_available_tasks(

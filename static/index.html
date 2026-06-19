@@ -121,24 +121,6 @@
 
       <section class="card">
         <div class="row between">
-          <h2>Jobs</h2>
-          <div class="row job-actions">
-            <span id="selectedJobCount" class="hint">0 selected</span>
-            <button id="clearSelectedJobs" type="button" disabled>
-              Clear selected
-            </button>
-            <button id="clearFailedJobs" type="button">
-              Clear failed jobs
-            </button>
-            <button id="refreshJobs" type="button">Refresh jobs</button>
-          </div>
-        </div>
-        <div id="jobList" class="jobs empty">No jobs yet.</div>
-        <pre id="jobLog" class="log" aria-live="polite"></pre>
-      </section>
-
-      <section class="card">
-        <div class="row between">
           <div>
             <h2>Leaderboard</h2>
             <p>
@@ -164,6 +146,27 @@
           </div>
           <div id="chart" class="chart empty">No numeric results yet.</div>
           <div id="resultTable" class="table-wrap"></div>
+        </details>
+      </section>
+
+      <section class="card jobs-panel">
+        <details>
+          <summary>Jobs</summary>
+          <div class="row between detail-header">
+            <h2>Jobs</h2>
+            <div class="row job-actions">
+              <span id="selectedJobCount" class="hint">0 selected</span>
+              <button id="clearSelectedJobs" type="button" disabled>
+                Clear selected
+              </button>
+              <button id="clearFailedJobs" type="button">
+                Clear failed jobs
+              </button>
+              <button id="refreshJobs" type="button">Refresh jobs</button>
+            </div>
+          </div>
+          <div id="jobList" class="jobs empty">No jobs yet.</div>
+          <pre id="jobLog" class="log" aria-live="polite"></pre>
         </details>
       </section>
     </main>
