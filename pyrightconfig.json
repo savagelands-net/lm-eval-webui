@@ -1,0 +1,5 @@
+{
+  "include": ["lm_eval_webui", "tests"],
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "basic"
+}
