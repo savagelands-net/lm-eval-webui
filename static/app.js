@@ -54,27 +54,45 @@ async function loadJobs() {
 	renderJobs();
 }
 async function loadResults() {
-	const payload = await api("/api/results");
-	state.rows = payload.rows || [];
-	state.leaderboard = payload.leaderboard || [];
-	renderResults();
+	try {
+		const payload = await api("/api/results");
+		state.rows = payload.rows || [];
+		state.leaderboard = payload.leaderboard || [];
+		renderResults();
+	} catch (error) {
+		setText($("leaderboard"), `Could not load results: ${error.message}`);
+		setText($("chart"), `Could not load results: ${error.message}`);
+	}
 }
 
 function renderModels() {
 	const list = $("modelList");
 	list.replaceChildren();
-	if (!state.models.length) return setText(list, "No downloaded models returned by Lemonade.");
+	if (!state.models.length)
+		return setText(list, "No downloaded models returned by Lemonade.");
 	if (!state.selectedModels.size) state.selectedModels.add(state.models[0].id);
 	const filter = $("modelFilter").value.trim().toLowerCase();
-	const matchingModels = state.models.filter((model) => `${model.name || model.id} ${(model.labels || []).join(" ")} ${model.recipe || ""}`.toLowerCase().includes(filter));
-	$("modelCount").textContent = `Showing ${matchingModels.length.toLocaleString()} of ${state.models.length.toLocaleString()} models.`;
+	const matchingModels = state.models.filter((model) =>
+		`${model.name || model.id} ${(model.labels || []).join(" ")} ${model.recipe || ""}`
+			.toLowerCase()
+			.includes(filter),
+	);
+	$("modelCount").textContent =
+		`Showing ${matchingModels.length.toLocaleString()} of ${state.models.length.toLocaleString()} models.`;
 	matchingModels.forEach((model) => {
 		const item = div("item");
 		const label = document.createElement("label");
 		const checkbox = input("checkbox", "model-choice", model.id);
 		checkbox.checked = state.selectedModels.has(model.id);
-		checkbox.addEventListener("change", () => checkbox.checked ? state.selectedModels.add(model.id) : state.selectedModels.delete(model.id));
-		label.append(checkbox, summaryBlock(model.name || model.id, modelMeta(model)));
+		checkbox.addEventListener("change", () =>
+			checkbox.checked
+				? state.selectedModels.add(model.id)
+				: state.selectedModels.delete(model.id),
+		);
+		label.append(
+			checkbox,
+			summaryBlock(model.name || model.id, modelMeta(model)),
+		);
 		item.append(label, badgeRow(model.labels || []));
 		list.append(item);
 	});
@@ -83,7 +101,8 @@ function renderModels() {
 function renderTasks() {
 	const list = $("taskList");
 	list.replaceChildren();
-	if (!state.selectedTasks.size && state.tasks.length) state.selectedTasks.add(state.tasks[0].name);
+	if (!state.selectedTasks.size && state.tasks.length)
+		state.selectedTasks.add(state.tasks[0].name);
 	renderSelectedTasks();
 	const filter = $("taskFilter").value.trim().toLowerCase();
 	const hideIncompatible = $("hideIncompatibleTasks").checked;
@@ -91,12 +110,21 @@ function renderTasks() {
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideUnknown && task.compatibility === "unknown") return false;
-		return `${task.name} ${task.description || ""} ${task.compatibility || ""}`.toLowerCase().includes(filter);
+		return `${task.name} ${task.description || ""} ${task.compatibility || ""}`
+			.toLowerCase()
+			.includes(filter);
 	});
-	const pageCount = Math.max(1, Math.ceil(matchingTasks.length / TASKS_PER_PAGE));
+	const pageCount = Math.max(
+		1,
+		Math.ceil(matchingTasks.length / TASKS_PER_PAGE),
+	);
 	state.taskPage = Math.min(state.taskPage, pageCount - 1);
-	const renderedTasks = matchingTasks.slice(state.taskPage * TASKS_PER_PAGE, (state.taskPage + 1) * TASKS_PER_PAGE);
-	$("taskCount").textContent = `Showing ${renderedTasks.length.toLocaleString()} of ${matchingTasks.length.toLocaleString()} matching tasks (${state.tasks.length.toLocaleString()} total).`;
+	const renderedTasks = matchingTasks.slice(
+		state.taskPage * TASKS_PER_PAGE,
+		(state.taskPage + 1) * TASKS_PER_PAGE,
+	);
+	$("taskCount").textContent =
+		`Showing ${renderedTasks.length.toLocaleString()} of ${matchingTasks.length.toLocaleString()} matching tasks (${state.tasks.length.toLocaleString()} total).`;
 	$("taskPage").textContent = `Page ${state.taskPage + 1} of ${pageCount}`;
 	$("taskPrev").disabled = state.taskPage <= 0;
 	$("taskNext").disabled = state.taskPage >= pageCount - 1;
@@ -106,7 +134,9 @@ function renderTasks() {
 		const checkbox = input("checkbox", "task-choice", task.name);
 		checkbox.checked = state.selectedTasks.has(task.name);
 		checkbox.addEventListener("change", () => {
-			checkbox.checked ? state.selectedTasks.add(task.name) : state.selectedTasks.delete(task.name);
+			checkbox.checked
+				? state.selectedTasks.add(task.name)
+				: state.selectedTasks.delete(task.name);
 			renderSelectedTasks();
 		});
 		label.append(checkbox, summaryBlock(task.name, taskMeta(task)));
@@ -118,7 +148,8 @@ function renderTasks() {
 function renderSelectedTasks() {
 	const list = $("selectedTasksList");
 	const selected = [...state.selectedTasks].sort((a, b) => a.localeCompare(b));
-	$("selectedTaskCount").textContent = `${selected.length.toLocaleString()} selected`;
+	$("selectedTaskCount").textContent =
+		`${selected.length.toLocaleString()} selected`;
 	list.replaceChildren();
 	if (!selected.length) return setText(list, "No tasks selected.");
 	selected.forEach((taskName) => {
@@ -126,7 +157,10 @@ function renderSelectedTasks() {
 		chip.className = "selected-chip";
 		chip.type = "button";
 		chip.textContent = `${taskName} ×`;
-		chip.addEventListener("click", () => { state.selectedTasks.delete(taskName); renderTasks(); });
+		chip.addEventListener("click", () => {
+			state.selectedTasks.delete(taskName);
+			renderTasks();
+		});
 		list.append(chip);
 	});
 }
@@ -135,7 +169,9 @@ function renderJobs() {
 	const list = $("jobList");
 	list.replaceChildren();
 	const existing = new Set(state.jobs.map((job) => job.id));
-	state.selectedJobs = new Set([...state.selectedJobs].filter((id) => existing.has(id)));
+	state.selectedJobs = new Set(
+		[...state.selectedJobs].filter((id) => existing.has(id)),
+	);
 	if (!state.jobs.length) {
 		setText(list, "No jobs yet.");
 		$("jobLog").textContent = "";
@@ -146,11 +182,18 @@ function renderJobs() {
 		const row = div("job-row");
 		const checkbox = input("checkbox", "job-select", job.id);
 		checkbox.checked = state.selectedJobs.has(job.id);
-		checkbox.addEventListener("change", () => { checkbox.checked ? state.selectedJobs.add(job.id) : state.selectedJobs.delete(job.id); renderSelectedJobs(); });
+		checkbox.addEventListener("change", () => {
+			checkbox.checked
+				? state.selectedJobs.add(job.id)
+				: state.selectedJobs.delete(job.id);
+			renderSelectedJobs();
+		});
 		const button = document.createElement("button");
 		button.className = "job";
 		button.type = "button";
-		button.append(summaryBlock(job.model_id, `${job.tasks.join(", ")} · ${job.id}`));
+		button.append(
+			summaryBlock(job.model_id, `${job.tasks.join(", ")} · ${job.id}`),
+		);
 		const status = document.createElement("span");
 		status.className = `status ${job.status}`;
 		status.textContent = job.status;
@@ -160,7 +203,8 @@ function renderJobs() {
 		list.append(row);
 	});
 	renderSelectedJobs();
-	if (!state.selectedJobId && state.jobs.length) selectJob(state.jobs[state.jobs.length - 1].id);
+	if (!state.selectedJobId && state.jobs.length)
+		selectJob(state.jobs[state.jobs.length - 1].id);
 }
 function renderSelectedJobs() {
 	const count = state.selectedJobs.size;
@@ -171,7 +215,8 @@ async function selectJob(jobId) {
 	state.selectedJobId = jobId;
 	try {
 		const { job } = await api(`/api/jobs/${jobId}`);
-		$("jobLog").textContent = `$ ${job.command.join(" ")}\n\n${job.log_tail || "No log output yet."}`;
+		$("jobLog").textContent =
+			`$ ${job.command.join(" ")}\n\n${job.log_tail || "No log output yet."}`;
 	} catch (error) {
 		$("jobLog").textContent = error.message;
 	}
@@ -180,12 +225,22 @@ async function selectJob(jobId) {
 function renderLeaderboard() {
 	const list = $("leaderboard");
 	list.replaceChildren();
-	if (!state.leaderboard.length) return setText(list, "No leaderboard results yet.");
+	if (!state.leaderboard.length)
+		return setText(list, "No leaderboard results yet.");
 	const table = document.createElement("table");
 	table.className = "leaderboard-table";
 	const thead = document.createElement("thead");
 	const header = document.createElement("tr");
-	["#", "Model", "Lemonade backend", "Context", "Tok/s", "TTFT", "Overall", ...LEADERBOARD_CATEGORIES].forEach((name) => {
+	[
+		"#",
+		"Model",
+		"Lemonade backend",
+		"Context",
+		"Tok/s",
+		"TTFT",
+		"Overall",
+		...LEADERBOARD_CATEGORIES,
+	].forEach((name) => {
 		const th = document.createElement("th");
 		th.textContent = name;
 		header.append(th);
@@ -197,17 +252,29 @@ function renderLeaderboard() {
 		const tr = document.createElement("tr");
 		tr.append(
 			leaderboardCell(`#${index + 1}`, "rank-cell"),
-			leaderboardCell(entry.model || entry.model_id || "unknown model", "model-cell"),
+			leaderboardCell(
+				entry.model || entry.model_id || "unknown model",
+				"model-cell",
+			),
 			leaderboardCell(entry.lemonade_backend || model?.recipe || "—"),
-			leaderboardCell(formatContext(entry.context_window || model?.context_window)),
+			leaderboardCell(
+				formatContext(entry.context_window || model?.context_window),
+			),
 			leaderboardCell(formatRate(entry.generation_tok_s)),
 			leaderboardCell(formatSeconds(entry.ttft_s)),
-			leaderboardCell(formatScore(entry.overall_score), "score-cell overall-score"),
+			leaderboardCell(
+				formatScore(entry.overall_score),
+				"score-cell overall-score",
+			),
 		);
 		LEADERBOARD_CATEGORIES.forEach((category) => {
 			const categoryScore = categoryScoreFor(entry, category);
-			const cell = leaderboardCell(formatScore(categoryScore?.score), "score-cell category-score");
-			if (categoryScore?.tasks?.length) cell.title = categoryScore.tasks.join(", ");
+			const cell = leaderboardCell(
+				formatScore(categoryScore?.score),
+				"score-cell category-score",
+			);
+			if (categoryScore?.tasks?.length)
+				cell.title = categoryScore.tasks.join(", ");
 			tr.append(cell);
 		});
 		tbody.append(tr);
@@ -238,7 +305,9 @@ function renderChart(rows, metric) {
 	const chart = $("chart");
 	chart.replaceChildren();
 	if (!rows.length) return setText(chart, "No numeric results yet.");
-	const width = 1000, rowHeight = 42, height = Math.max(240, rows.length * rowHeight + 50);
+	const width = 1000,
+		rowHeight = 42,
+		height = Math.max(240, rows.length * rowHeight + 50);
 	const maxValue = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
 	const svg = document.createElementNS(SVG_NS, "svg");
 	svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -247,7 +316,11 @@ function renderChart(rows, metric) {
 	rows.forEach((row, index) => {
 		const y = 30 + index * rowHeight;
 		const barWidth = Math.max(2, (Math.abs(row.value) / maxValue) * 650);
-		svg.append(svgText(10, y + 16, `${row.model} · ${row.task}`, "bar-label"), svgRect(290, y, barWidth, 24), svgText(300 + barWidth, y + 16, formatValue(row.value), "axis-label"));
+		svg.append(
+			svgText(10, y + 16, `${row.model} · ${row.task}`, "bar-label"),
+			svgRect(290, y, barWidth, 24),
+			svgText(300 + barWidth, y + 16, formatValue(row.value), "axis-label"),
+		);
 	});
 	chart.append(svg);
 }
@@ -258,12 +331,27 @@ function renderTable(rows) {
 	const table = document.createElement("table");
 	const thead = document.createElement("thead");
 	const header = document.createElement("tr");
-	["Model", "Task", "Metric", "Value", "Samples", "Job"].forEach((name) => { const th = document.createElement("th"); th.textContent = name; header.append(th); });
+	["Model", "Task", "Metric", "Value", "Samples", "Job"].forEach((name) => {
+		const th = document.createElement("th");
+		th.textContent = name;
+		header.append(th);
+	});
 	thead.append(header);
 	const tbody = document.createElement("tbody");
 	rows.forEach((row) => {
 		const tr = document.createElement("tr");
-		[row.model, row.task, row.metric, formatValue(row.value), row.samples ?? "", row.job_id].forEach((value) => { const td = document.createElement("td"); td.textContent = String(value); tr.append(td); });
+		[
+			row.model,
+			row.task,
+			row.metric,
+			formatValue(row.value),
+			row.samples ?? "",
+			row.job_id,
+		].forEach((value) => {
+			const td = document.createElement("td");
+			td.textContent = String(value);
+			tr.append(td);
+		});
 		tbody.append(tr);
 	});
 	table.append(thead, tbody);
@@ -273,15 +361,21 @@ async function clearSelectedJobs() {
 	const jobIds = [...state.selectedJobs];
 	if (!jobIds.length) return;
 	try {
-		const payload = await api("/api/jobs/clear", { method: "POST", body: JSON.stringify({ job_ids: jobIds }) });
+		const payload = await api("/api/jobs/clear", {
+			method: "POST",
+			body: JSON.stringify({ job_ids: jobIds }),
+		});
 		state.jobs = payload.jobs || [];
 		state.selectedJobs.clear();
 		state.selectedJobId = null;
 		$("jobLog").textContent = "";
-		$("setupMessage").textContent = `Cleared ${payload.cleared} selected job(s).`;
+		$("setupMessage").textContent =
+			`Cleared ${payload.cleared} selected job(s).`;
 		renderJobs();
 		await loadResults();
-	} catch (error) { $("setupMessage").textContent = error.message; }
+	} catch (error) {
+		$("setupMessage").textContent = error.message;
+	}
 }
 async function clearFailedJobs() {
 	try {
@@ -293,56 +387,186 @@ async function clearFailedJobs() {
 		$("setupMessage").textContent = `Cleared ${payload.cleared} failed job(s).`;
 		renderJobs();
 		await loadResults();
-	} catch (error) { $("setupMessage").textContent = error.message; }
+	} catch (error) {
+		$("setupMessage").textContent = error.message;
+	}
 }
 async function startJobs() {
-	const modelIds = [...state.selectedModels], tasks = [...state.selectedTasks];
-	if (!modelIds.length || !tasks.length) return $("setupMessage").textContent = "Select at least one model and one task.";
+	const modelIds = [...state.selectedModels],
+		tasks = [...state.selectedTasks];
+	if (!modelIds.length || !tasks.length)
+		return ($("setupMessage").textContent =
+			"Select at least one model and one task.");
 	const body = {
 		model_ids: modelIds,
 		tasks,
 		lemonade_base_url: $("lemonadeUrl").value.trim(),
 		limit: $("limit").value.trim() || null,
-		num_fewshot: $("numFewshot").value === "" ? null : Number($("numFewshot").value),
+		num_fewshot:
+			$("numFewshot").value === "" ? null : Number($("numFewshot").value),
 		max_gen_toks: Number($("maxGenToks").value),
 		timeout: Number($("timeout").value),
 		num_concurrent: Number($("numConcurrent").value),
+		max_concurrent_jobs: Number($("maxConcurrentJobs").value || 1),
 		batch_size: $("batchSize").value.trim() || "1",
 		apply_chat_template: $("applyChatTemplate").checked,
 		fewshot_as_multiturn: $("fewshotAsMultiturn").checked,
 		log_samples: $("logSamples").checked,
 	};
 	$("setupMessage").textContent = "Starting…";
-	try { const payload = await api("/api/jobs", { method: "POST", body: JSON.stringify(body) }); $("setupMessage").textContent = `Started ${payload.jobs.length} job(s).`; await loadJobs(); }
-	catch (error) { $("setupMessage").textContent = error.message; }
+	try {
+		const payload = await api("/api/jobs", {
+			method: "POST",
+			body: JSON.stringify(body),
+		});
+		$("setupMessage").textContent = `Started ${payload.jobs.length} job(s).`;
+		await loadJobs();
+	} catch (error) {
+		$("setupMessage").textContent = error.message;
+	}
 }
 
-function summaryBlock(title, meta) { const span = document.createElement("span"), strong = document.createElement("strong"), br = document.createElement("br"), small = document.createElement("span"); strong.textContent = title; small.className = "meta"; small.textContent = meta; span.append(strong, br, small); return span; }
-function badgeRow(labels) { const row = document.createElement("div"); labels.forEach((label) => { const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = label; row.append(badge); }); return row; }
-function modelMeta(model) { return [model.recipe, model.size_gb ? `${model.size_gb} GB` : null, model.context_window ? `${model.context_window.toLocaleString()} ctx` : null].filter(Boolean).join(" · "); }
-function taskMeta(task) { return [task.description || "", `compatibility: ${task.compatibility || "unknown"}`].filter(Boolean).join(" · "); }
-function compatibilityBadge(compatibility = "unknown") { const badge = document.createElement("span"); badge.className = `badge compatibility ${compatibility}`; badge.textContent = compatibility; return badge; }
-function categoryScoreFor(entry, category) { return (entry.category_scores || []).find((score) => score.category === category); }
-function leaderboardCell(value, className = "") { const cell = document.createElement("td"); if (className) cell.className = className; cell.textContent = value ?? "—"; return cell; }
-function div(className) { const node = document.createElement("div"); node.className = className; return node; }
-function input(type, className, value) { const node = document.createElement("input"); node.type = type; node.className = className; node.value = value; return node; }
-function svgRect(x, y, width, height) { const rect = document.createElementNS(SVG_NS, "rect"); rect.setAttribute("x", x); rect.setAttribute("y", y); rect.setAttribute("width", width); rect.setAttribute("height", height); rect.setAttribute("rx", "6"); rect.setAttribute("fill", "#58a6ff"); return rect; }
-function svgText(x, y, value, className) { const text = document.createElementNS(SVG_NS, "text"); text.setAttribute("x", x); text.setAttribute("y", y); text.setAttribute("class", className); text.textContent = value; return text; }
-function setText(node, value) { node.replaceChildren(); node.textContent = value; }
-function formatValue(value) { return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 }); }
-function formatScore(value) { return value === null || value === undefined || Number.isNaN(Number(value)) ? "—" : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`; }
-function formatRate(value) { return value === null || value === undefined || Number.isNaN(Number(value)) ? "—" : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })}`; }
-function formatSeconds(value) { return value === null || value === undefined || Number.isNaN(Number(value)) ? "—" : `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}s`; }
-function formatContext(value) { return value === null || value === undefined || Number.isNaN(Number(value)) ? "—" : `${Number(value).toLocaleString()} ctx`; }
-function resetTaskPage() { state.taskPage = 0; renderTasks(); }
-function changeTaskPage(delta) { state.taskPage = Math.max(0, state.taskPage + delta); renderTasks(); }
+function summaryBlock(title, meta) {
+	const span = document.createElement("span"),
+		strong = document.createElement("strong"),
+		br = document.createElement("br"),
+		small = document.createElement("span");
+	strong.textContent = title;
+	small.className = "meta";
+	small.textContent = meta;
+	span.append(strong, br, small);
+	return span;
+}
+function badgeRow(labels) {
+	const row = document.createElement("div");
+	labels.forEach((label) => {
+		const badge = document.createElement("span");
+		badge.className = "badge";
+		badge.textContent = label;
+		row.append(badge);
+	});
+	return row;
+}
+function modelMeta(model) {
+	return [
+		model.recipe,
+		model.size_gb ? `${model.size_gb} GB` : null,
+		model.context_window
+			? `${model.context_window.toLocaleString()} ctx`
+			: null,
+	]
+		.filter(Boolean)
+		.join(" · ");
+}
+function taskMeta(task) {
+	return [
+		task.description || "",
+		`compatibility: ${task.compatibility || "unknown"}`,
+	]
+		.filter(Boolean)
+		.join(" · ");
+}
+function compatibilityBadge(compatibility = "unknown") {
+	const badge = document.createElement("span");
+	badge.className = `badge compatibility ${compatibility}`;
+	badge.textContent = compatibility;
+	return badge;
+}
+function modelForEntry(entry) {
+	return state.models.find(
+		(model) =>
+			model.id === entry.model_id ||
+			model.id === entry.model ||
+			model.name === entry.model,
+	);
+}
+function categoryScoreFor(entry, category) {
+	return (entry.category_scores || []).find(
+		(score) => score.category === category,
+	);
+}
+function leaderboardCell(value, className = "") {
+	const cell = document.createElement("td");
+	if (className) cell.className = className;
+	cell.textContent = value ?? "—";
+	return cell;
+}
+function div(className) {
+	const node = document.createElement("div");
+	node.className = className;
+	return node;
+}
+function input(type, className, value) {
+	const node = document.createElement("input");
+	node.type = type;
+	node.className = className;
+	node.value = value;
+	return node;
+}
+function svgRect(x, y, width, height) {
+	const rect = document.createElementNS(SVG_NS, "rect");
+	rect.setAttribute("x", x);
+	rect.setAttribute("y", y);
+	rect.setAttribute("width", width);
+	rect.setAttribute("height", height);
+	rect.setAttribute("rx", "6");
+	rect.setAttribute("fill", "#58a6ff");
+	return rect;
+}
+function svgText(x, y, value, className) {
+	const text = document.createElementNS(SVG_NS, "text");
+	text.setAttribute("x", x);
+	text.setAttribute("y", y);
+	text.setAttribute("class", className);
+	text.textContent = value;
+	return text;
+}
+function setText(node, value) {
+	node.replaceChildren();
+	node.textContent = value;
+}
+function formatValue(value) {
+	return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+function formatScore(value) {
+	return value === null || value === undefined || Number.isNaN(Number(value))
+		? "—"
+		: `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+}
+function formatRate(value) {
+	return value === null || value === undefined || Number.isNaN(Number(value))
+		? "—"
+		: `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
+}
+function formatSeconds(value) {
+	return value === null || value === undefined || Number.isNaN(Number(value))
+		? "—"
+		: `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}s`;
+}
+function formatContext(value) {
+	return value === null || value === undefined || Number.isNaN(Number(value))
+		? "—"
+		: `${Number(value).toLocaleString()} ctx`;
+}
+function resetTaskPage() {
+	state.taskPage = 0;
+	renderTasks();
+}
+function changeTaskPage(delta) {
+	state.taskPage = Math.max(0, state.taskPage + delta);
+	renderTasks();
+}
 
 $("refreshModels").addEventListener("click", loadModels);
 $("modelFilter").addEventListener("input", renderModels);
 $("clearSelectedJobs").addEventListener("click", clearSelectedJobs);
 $("clearFailedJobs").addEventListener("click", clearFailedJobs);
-$("refreshJobs").addEventListener("click", () => Promise.all([loadJobs(), loadResults()]));
-$("refreshAll").addEventListener("click", () => Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]));
+$("refreshJobs").addEventListener("click", () =>
+	Promise.all([loadJobs(), loadResults()]),
+);
+$("refreshAll").addEventListener("click", () =>
+	Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]),
+);
 $("startJobs").addEventListener("click", startJobs);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);

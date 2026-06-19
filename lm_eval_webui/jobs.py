@@ -47,6 +47,7 @@ class JobManager:
         lm_eval_python: str | None = None,
         lemonade_base_url: str = "https://llm.savagelands.net",
         telemetry_probe: TelemetryProbe | None = None,
+        max_concurrent_jobs: int = 1,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.project_root = Path(project_root) if project_root else Path.cwd()
@@ -55,11 +56,19 @@ class JobManager:
         self.lm_eval_python = lm_eval_python
         self.lemonade_base_url = lemonade_base_url.rstrip("/")
         self.telemetry_probe = telemetry_probe
+        self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
+        self._active_jobs = 0
+        self._scheduler = threading.Condition(threading.RLock())
         self.jobs_dir = self.data_dir / "jobs"
         self.logs_dir = self.data_dir / "logs"
         self.runs_dir = self.data_dir / "runs"
         self.telemetry_dir = self.data_dir / "telemetry"
-        for directory in (self.jobs_dir, self.logs_dir, self.runs_dir, self.telemetry_dir):
+        for directory in (
+            self.jobs_dir,
+            self.logs_dir,
+            self.runs_dir,
+            self.telemetry_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
@@ -76,19 +85,34 @@ class JobManager:
             raise ValueError("At least one model is required")
         if not tasks:
             raise ValueError("At least one task is required")
+        requested_concurrency = self._optional_int(payload.get("max_concurrent_jobs"))
+        if requested_concurrency is not None:
+            self.set_max_concurrent_jobs(requested_concurrency)
 
         created: list[dict[str, Any]] = []
         for model_id in model_ids:
-            job = self._create_job(str(model_id), [str(task) for task in tasks], payload)
+            job = self._create_job(
+                str(model_id), [str(task) for task in tasks], payload
+            )
             created.append(job)
             if self.run_async:
-                threading.Thread(target=self._run_job, args=(job["id"],), daemon=True).start()
+                threading.Thread(
+                    target=self._run_job_with_limit, args=(job["id"],), daemon=True
+                ).start()
             else:
                 self._run_job(job["id"])
         return created
 
+    def set_max_concurrent_jobs(self, value: int) -> None:
+        with self._scheduler:
+            self.max_concurrent_jobs = max(1, int(value))
+            self._scheduler.notify_all()
+
     def list_jobs(self) -> list[dict[str, Any]]:
-        jobs = [self._read_job(path) for path in sorted(self.jobs_dir.glob("*.json"))]
+        with self._lock:
+            jobs = [
+                self._read_job(path) for path in sorted(self.jobs_dir.glob("*.json"))
+            ]
         return sorted(jobs, key=lambda job: job.get("created_at", 0))
 
     def get_job(self, job_id: str) -> dict[str, Any]:
@@ -105,7 +129,9 @@ class JobManager:
         for job in self.list_jobs():
             for result_file in job.get("result_files", []):
                 try:
-                    rows.extend(extract_result_rows(job["id"], load_result_file(result_file)))
+                    rows.extend(
+                        extract_result_rows(job["id"], load_result_file(result_file))
+                    )
                 except (OSError, json.JSONDecodeError):
                     continue
         return rows
@@ -115,10 +141,19 @@ class JobManager:
         for job in self.list_jobs():
             for result_file in job.get("result_files", []):
                 try:
-                    entries.append(extract_leaderboard_entry(job, load_result_file(result_file)))
+                    entries.append(
+                        extract_leaderboard_entry(job, load_result_file(result_file))
+                    )
                 except (OSError, json.JSONDecodeError):
                     continue
-        return sorted(entries, key=lambda entry: (entry.get("overall_score") is not None, entry.get("overall_score") or 0), reverse=True)
+        return sorted(
+            entries,
+            key=lambda entry: (
+                entry.get("overall_score") is not None,
+                entry.get("overall_score") or 0,
+            ),
+            reverse=True,
+        )
 
     def clear_jobs(self, job_ids: list[str]) -> int:
         selected = {str(job_id) for job_id in job_ids if str(job_id).strip()}
@@ -134,9 +169,13 @@ class JobManager:
         return cleared
 
     def clear_failed_jobs(self) -> int:
-        return self.clear_jobs([job["id"] for job in self.list_jobs() if job.get("status") == "failed"])
+        return self.clear_jobs(
+            [job["id"] for job in self.list_jobs() if job.get("status") == "failed"]
+        )
 
-    def _create_job(self, model_id: str, tasks: list[str], payload: dict[str, Any]) -> dict[str, Any]:
+    def _create_job(
+        self, model_id: str, tasks: list[str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
         job_id = uuid.uuid4().hex[:12]
         output_path = self.runs_dir / job_id
         log_path = self.logs_dir / f"{job_id}.log"
@@ -186,16 +225,43 @@ class JobManager:
         self._write_job(job)
         return self._public_job(job)
 
+    def _run_job_with_limit(self, job_id: str) -> None:
+        with self._scheduler:
+            while self._active_jobs >= self.max_concurrent_jobs:
+                self._scheduler.wait()
+            self._active_jobs += 1
+        try:
+            self._run_job(job_id)
+        except FileNotFoundError:
+            return
+        finally:
+            with self._scheduler:
+                self._active_jobs = max(0, self._active_jobs - 1)
+                self._scheduler.notify_all()
+
     def _run_job(self, job_id: str) -> None:
         job = self.get_job(job_id)
-        env = job.pop("_env", None) or build_eval_command(EvalRequest(job["model_id"], job["tasks"], job["output_path"], self.lm_eval_python), self.project_root)[1]
+        env = (
+            job.pop("_env", None)
+            or build_eval_command(
+                EvalRequest(
+                    job["model_id"],
+                    job["tasks"],
+                    job["output_path"],
+                    self.lm_eval_python,
+                ),
+                self.project_root,
+            )[1]
+        )
         job["status"] = "running"
         job["updated_at"] = time.time()
         self._write_job(job)
         try:
             returncode = self.launcher(job["command"], env, Path(job["log_path"]))
             job["returncode"] = returncode
-            job["result_files"] = [str(path) for path in find_result_files(job["output_path"])]
+            job["result_files"] = [
+                str(path) for path in find_result_files(job["output_path"])
+            ]
             job["telemetry"] = self._collect_telemetry(job, returncode)
             job["status"] = "succeeded" if returncode == 0 else "failed"
         except Exception as exc:  # pragma: no cover
@@ -209,11 +275,16 @@ class JobManager:
         with path.open("r", encoding="utf-8") as handle:
             return json.load(handle)
 
-    def _collect_telemetry(self, job: dict[str, Any], returncode: int | None) -> dict[str, Any]:
+    def _collect_telemetry(
+        self, job: dict[str, Any], returncode: int | None
+    ) -> dict[str, Any]:
         telemetry = aggregate_telemetry_file(job.get("telemetry_path"))
         if returncode == 0 and self.telemetry_probe is not None:
             try:
-                probe = self.telemetry_probe(job.get("lemonade_base_url", self.lemonade_base_url), job["model_id"])
+                probe = self.telemetry_probe(
+                    job.get("lemonade_base_url", self.lemonade_base_url),
+                    job["model_id"],
+                )
             except Exception as exc:  # pragma: no cover
                 telemetry["error"] = str(exc)
             else:

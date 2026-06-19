@@ -20,12 +20,49 @@ from .runner import find_lm_eval_python
 from .telemetry import probe_lemonade_chat_telemetry
 
 COMMON_TASKS = [
-    {"name": "gsm8k", "description": "Grade-school math, generate_until", "compatibility": "compatible"},
-    {"name": "ifeval", "description": "Instruction following, generate_until", "compatibility": "compatible"},
-    {"name": "truthfulqa_gen", "description": "TruthfulQA generation", "compatibility": "compatible"},
-    {"name": "bbh_cot_zeroshot", "description": "BIG-Bench Hard CoT generation group", "compatibility": "compatible"},
+    {
+        "name": "gsm8k",
+        "description": "Grade-school math, generate_until",
+        "compatibility": "compatible",
+    },
+    {
+        "name": "ifeval",
+        "description": "Instruction following, generate_until",
+        "compatibility": "compatible",
+    },
+    {
+        "name": "truthfulqa_gen",
+        "description": "TruthfulQA generation",
+        "compatibility": "compatible",
+    },
+    {
+        "name": "bbh_cot_zeroshot",
+        "description": "BIG-Bench Hard CoT generation group",
+        "compatibility": "compatible",
+    },
 ]
-_OUTPUT_TYPE_RE = re.compile(r"^\s*output_type\s*:\s*['\"]?([A-Za-z0-9_-]+)", re.MULTILINE)
+_OUTPUT_TYPE_RE = re.compile(
+    r"^\s*output_type\s*:\s*['\"]?([A-Za-z0-9_-]+)", re.MULTILINE
+)
+
+
+def write_response(
+    handler: BaseHTTPRequestHandler,
+    status: int | HTTPStatus,
+    content_type: str,
+    body: bytes,
+) -> None:
+    """Write an HTTP response, ignoring client disconnects during any phase."""
+
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", content_type)
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    except BrokenPipeError:
+        return
 
 
 def safe_static_path(static_root: str | Path, request_path: str) -> Path | None:
@@ -41,14 +78,22 @@ def safe_static_path(static_root: str | Path, request_path: str) -> Path | None:
     return file_path
 
 
-def _merge_tasks(preferred: list[dict[str, str]], discovered: list[dict[str, str]]) -> list[dict[str, str]]:
+def _merge_tasks(
+    preferred: list[dict[str, str]], discovered: list[dict[str, str]]
+) -> list[dict[str, str]]:
     merged: list[dict[str, str]] = []
     seen: set[str] = set()
     for task in [*preferred, *discovered]:
         name = task.get("name", "").strip()
         if not name or name in seen:
             continue
-        merged.append({"name": name, "description": task.get("description", ""), "compatibility": task.get("compatibility", "unknown")})
+        merged.append(
+            {
+                "name": name,
+                "description": task.get("description", ""),
+                "compatibility": task.get("compatibility", "unknown"),
+            }
+        )
         seen.add(name)
     return merged
 
@@ -60,9 +105,17 @@ def load_available_tasks(
 ) -> list[dict[str, str]]:
     python = find_lm_eval_python(lm_eval_python)
     package_root = find_lm_eval_package_root(python)
-    read_config = config_reader or (lambda config_path: read_lm_eval_config(config_path, package_root))
+    read_config = config_reader or (
+        lambda config_path: read_lm_eval_config(config_path, package_root)
+    )
     try:
-        completed = run_command([python, "-m", "lm_eval", "ls", "tasks"], capture_output=True, text=True, timeout=90, check=False)
+        completed = run_command(
+            [python, "-m", "lm_eval", "ls", "tasks"],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return COMMON_TASKS
     if getattr(completed, "returncode", 0) != 0:
@@ -82,11 +135,15 @@ def parse_lm_eval_task_table(output: str) -> list[dict[str, str]]:
         if not columns or columns[0] in {"Group", ""}:
             continue
         config_path = columns[1] if len(columns) > 1 else ""
-        tasks.append({"name": columns[0], "description": config_path, "config_path": config_path})
+        tasks.append(
+            {"name": columns[0], "description": config_path, "config_path": config_path}
+        )
     return tasks
 
 
-def annotate_task_compatibility(task: dict[str, str], config_reader: Callable[[str], str | None]) -> dict[str, str]:
+def annotate_task_compatibility(
+    task: dict[str, str], config_reader: Callable[[str], str | None]
+) -> dict[str, str]:
     config_path = task.get("config_path") or task.get("description", "")
     config_text = config_reader(config_path) if config_path else None
     output_type = task_output_type(config_text or "")
@@ -109,7 +166,17 @@ def find_lm_eval_package_root(lm_eval_python: str) -> Path | None:
     if spec is not None and spec.origin is not None:
         return Path(spec.origin).parent
     try:
-        completed = subprocess.run([lm_eval_python, "-c", "import lm_eval, pathlib; print(pathlib.Path(lm_eval.__file__).parent)"], capture_output=True, text=True, timeout=30, check=False)
+        completed = subprocess.run(
+            [
+                lm_eval_python,
+                "-c",
+                "import lm_eval, pathlib; print(pathlib.Path(lm_eval.__file__).parent)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     if completed.returncode != 0:
@@ -118,23 +185,37 @@ def find_lm_eval_package_root(lm_eval_python: str) -> Path | None:
     return package_root if package_root.exists() else None
 
 
-def read_lm_eval_config(config_path: str, package_root: str | Path | None = None) -> str | None:
+def read_lm_eval_config(
+    config_path: str, package_root: str | Path | None = None
+) -> str | None:
     if not config_path:
         return None
     path = Path(config_path)
     if not path.is_absolute():
-        root = Path(package_root) if package_root is not None else find_lm_eval_package_root("python")
+        root = (
+            Path(package_root)
+            if package_root is not None
+            else find_lm_eval_package_root("python")
+        )
         if root is None:
             return None
         parts = path.parts
-        path = root.joinpath(*parts[1:]) if parts and parts[0] == "lm_eval" else root / path
+        path = (
+            root.joinpath(*parts[1:])
+            if parts and parts[0] == "lm_eval"
+            else root / path
+        )
     try:
         return path.read_text(encoding="utf-8")
     except OSError:
         return None
 
 
-def make_handler(manager: JobManager, static_dir: str | Path, lemonade_base_url: str = DEFAULT_LEMONADE_BASE_URL):
+def make_handler(
+    manager: JobManager,
+    static_dir: str | Path,
+    lemonade_base_url: str = DEFAULT_LEMONADE_BASE_URL,
+):
     static_root = Path(static_dir)
 
     class WebUIHandler(BaseHTTPRequestHandler):
@@ -146,7 +227,12 @@ def make_handler(manager: JobManager, static_dir: str | Path, lemonade_base_url:
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/api/health":
-                self._json({"ok": True, "lm_eval_python": find_lm_eval_python(manager.lm_eval_python)})
+                self._json(
+                    {
+                        "ok": True,
+                        "lm_eval_python": find_lm_eval_python(manager.lm_eval_python),
+                    }
+                )
             elif parsed.path == "/api/models":
                 self._handle_models(parsed.query)
             elif parsed.path == "/api/tasks":
@@ -156,7 +242,12 @@ def make_handler(manager: JobManager, static_dir: str | Path, lemonade_base_url:
             elif parsed.path.startswith("/api/jobs/"):
                 self._handle_job_get(parsed.path)
             elif parsed.path == "/api/results":
-                self._json({"rows": manager.result_rows(), "leaderboard": manager.leaderboard_entries()})
+                self._json(
+                    {
+                        "rows": manager.result_rows(),
+                        "leaderboard": manager.leaderboard_entries(),
+                    }
+                )
             else:
                 self._serve_static(parsed.path)
 
@@ -211,13 +302,11 @@ def make_handler(manager: JobManager, static_dir: str | Path, lemonade_base_url:
                 return {}
             return json.loads(self.rfile.read(length).decode("utf-8"))
 
-        def _json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        def _json(
+            self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK
+        ) -> None:
             body = json.dumps(payload, indent=2).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            write_response(self, status, "application/json; charset=utf-8", body)
 
         def _serve_static(self, path: str) -> None:
             file_path = safe_static_path(static_root, path)
@@ -225,11 +314,12 @@ def make_handler(manager: JobManager, static_dir: str | Path, lemonade_base_url:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
             content = file_path.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", mimetypes.guess_type(str(file_path))[0] or "application/octet-stream")
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
+            write_response(
+                self,
+                HTTPStatus.OK,
+                mimetypes.guess_type(str(file_path))[0] or "application/octet-stream",
+                content,
+            )
 
     return WebUIHandler
 
@@ -241,8 +331,16 @@ def serve(
     static_dir: str | Path = "static",
     lemonade_base_url: str = DEFAULT_LEMONADE_BASE_URL,
     lm_eval_python: str | None = None,
+    max_concurrent_jobs: int = 1,
 ) -> None:
-    manager = JobManager(data_dir=data_dir, project_root=Path.cwd(), lm_eval_python=lm_eval_python, lemonade_base_url=lemonade_base_url, telemetry_probe=probe_lemonade_chat_telemetry)
+    manager = JobManager(
+        data_dir=data_dir,
+        project_root=Path.cwd(),
+        lm_eval_python=lm_eval_python,
+        lemonade_base_url=lemonade_base_url,
+        telemetry_probe=probe_lemonade_chat_telemetry,
+        max_concurrent_jobs=max_concurrent_jobs,
+    )
     handler = make_handler(manager, static_dir, lemonade_base_url)
     httpd = ThreadingHTTPServer((host, port), handler)
     print(f"Serving lm-eval WebUI at http://{host}:{port}")

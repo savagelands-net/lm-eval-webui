@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 
-def append_timing_events(telemetry_path: str | Path | None, outputs: Any, source: str = "lm_eval") -> None:
+def append_timing_events(
+    telemetry_path: str | Path | None, outputs: Any, source: str = "lm_eval"
+) -> None:
     if not telemetry_path:
         return
     path = Path(telemetry_path)
@@ -90,13 +92,17 @@ def aggregate_telemetry_file(telemetry_path: str | Path | None) -> dict[str, Any
     return aggregate_telemetry_events(load_telemetry_events(telemetry_path))
 
 
-def probe_lemonade_chat_telemetry(base_url: str, model_id: str, timeout: int = 300) -> dict[str, Any]:
+def probe_lemonade_chat_telemetry(
+    base_url: str, model_id: str, timeout: int = 300
+) -> dict[str, Any]:
     started = time.perf_counter()
     first_headers = first_event = first_content = None
     final_timings: dict[str, Any] | None = None
     payload = {
         "model": model_id,
-        "messages": [{"role": "user", "content": "Write exactly this sentence: red blue green."}],
+        "messages": [
+            {"role": "user", "content": "Write exactly this sentence: red blue green."}
+        ],
         "max_tokens": 16,
         "temperature": 0,
         "stream": True,
@@ -148,7 +154,12 @@ def probe_lemonade_chat_telemetry(base_url: str, model_id: str, timeout: int = 3
         result["ttft_source"] = "first_content"
     if final_timings:
         rates = aggregate_telemetry_events([{"timings": final_timings}])
-        for key in ("generated_tokens", "generation_tok_s", "prompt_tokens", "prompt_tok_s"):
+        for key in (
+            "generated_tokens",
+            "generation_tok_s",
+            "prompt_tokens",
+            "prompt_tok_s",
+        ):
             if key in rates:
                 result[f"probe_{key}"] = rates[key]
     return result

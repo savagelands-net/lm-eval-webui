@@ -7,7 +7,9 @@ import os
 import urllib.request
 from typing import Any
 
-DEFAULT_LEMONADE_BASE_URL = os.environ.get("LEMONADE_BASE_URL", "https://llm.savagelands.net").rstrip("/")
+DEFAULT_LEMONADE_BASE_URL = os.environ.get(
+    "LEMONADE_BASE_URL", "https://llm.savagelands.net"
+).rstrip("/")
 
 
 def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -37,8 +39,12 @@ def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(normalized, key=lambda model: model["id"].lower())
 
 
-def fetch_models(base_url: str = DEFAULT_LEMONADE_BASE_URL, timeout: int = 15) -> list[dict[str, Any]]:
-    request = urllib.request.Request(f"{base_url.rstrip('/')}/v1/models", headers={"Accept": "application/json"})
+def fetch_models(
+    base_url: str = DEFAULT_LEMONADE_BASE_URL, timeout: int = 15
+) -> list[dict[str, Any]]:
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/v1/models", headers={"Accept": "application/json"}
+    )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         payload = json.loads(response.read().decode("utf-8"))
     return normalize_models(payload)

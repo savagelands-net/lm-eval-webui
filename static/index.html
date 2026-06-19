@@ -10,7 +10,9 @@
     <header>
       <div>
         <h1>Local lm-eval Benchmark WebUI</h1>
-        <p>Select Lemonade models, run lm-eval benchmarks, and compare metrics.</p>
+        <p>
+          Select Lemonade models, run lm-eval benchmarks, and compare metrics.
+        </p>
       </div>
       <button id="refreshAll" type="button">Refresh</button>
     </header>
@@ -19,18 +21,30 @@
       <section class="card setup">
         <h2>Benchmark setup</h2>
         <div class="grid">
-          <label>Lemonade base URL <input id="lemonadeUrl" value="https://llm.savagelands.net" /></label>
+          <label
+            >Lemonade base URL
+            <input id="lemonadeUrl" value="https://llm.savagelands.net"
+          /></label>
         </div>
         <div class="grid two tall">
           <div>
-            <div class="row between"><h3>Installed models</h3><button id="refreshModels" type="button">Refresh models</button></div>
-            <label>Filter models <input id="modelFilter" placeholder="Type to search models" /></label>
+            <div class="row between">
+              <h3>Installed models</h3>
+              <button id="refreshModels" type="button">Refresh models</button>
+            </div>
+            <label
+              >Filter models
+              <input id="modelFilter" placeholder="Type to search models"
+            /></label>
             <p id="modelCount" class="hint"></p>
             <div id="modelList" class="list empty">Loading models…</div>
           </div>
           <div>
             <h3>lm-eval tasks</h3>
-            <label>Filter tasks <input id="taskFilter" placeholder="Type to search 14k+ tasks" /></label>
+            <label
+              >Filter tasks
+              <input id="taskFilter" placeholder="Type to search 14k+ tasks"
+            /></label>
             <p id="taskCount" class="hint"></p>
             <div id="taskList" class="list"></div>
             <div class="row pager">
@@ -39,13 +53,27 @@
               <button id="taskNext" type="button">Next</button>
             </div>
             <div class="row task-filters">
-              <label class="check compact"><input id="hideIncompatibleTasks" type="checkbox" checked /> hide incompatible</label>
-              <label class="check compact"><input id="hideUnknownTasks" type="checkbox" checked /> hide unknown</label>
+              <label class="check compact"
+                ><input id="hideIncompatibleTasks" type="checkbox" checked />
+                hide incompatible</label
+              >
+              <label class="check compact"
+                ><input id="hideUnknownTasks" type="checkbox" checked /> hide
+                unknown</label
+              >
             </div>
-            <p class="hint">The default backend is chat/generation oriented. Use generate_until tasks first.</p>
+            <p class="hint">
+              The default backend is chat/generation oriented. Use
+              generate_until tasks first.
+            </p>
             <div class="selected-panel">
-              <div class="row between"><h3>Selected tasks</h3><span id="selectedTaskCount" class="hint"></span></div>
-              <div id="selectedTasksList" class="selected-list empty">No tasks selected.</div>
+              <div class="row between">
+                <h3>Selected tasks</h3>
+                <span id="selectedTaskCount" class="hint"></span>
+              </div>
+              <div id="selectedTasksList" class="selected-list empty">
+                No tasks selected.
+              </div>
             </div>
           </div>
         </div>
@@ -53,17 +81,42 @@
           <summary>Advanced options</summary>
           <div class="grid four">
             <label>Limit <input id="limit" value="1" /></label>
-            <label>Few-shot <input id="numFewshot" type="number" value="0" /></label>
-            <label>Max gen tokens <input id="maxGenToks" type="number" value="256" /></label>
-            <label>Timeout seconds <input id="timeout" type="number" value="300" /></label>
-            <label>Concurrent requests <input id="numConcurrent" type="number" value="1" /></label>
+            <label
+              >Few-shot <input id="numFewshot" type="number" value="0"
+            /></label>
+            <label
+              >Max gen tokens <input id="maxGenToks" type="number" value="256"
+            /></label>
+            <label
+              >Timeout seconds <input id="timeout" type="number" value="300"
+            /></label>
+            <label
+              >Concurrent requests
+              <input id="numConcurrent" type="number" value="1"
+            /></label>
+            <label
+              >Concurrent jobs
+              <input id="maxConcurrentJobs" type="number" min="1" value="1"
+            /></label>
             <label>Batch size <input id="batchSize" value="1" /></label>
-            <label class="check"><input id="applyChatTemplate" type="checkbox" checked /> Apply chat template</label>
-            <label class="check"><input id="fewshotAsMultiturn" type="checkbox" /> Few-shot as multiturn</label>
-            <label class="check"><input id="logSamples" type="checkbox" /> Log samples</label>
+            <label class="check"
+              ><input id="applyChatTemplate" type="checkbox" checked /> Apply
+              chat template</label
+            >
+            <label class="check"
+              ><input id="fewshotAsMultiturn" type="checkbox" /> Few-shot as
+              multiturn</label
+            >
+            <label class="check"
+              ><input id="logSamples" type="checkbox" /> Log samples</label
+            >
           </div>
         </details>
-        <div class="row actions"><button id="startJobs" class="primary" type="button">Run benchmark</button><span id="setupMessage" class="message"></span></div>
+        <div class="row actions">
+          <button id="startJobs" class="primary" type="button">
+            Run benchmark</button
+          ><span id="setupMessage" class="message"></span>
+        </div>
       </section>
 
       <section class="card">
@@ -71,8 +124,12 @@
           <h2>Jobs</h2>
           <div class="row job-actions">
             <span id="selectedJobCount" class="hint">0 selected</span>
-            <button id="clearSelectedJobs" type="button" disabled>Clear selected</button>
-            <button id="clearFailedJobs" type="button">Clear failed jobs</button>
+            <button id="clearSelectedJobs" type="button" disabled>
+              Clear selected
+            </button>
+            <button id="clearFailedJobs" type="button">
+              Clear failed jobs
+            </button>
             <button id="refreshJobs" type="button">Refresh jobs</button>
           </div>
         </div>
@@ -81,14 +138,30 @@
       </section>
 
       <section class="card">
-        <div class="row between"><div><h2>Leaderboard</h2><p>Rolled-up benchmark scores by model. Overall is the average primary task score.</p></div></div>
-        <div id="leaderboard" class="leaderboard empty">No leaderboard results yet.</div>
+        <div class="row between">
+          <div>
+            <h2>Leaderboard</h2>
+            <p>
+              Rolled-up benchmark scores by model. Overall is the average
+              primary task score.
+            </p>
+          </div>
+        </div>
+        <div id="leaderboard" class="leaderboard empty">
+          No leaderboard results yet.
+        </div>
       </section>
 
       <section class="card">
         <details>
           <summary>Detailed metric comparison</summary>
-          <div class="row between detail-header"><h2>Detailed results</h2><label class="metric-picker">Metric <select id="metricSelect"></select></label></div>
+          <div class="row between detail-header">
+            <h2>Detailed results</h2>
+            <label class="metric-picker"
+              >Metric
+              <select id="metricSelect"></select
+            ></label>
+          </div>
           <div id="chart" class="chart empty">No numeric results yet.</div>
           <div id="resultTable" class="table-wrap"></div>
         </details>

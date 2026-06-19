@@ -101,7 +101,9 @@ def build_eval_command(
         command.extend(["--num_fewshot", str(request.num_fewshot)])
     if request.apply_chat_template:
         command.append("--apply_chat_template")
-        command.extend(["--fewshot_as_multiturn", _bool_arg(request.fewshot_as_multiturn)])
+        command.extend(
+            ["--fewshot_as_multiturn", _bool_arg(request.fewshot_as_multiturn)]
+        )
     if request.log_samples:
         command.append("--log_samples")
     if request.predict_only:

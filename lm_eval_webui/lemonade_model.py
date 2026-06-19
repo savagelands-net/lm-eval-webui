@@ -29,7 +29,9 @@ def _fallback_register_model(*_names: str) -> Callable[[T], T]:
 def _load_lm_eval_symbols() -> tuple[RegisterModel, type[Any]]:
     try:
         registry_module = importlib.import_module("lm_eval.api.registry")
-        completions_module = importlib.import_module("lm_eval.models.openai_completions")
+        completions_module = importlib.import_module(
+            "lm_eval.models.openai_completions"
+        )
     except ModuleNotFoundError:
         return _fallback_register_model, _FallbackLocalChatCompletion
     return (
@@ -44,7 +46,9 @@ _CURRENT_TELEMETRY_PATH: str | None = None
 
 @register_model("lemonade-chat-completions")
 class LemonadeChatCompletion(LocalChatCompletionBase):
-    def __init__(self, *args: Any, telemetry_path: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self, *args: Any, telemetry_path: str | None = None, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         global _CURRENT_TELEMETRY_PATH
         _CURRENT_TELEMETRY_PATH = str(telemetry_path) if telemetry_path else None
