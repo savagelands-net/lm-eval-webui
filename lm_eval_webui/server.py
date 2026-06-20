@@ -54,6 +54,12 @@ TASK_CATEGORY_PATTERNS = [
 _OUTPUT_TYPE_RE = re.compile(
     r"^\s*output_type\s*:\s*['\"]?([A-Za-z0-9_-]+)", re.MULTILINE
 )
+_GROUP_RE = re.compile(r"^\s*group\s*:", re.MULTILINE)
+_TOP_LEVEL_TASK_LIST_RE = re.compile(r"^task\s*:\s*$")
+_DATASET_PATH_RE = re.compile(
+    r"^\s*dataset_path\s*:\s*['\"]?([^'\"\n#]+)", re.MULTILINE
+)
+UNSUPPORTED_DATASET_SCRIPT_PATHS = {"EleutherAI/unscramble"}
 
 
 def write_response(
@@ -165,8 +171,13 @@ def annotate_task_compatibility(
 ) -> dict[str, str]:
     config_path = task.get("config_path") or task.get("description", "")
     config_text = config_reader(config_path) if config_path else None
-    output_type = task_output_type(config_text or "")
-    if output_type == "generate_until":
+    config_text = config_text or ""
+    output_type = task_output_type(config_text)
+    if has_malformed_group_task_entries(config_text) or uses_unsupported_dataset_script(
+        config_text
+    ):
+        compatibility = "incompatible"
+    elif output_type == "generate_until":
         compatibility = "compatible"
     elif output_type:
         compatibility = "incompatible"
@@ -178,6 +189,39 @@ def annotate_task_compatibility(
 def task_output_type(config_text: str) -> str | None:
     match = _OUTPUT_TYPE_RE.search(config_text)
     return match.group(1) if match else None
+
+
+def uses_unsupported_dataset_script(config_text: str) -> bool:
+    dataset_paths = {
+        match.group(1).strip() for match in _DATASET_PATH_RE.finditer(config_text)
+    }
+    return bool(dataset_paths & UNSUPPORTED_DATASET_SCRIPT_PATHS)
+
+
+def has_malformed_group_task_entries(config_text: str) -> bool:
+    if not _GROUP_RE.search(config_text):
+        return False
+    in_task_list = False
+    task_indent = 0
+    for line in config_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if not in_task_list and indent == 0 and _TOP_LEVEL_TASK_LIST_RE.match(stripped):
+            in_task_list = True
+            task_indent = indent
+            continue
+        if not in_task_list:
+            continue
+        if indent <= task_indent:
+            break
+        if not stripped.startswith("- "):
+            continue
+        first_key = stripped[2:].split(":", 1)[0].strip()
+        if first_key and first_key not in {"task", "group"}:
+            return True
+    return False
 
 
 def find_lm_eval_package_root(lm_eval_python: str) -> Path | None:

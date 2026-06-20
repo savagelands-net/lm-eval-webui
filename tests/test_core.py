@@ -10,6 +10,66 @@ def symbol(module_name, attribute):
     return import_module(module_name).__dict__[attribute]
 
 
+class LemonadeModelTests(unittest.TestCase):
+    def test_normalize_models_extracts_llamacpp_runtime_backend(self):
+        normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
+
+        models = normalize_models(
+            {
+                "data": [
+                    {
+                        "id": "Model-A",
+                        "downloaded": True,
+                        "recipe": "llamacpp",
+                        "recipe_options": {"llamacpp_backend": "vulkan"},
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(models[0]["llamacpp_backend"], "vulkan")
+        self.assertEqual(models[0]["runtime_backend"], "vulkan")
+
+
+class TaskCompatibilityTests(unittest.TestCase):
+    def test_malformed_generate_until_group_is_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+group: t0_eval
+task:
+  - dataset_path: aps/super_glue
+    dataset_name: wsc.fixed
+    output_type: generate_until
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "t0_eval", "description": "t0_eval.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_dataset_script_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: anagrams1
+dataset_path: EleutherAI/unscramble
+dataset_name: mid_word_1_anagrams
+output_type: generate_until
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "anagrams1", "description": "anagrams1.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
+
+
 class JobManagerConcurrencyTests(unittest.TestCase):
     def test_async_jobs_are_serialized_by_default(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
@@ -254,16 +314,27 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="maxConcurrentJobs"', index)
         self.assertIn('value="1"', index)
         self.assertIn("selectedJobs", script)
+        self.assertIn("visibleTaskNames", script)
+        self.assertIn('id="selectVisibleTasks"', index)
+        self.assertIn("function selectVisibleTasks", script)
         self.assertIn("job-select", script)
         self.assertIn("clearSelectedJobs", script)
         self.assertIn("max_concurrent_jobs", script)
         self.assertIn("function modelForEntry", script)
+        self.assertIn("runtime_backend", script)
+        self.assertIn("Other", script)
         self.assertIn("categoryBadge", script)
         self.assertNotIn("compatibility: ${compatibility}", script)
         self.assertIn("task.category", script)
         self.assertIn("Jobs", index)
         self.assertIn("<summary>Jobs", index)
         self.assertIn("Could not load results", script)
+        self.assertIn("setTaskLoading", script)
+        self.assertIn("spinner", index)
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+        self.assertIn("selector-panel", styles)
+        self.assertIn("list-header", styles)
+        self.assertIn("spinner", styles)
         server = Path("lm_eval_webui/server.py").read_text(encoding="utf-8")
         self.assertIn("Cache-Control", server)
         self.assertIn("no-store", server)

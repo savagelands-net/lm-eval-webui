@@ -27,8 +27,8 @@
           /></label>
         </div>
         <div class="grid two tall">
-          <div>
-            <div class="row between">
+          <div class="selector-panel">
+            <div class="row between list-header">
               <h3>Installed models</h3>
               <button id="refreshModels" type="button">Refresh models</button>
             </div>
@@ -39,8 +39,23 @@
             <p id="modelCount" class="hint"></p>
             <div id="modelList" class="list empty">Loading models…</div>
           </div>
-          <div>
-            <h3>lm-eval tasks</h3>
+          <div class="selector-panel">
+            <div class="row between list-header">
+              <h3>lm-eval tasks</h3>
+              <div class="row list-actions">
+                <button id="selectVisibleTasks" type="button" disabled>
+                  Select visible
+                </button>
+                <span
+                  id="taskSpinner"
+                  class="loading-indicator"
+                  aria-live="polite"
+                >
+                  <span class="spinner" aria-hidden="true"></span>
+                  Loading tasks…
+                </span>
+              </div>
+            </div>
             <label
               >Filter tasks
               <input id="taskFilter" placeholder="Type to search 14k+ tasks"

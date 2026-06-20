@@ -82,6 +82,26 @@ main {
 	align-items: start;
 	margin-top: 18px;
 }
+.selector-panel {
+	display: grid;
+	align-content: start;
+	min-width: 0;
+}
+.list-header {
+	min-height: 43px;
+	margin-bottom: 0;
+}
+.list-header h3 {
+	margin-bottom: 0;
+}
+.list-actions {
+	justify-content: flex-end;
+	flex-wrap: wrap;
+}
+.list-actions button {
+	padding: 7px 10px;
+	font-size: 0.9rem;
+}
 .row {
 	display: flex;
 	gap: 12px;
@@ -154,10 +174,33 @@ summary {
 .empty {
 	color: var(--muted);
 }
+.loading-indicator {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--muted);
+	font-size: 0.9rem;
+}
+.loading-indicator[hidden] {
+	display: none;
+}
+.spinner {
+	width: 16px;
+	height: 16px;
+	border: 2px solid var(--border);
+	border-top-color: var(--accent);
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
 .list {
 	display: grid;
 	gap: 9px;
-	max-height: 360px;
+	max-height: 372px;
 	overflow: auto;
 	padding-right: 4px;
 }

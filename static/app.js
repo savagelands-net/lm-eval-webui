@@ -8,6 +8,7 @@ const state = {
 	selectedJobs: new Set(),
 	selectedModels: new Set(),
 	selectedTasks: new Set(),
+	visibleTaskNames: [],
 	taskPage: 0,
 };
 
@@ -19,6 +20,7 @@ const LEADERBOARD_CATEGORIES = [
 	"Math",
 	"Coding / Structured Output",
 	"Instruction Following",
+	"Other",
 ];
 
 async function api(path, options = {}) {
@@ -44,9 +46,19 @@ async function loadModels() {
 	}
 }
 async function loadTasks() {
-	const payload = await api("/api/tasks");
-	state.tasks = payload.tasks || [];
-	renderTasks();
+	state.visibleTaskNames = [];
+	setTaskLoading(true);
+	$("selectVisibleTasks").disabled = true;
+	setText($("taskList"), "Loading lm-eval tasks…");
+	try {
+		const payload = await api("/api/tasks");
+		state.tasks = payload.tasks || [];
+		renderTasks();
+	} catch (error) {
+		setText($("taskList"), `Could not load tasks: ${error.message}`);
+	} finally {
+		setTaskLoading(false);
+	}
 }
 async function loadJobs() {
 	const payload = await api("/api/jobs");
@@ -123,11 +135,13 @@ function renderTasks() {
 		state.taskPage * TASKS_PER_PAGE,
 		(state.taskPage + 1) * TASKS_PER_PAGE,
 	);
+	state.visibleTaskNames = renderedTasks.map((task) => task.name);
 	$("taskCount").textContent =
 		`Showing ${renderedTasks.length.toLocaleString()} of ${matchingTasks.length.toLocaleString()} matching tasks (${state.tasks.length.toLocaleString()} total).`;
 	$("taskPage").textContent = `Page ${state.taskPage + 1} of ${pageCount}`;
 	$("taskPrev").disabled = state.taskPage <= 0;
 	$("taskNext").disabled = state.taskPage >= pageCount - 1;
+	$("selectVisibleTasks").disabled = renderedTasks.length === 0;
 	renderedTasks.forEach((task) => {
 		const item = div("item");
 		const label = document.createElement("label");
@@ -151,6 +165,16 @@ function renderTasks() {
 	});
 }
 
+function setTaskLoading(isLoading) {
+	const spinner = $("taskSpinner");
+	spinner.hidden = !isLoading;
+}
+function selectVisibleTasks() {
+	state.visibleTaskNames.forEach((taskName) =>
+		state.selectedTasks.add(taskName),
+	);
+	renderTasks();
+}
 function renderSelectedTasks() {
 	const list = $("selectedTasksList");
 	const selected = [...state.selectedTasks].sort((a, b) => a.localeCompare(b));
@@ -262,7 +286,7 @@ function renderLeaderboard() {
 				entry.model || entry.model_id || "unknown model",
 				"model-cell",
 			),
-			leaderboardCell(entry.lemonade_backend || model?.recipe || "—"),
+			leaderboardCell(modelBackendLabel(entry, model)),
 			leaderboardCell(
 				formatContext(entry.context_window || model?.context_window),
 			),
@@ -484,6 +508,11 @@ function categoryBadge(category = "Other") {
 	badge.textContent = category || "Other";
 	return badge;
 }
+function modelBackendLabel(entry, model) {
+	return (
+		entry.lemonade_backend || model?.runtime_backend || model?.recipe || "—"
+	);
+}
 function modelForEntry(entry) {
 	return state.models.find(
 		(model) =>
@@ -580,6 +609,7 @@ $("refreshAll").addEventListener("click", () =>
 	Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]),
 );
 $("startJobs").addEventListener("click", startJobs);
+$("selectVisibleTasks").addEventListener("click", selectVisibleTasks);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);
 $("hideUnknownTasks").addEventListener("change", resetTaskPage);
