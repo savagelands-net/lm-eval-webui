@@ -9,6 +9,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .lemonade import openai_api_url
+
 
 def append_timing_events(
     telemetry_path: str | Path | None, outputs: Any, source: str = "lm_eval"
@@ -108,7 +110,7 @@ def probe_lemonade_chat_telemetry(
         "stream": True,
     }
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/v1/chat/completions",
+        openai_api_url(base_url, "/chat/completions"),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
     )

@@ -1,1 +1,33 @@
-# Runtime uses Python standard library plus lm-evaluation-harness in the configured venv.
+# Core benchmark runtime for the WebUI and lm-evaluation-harness.
+# lm-eval pulls in datasets, evaluate, numpy, rouge-score, sacrebleu,
+# scikit-learn, and other base harness dependencies.
+lm-eval
+
+# Optional lm-eval task families used by the WebUI's generation-task workflow.
+# ifeval / multilingual ifeval
+langdetect
+immutabledict
+langcodes
+nltk>=3.9.1
+wonderwords
+
+# Math tasks: minerva_math, hendrycks_math, AIME-style helpers.
+sympy>=1.12
+antlr4-python3-runtime==4.11
+math_verify[antlr4_11_0]
+
+# Japanese leaderboard helpers.
+emoji==2.14.0
+neologdn==0.5.3
+fugashi[unidic-lite]
+
+# Summarization / QA generation metrics.
+bert-score
+# BLEURT-backed tasks require TensorFlow, which is not available for Python 3.14;
+# the WebUI marks those tasks incompatible instead of installing BLEURT here.
+
+# Additional helper imports used by selected task modules.
+transformers
+jsonschema
+radgraph
+git+https://github.com/felipemaiapolo/tinyBenchmarks

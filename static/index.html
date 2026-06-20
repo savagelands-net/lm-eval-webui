@@ -3,15 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Local lm-eval Benchmark WebUI</title>
+    <title>lm-eval Benchmark WebUI</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header>
       <div>
-        <h1>Local lm-eval Benchmark WebUI</h1>
+        <h1>lm-eval Benchmark WebUI</h1>
         <p>
-          Select Lemonade models, run lm-eval benchmarks, and compare metrics.
+          Select OpenAI-compatible models, run lm-eval benchmarks, and compare
+          metrics.
         </p>
       </div>
       <button id="refreshAll" type="button">Refresh</button>
@@ -22,9 +23,9 @@
         <h2>Benchmark setup</h2>
         <div class="grid">
           <label
-            >Lemonade base URL
-            <input id="lemonadeUrl" value="https://llm.savagelands.net"
-          /></label>
+            >OpenAI-compatible base URL
+            <input id="openaiBaseUrl" value="https://llm.savagelands.net" />
+          </label>
         </div>
         <div class="grid two tall">
           <div class="selector-panel">
@@ -73,12 +74,16 @@
                 hide incompatible</label
               >
               <label class="check compact"
+                ><input id="hideGatedTasks" type="checkbox" checked /> hide
+                gated</label
+              >
+              <label class="check compact"
                 ><input id="hideUnknownTasks" type="checkbox" checked /> hide
                 unknown</label
               >
             </div>
             <p class="hint">
-              The default backend is chat/generation oriented. Use
+              OpenAI-compatible chat backends are generation oriented. Use
               generate_until tasks first.
             </p>
             <div class="selected-panel">

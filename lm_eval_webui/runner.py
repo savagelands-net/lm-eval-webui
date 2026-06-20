@@ -7,7 +7,9 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_LEMONADE_BASE_URL = "https://llm.savagelands.net"
+from .lemonade import DEFAULT_OPENAI_BASE_URL, openai_api_url
+
+DEFAULT_LEMONADE_BASE_URL = DEFAULT_OPENAI_BASE_URL
 DEFAULT_LM_EVAL_PYTHON_CANDIDATES = (
     "/home/iain/.venv/lm-eval/bin/python",
     "/home/iain/.virtualenvs/lm-eval/bin/python",
@@ -21,8 +23,9 @@ class EvalRequest:
     tasks: list[str]
     output_path: str
     lm_eval_python: str | None = None
-    lemonade_base_url: str = DEFAULT_LEMONADE_BASE_URL
-    backend: str = "lemonade-chat-completions"
+    openai_base_url: str | None = None
+    lemonade_base_url: str | None = None
+    backend: str = "openai-compatible-chat-completions"
     limit: str | None = None
     num_fewshot: int | None = None
     batch_size: str = "1"
@@ -66,10 +69,12 @@ def build_eval_command(
         else f"{root}{os.pathsep}{env['PYTHONPATH']}"
     )
 
-    base_url = request.lemonade_base_url.rstrip("/")
+    base_url = (
+        request.openai_base_url or request.lemonade_base_url or DEFAULT_OPENAI_BASE_URL
+    )
     model_args = [
         f"model={request.model_id}",
-        f"base_url={base_url}/v1/chat/completions",
+        f"base_url={openai_api_url(base_url, '/chat/completions')}",
         "tokenizer_backend=None",
         "tokenized_requests=False",
         f"num_concurrent={request.num_concurrent}",

@@ -123,15 +123,20 @@ def extract_leaderboard_entry(
     score_values = [
         task["score"] for task in task_scores if task.get("score") is not None
     ]
+    provider_backend = (
+        model_metadata.get("runtime_backend")
+        or model_metadata.get("llamacpp_backend")
+        or model_metadata.get("recipe")
+        or job.get("provider_backend")
+        or job.get("lemonade_backend")
+    )
     return {
         "job_id": job.get("id"),
         "model": _model_name(result_json),
         "model_id": job.get("model_id") or _model_name(result_json),
         "backend": str(config.get("model") or job.get("backend") or ""),
-        "lemonade_backend": model_metadata.get("runtime_backend")
-        or model_metadata.get("llamacpp_backend")
-        or model_metadata.get("recipe")
-        or job.get("lemonade_backend"),
+        "provider_backend": provider_backend,
+        "lemonade_backend": provider_backend,
         "context_window": model_metadata.get("context_window")
         or job.get("context_window"),
         "status": job.get("status"),

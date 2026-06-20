@@ -10,6 +10,39 @@ def symbol(module_name, attribute):
     return import_module(module_name).__dict__[attribute]
 
 
+class OpenAICompatibleEndpointTests(unittest.TestCase):
+    def test_openai_api_url_accepts_root_or_v1_base(self):
+        openai_api_url = symbol("lm_eval_webui.lemonade", "openai_api_url")
+
+        self.assertEqual(
+            openai_api_url("http://localhost:11434", "/models"),
+            "http://localhost:11434/v1/models",
+        )
+        self.assertEqual(
+            openai_api_url("http://localhost:11434/v1", "/models"),
+            "http://localhost:11434/v1/models",
+        )
+
+    def test_eval_command_accepts_openai_v1_base_without_duplicate_path(self):
+        EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
+        build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
+
+        command, _env = build_eval_command(
+            EvalRequest(
+                model_id="llama3.2",
+                tasks=["gsm8k"],
+                output_path="out",
+                openai_base_url="http://localhost:11434/v1",
+            ),
+            project_root="/repo",
+        )
+
+        self.assertIn("base_url=http://localhost:11434/v1/chat/completions", command)
+        self.assertNotIn(
+            "base_url=http://localhost:11434/v1/v1/chat/completions", command
+        )
+
+
 class LemonadeModelTests(unittest.TestCase):
     def test_normalize_models_extracts_llamacpp_runtime_backend(self):
         normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
@@ -55,19 +88,190 @@ task:
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
         )
-        config_text = """
-task: anagrams1
-dataset_path: EleutherAI/unscramble
-dataset_name: mid_word_1_anagrams
+        for task_name, dataset_path in (
+            ("anagrams1", "EleutherAI/unscramble"),
+            ("french_bench_orangesum_title", "orange_sum"),
+            ("ja_leaderboard_jaqket_v2", "kumapo/JAQKET"),
+            ("logieval", "baber/logiqa2"),
+            ("qasper_freeform", "allenai/qasper"),
+            ("xlsum_es", "csebuetnlp/xlsum"),
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
+dataset_path: {dataset_path}
 output_type: generate_until
 """
 
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path: config_text,
+                )
+
+                self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_bleurt_metric_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: careqa_open
+output_type: generate_until
+metric_list:
+  - metric: bleurt
+"""
+
         task = annotate_task_compatibility(
-            {"name": "anagrams1", "description": "anagrams1.yaml"},
+            {"name": "careqa_open", "description": "careqa_open.yaml"},
             lambda _path: config_text,
         )
 
         self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_code_eval_metric_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: humaneval
+output_type: generate_until
+metric_list:
+  - metric: !function utils.pass_at_k
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "humaneval", "description": "humaneval.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_unavailable_metric_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: wmt-ro-en-t5-prompt
+output_type: generate_until
+metric_list:
+  - metric: wer
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "wmt-ro-en-t5-prompt", "description": "wmt-ro-en-t5-prompt.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_gated_dataset_tasks_are_marked_gated(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: cocoteros_va
+dataset_path: gplsi/cocoteros_va
+output_type: generate_until
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "cocoteros_va", "description": "cocoteros_va.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "gated")
+
+        truthfulqa_task = annotate_task_compatibility(
+            {"name": "truthfulqa_va", "description": "truthfulqa_va.yaml"},
+            lambda _path: """
+task: truthfulqa_va
+dataset_path: gplsi/truthfulqa_va
+output_type: generate_until
+""",
+        )
+
+        self.assertEqual(truthfulqa_task["compatibility"], "gated")
+
+    def test_unavailable_dataset_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name, dataset_path in (
+            ("common_voice_en", "fixie-ai/endpointing-audio"),
+            ("ja_leaderboard_jsquad", "Rakuten/JGLUE"),
+            ("summarization_gl", "proxectonos/summarization_gl"),
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
+dataset_path: {dataset_path}
+output_type: generate_until
+"""
+
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path: config_text,
+                )
+
+                self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_multilingual_ifeval_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: ifeval_ca
+output_type: generate_until
+process_results: !function utils.process_results
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "ifeval_ca", "description": "ifeval_ca.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_metadata_dependent_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: niah_single_1
+dataset_path: ""
+output_type: generate_until
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "niah_single_1", "description": "niah_single_1.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_slow_unverified_tasks_are_marked_unknown(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "meddialog_qsumm",
+            "graphwalks_128k",
+            "graphwalks_1M",
+            "tinyGSM8k",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
+dataset_path: lighteval/med_dialog
+output_type: generate_until
+"""
+
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, text=config_text: text,
+                )
+
+                self.assertEqual(task["compatibility"], "unknown")
 
 
 class JobManagerConcurrencyTests(unittest.TestCase):
@@ -312,7 +516,14 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="clearSelectedJobs"', index)
         self.assertIn('id="selectedJobCount"', index)
         self.assertIn('id="maxConcurrentJobs"', index)
+        self.assertIn('id="hideGatedTasks"', index)
+        self.assertIn("gated</label", index)
         self.assertIn('value="1"', index)
+        self.assertIn("lm-eval Benchmark WebUI", index)
+        self.assertNotIn("Local lm-eval Benchmark WebUI", index)
+        self.assertIn("OpenAI-compatible base URL", index)
+        self.assertIn('id="openaiBaseUrl"', index)
+        self.assertNotIn('id="lemonadeUrl"', index)
         self.assertIn("selectedJobs", script)
         self.assertIn("visibleTaskNames", script)
         self.assertIn('id="selectVisibleTasks"', index)
@@ -320,12 +531,16 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("job-select", script)
         self.assertIn("clearSelectedJobs", script)
         self.assertIn("max_concurrent_jobs", script)
+        self.assertIn("openai_base_url", script)
+        self.assertIn("openaiBaseUrl", script)
         self.assertIn("function modelForEntry", script)
         self.assertIn("runtime_backend", script)
         self.assertIn("Other", script)
         self.assertIn("categoryBadge", script)
         self.assertNotIn("compatibility: ${compatibility}", script)
         self.assertIn("task.category", script)
+        self.assertIn('task.compatibility === "gated"', script)
+        self.assertIn("hideGatedTasks", script)
         self.assertIn("Jobs", index)
         self.assertIn("<summary>Jobs", index)
         self.assertIn("Could not load results", script)

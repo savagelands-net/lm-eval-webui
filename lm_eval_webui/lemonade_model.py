@@ -1,4 +1,4 @@
-"""lm-eval model plugin for Lemonade chat completions."""
+"""lm-eval model plugin for OpenAI-compatible chat completions."""
 
 from __future__ import annotations
 
@@ -44,8 +44,8 @@ register_model, LocalChatCompletionBase = _load_lm_eval_symbols()
 _CURRENT_TELEMETRY_PATH: str | None = None
 
 
-@register_model("lemonade-chat-completions")
-class LemonadeChatCompletion(LocalChatCompletionBase):
+@register_model("openai-compatible-chat-completions", "lemonade-chat-completions")
+class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
     def __init__(
         self, *args: Any, telemetry_path: str | None = None, **kwargs: Any
     ) -> None:
@@ -72,3 +72,6 @@ class LemonadeChatCompletion(LocalChatCompletionBase):
                     content = message.get("reasoning_content", "")
                 generations.append(content or "")
         return generations
+
+
+LemonadeChatCompletion = OpenAICompatibleChatCompletion

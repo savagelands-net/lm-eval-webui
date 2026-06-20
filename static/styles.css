@@ -242,6 +242,7 @@ summary {
 .badge.compatibility.incompatible {
 	color: var(--bad);
 }
+.badge.compatibility.gated,
 .badge.compatibility.unknown {
 	color: var(--warn);
 }

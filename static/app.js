@@ -34,7 +34,7 @@ async function api(path, options = {}) {
 }
 
 async function loadModels() {
-	const base = encodeURIComponent($("lemonadeUrl").value.trim());
+	const base = encodeURIComponent($("openaiBaseUrl").value.trim());
 	setText($("modelList"), "Loading models…");
 	try {
 		const payload = await api(`/api/models?base_url=${base}`);
@@ -81,7 +81,10 @@ function renderModels() {
 	const list = $("modelList");
 	list.replaceChildren();
 	if (!state.models.length)
-		return setText(list, "No downloaded models returned by Lemonade.");
+		return setText(
+			list,
+			"No models returned by the OpenAI-compatible endpoint.",
+		);
 	if (!state.selectedModels.size) state.selectedModels.add(state.models[0].id);
 	const filter = $("modelFilter").value.trim().toLowerCase();
 	const matchingModels = state.models.filter((model) =>
@@ -118,9 +121,11 @@ function renderTasks() {
 	renderSelectedTasks();
 	const filter = $("taskFilter").value.trim().toLowerCase();
 	const hideIncompatible = $("hideIncompatibleTasks").checked;
+	const hideGated = $("hideGatedTasks").checked;
 	const hideUnknown = $("hideUnknownTasks").checked;
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
+		if (hideGated && task.compatibility === "gated") return false;
 		if (hideUnknown && task.compatibility === "unknown") return false;
 		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
 			.toLowerCase()
@@ -264,7 +269,7 @@ function renderLeaderboard() {
 	[
 		"#",
 		"Model",
-		"Lemonade backend",
+		"Runtime backend",
 		"Context",
 		"Tok/s",
 		"TTFT",
@@ -430,7 +435,7 @@ async function startJobs() {
 	const body = {
 		model_ids: modelIds,
 		tasks,
-		lemonade_base_url: $("lemonadeUrl").value.trim(),
+		openai_base_url: $("openaiBaseUrl").value.trim(),
 		limit: $("limit").value.trim() || null,
 		num_fewshot:
 			$("numFewshot").value === "" ? null : Number($("numFewshot").value),
@@ -510,7 +515,11 @@ function categoryBadge(category = "Other") {
 }
 function modelBackendLabel(entry, model) {
 	return (
-		entry.lemonade_backend || model?.runtime_backend || model?.recipe || "—"
+		entry.provider_backend ||
+		entry.lemonade_backend ||
+		model?.runtime_backend ||
+		model?.recipe ||
+		"—"
 	);
 }
 function modelForEntry(entry) {
@@ -612,6 +621,7 @@ $("startJobs").addEventListener("click", startJobs);
 $("selectVisibleTasks").addEventListener("click", selectVisibleTasks);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);
+$("hideGatedTasks").addEventListener("change", resetTaskPage);
 $("hideUnknownTasks").addEventListener("change", resetTaskPage);
 $("taskPrev").addEventListener("click", () => changeTaskPage(-1));
 $("taskNext").addEventListener("click", () => changeTaskPage(1));

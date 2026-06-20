@@ -45,7 +45,8 @@ class JobManager:
         launcher: Launcher = default_launcher,
         run_async: bool = True,
         lm_eval_python: str | None = None,
-        lemonade_base_url: str = "https://llm.savagelands.net",
+        openai_base_url: str = "https://llm.savagelands.net",
+        lemonade_base_url: str | None = None,
         telemetry_probe: TelemetryProbe | None = None,
         max_concurrent_jobs: int = 1,
     ) -> None:
@@ -54,7 +55,8 @@ class JobManager:
         self.launcher = launcher
         self.run_async = run_async
         self.lm_eval_python = lm_eval_python
-        self.lemonade_base_url = lemonade_base_url.rstrip("/")
+        self.openai_base_url = (lemonade_base_url or openai_base_url).rstrip("/")
+        self.lemonade_base_url = self.openai_base_url
         self.telemetry_probe = telemetry_probe
         self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
         self._active_jobs = 0
@@ -180,14 +182,16 @@ class JobManager:
         output_path = self.runs_dir / job_id
         log_path = self.logs_dir / f"{job_id}.log"
         telemetry_path = self.telemetry_dir / f"{job_id}.jsonl"
-        backend = payload.get("backend", "lemonade-chat-completions")
-        lemonade_base_url = payload.get("lemonade_base_url", self.lemonade_base_url)
+        backend = payload.get("backend", "openai-compatible-chat-completions")
+        openai_base_url = payload.get(
+            "openai_base_url", payload.get("lemonade_base_url", self.openai_base_url)
+        )
         request = EvalRequest(
             model_id=model_id,
             tasks=tasks,
             output_path=str(output_path),
             lm_eval_python=payload.get("lm_eval_python") or self.lm_eval_python,
-            lemonade_base_url=lemonade_base_url,
+            openai_base_url=openai_base_url,
             backend=backend,
             limit=payload.get("limit"),
             num_fewshot=self._optional_int(payload.get("num_fewshot")),
@@ -214,7 +218,8 @@ class JobManager:
             "output_path": str(output_path),
             "log_path": str(log_path),
             "telemetry_path": str(telemetry_path),
-            "lemonade_base_url": str(lemonade_base_url).rstrip("/"),
+            "openai_base_url": str(openai_base_url).rstrip("/"),
+            "lemonade_base_url": str(openai_base_url).rstrip("/"),
             "backend": backend,
             "telemetry": {},
             "result_files": [],
@@ -282,7 +287,8 @@ class JobManager:
         if returncode == 0 and self.telemetry_probe is not None:
             try:
                 probe = self.telemetry_probe(
-                    job.get("lemonade_base_url", self.lemonade_base_url),
+                    job.get("openai_base_url")
+                    or job.get("lemonade_base_url", self.openai_base_url),
                     job["model_id"],
                 )
             except Exception as exc:  # pragma: no cover

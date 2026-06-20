@@ -1,4 +1,4 @@
-"""Helpers for talking to a Lemonade/OpenAI-compatible model host."""
+"""Helpers for talking to OpenAI-compatible model hosts."""
 
 from __future__ import annotations
 
@@ -7,9 +7,29 @@ import os
 import urllib.request
 from typing import Any
 
-DEFAULT_LEMONADE_BASE_URL = os.environ.get(
-    "LEMONADE_BASE_URL", "https://llm.savagelands.net"
+DEFAULT_OPENAI_BASE_URL = os.environ.get(
+    "OPENAI_BASE_URL",
+    os.environ.get("LEMONADE_BASE_URL", "https://llm.savagelands.net"),
 ).rstrip("/")
+DEFAULT_LEMONADE_BASE_URL = DEFAULT_OPENAI_BASE_URL
+
+
+def normalize_openai_base_url(base_url: str) -> str:
+    normalized = str(base_url or DEFAULT_OPENAI_BASE_URL).strip().rstrip("/")
+    if normalized.endswith("/v1/chat/completions"):
+        return normalized[: -len("/chat/completions")]
+    if normalized.endswith("/chat/completions"):
+        return normalized[: -len("/chat/completions")]
+    if normalized.endswith("/v1"):
+        return normalized
+    return f"{normalized}/v1"
+
+
+def openai_api_url(base_url: str, path: str) -> str:
+    suffix = path if path.startswith("/") else f"/{path}"
+    if suffix.startswith("/v1/"):
+        suffix = suffix[len("/v1") :]
+    return f"{normalize_openai_base_url(base_url)}{suffix}"
 
 
 def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -70,14 +90,14 @@ def fetch_models(
     base_url: str = DEFAULT_LEMONADE_BASE_URL, timeout: int = 15
 ) -> list[dict[str, Any]]:
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/v1/models", headers={"Accept": "application/json"}
+        openai_api_url(base_url, "/models"), headers={"Accept": "application/json"}
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         payload = json.loads(response.read().decode("utf-8"))
     models = normalize_models(payload)
     try:
         health_request = urllib.request.Request(
-            f"{base_url.rstrip('/')}/v1/health", headers={"Accept": "application/json"}
+            openai_api_url(base_url, "/health"), headers={"Accept": "application/json"}
         )
         with urllib.request.urlopen(health_request, timeout=timeout) as response:  # noqa: S310
             health = json.loads(response.read().decode("utf-8"))

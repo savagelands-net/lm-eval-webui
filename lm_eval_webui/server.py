@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .jobs import JobManager
-from .lemonade import DEFAULT_LEMONADE_BASE_URL, fetch_models
+from .lemonade import DEFAULT_OPENAI_BASE_URL, fetch_models
 from .runner import find_lm_eval_python
 from .telemetry import probe_lemonade_chat_telemetry
 
@@ -59,7 +59,34 @@ _TOP_LEVEL_TASK_LIST_RE = re.compile(r"^task\s*:\s*$")
 _DATASET_PATH_RE = re.compile(
     r"^\s*dataset_path\s*:\s*['\"]?([^'\"\n#]+)", re.MULTILINE
 )
-UNSUPPORTED_DATASET_SCRIPT_PATHS = {"EleutherAI/unscramble"}
+_BLEURT_METRIC_RE = re.compile(r"^\s*-?\s*metric\s*:\s*['\"]?bleurt\b", re.MULTILINE)
+_UNAVAILABLE_METRIC_RE = re.compile(
+    r"^\s*-?\s*metric\s*:\s*['\"]?(?:wer)\b", re.MULTILINE
+)
+_CODE_EVAL_METRIC_RE = re.compile(
+    r"^\s*-?\s*metric\s*:\s*!function\s+utils\.pass_at", re.MULTILINE
+)
+UNSUPPORTED_DATASET_SCRIPT_PATHS = {
+    "EleutherAI/unscramble",
+    "kumapo/JAQKET",
+    "orange_sum",
+    "baber/logiqa2",
+    "allenai/qasper",
+    "csebuetnlp/xlsum",
+}
+UNAVAILABLE_DATASET_PATHS = {
+    "Rakuten/JGLUE",
+    "fixie-ai/endpointing-audio",
+    "proxectonos/summarization_gl",
+}
+GATED_DATASET_PATHS = {"gplsi/cocoteros_va", "gplsi/truthfulqa_va"}
+INCOMPATIBLE_TASK_NAMES = {"ifeval_ca", "ifeval_es", "niah_single_1"}
+UNKNOWN_TASK_NAMES = {
+    "graphwalks_128k",
+    "graphwalks_1M",
+    "meddialog_qsumm",
+    "tinyGSM8k",
+}
 
 
 def write_response(
@@ -173,8 +200,19 @@ def annotate_task_compatibility(
     config_text = config_reader(config_path) if config_path else None
     config_text = config_text or ""
     output_type = task_output_type(config_text)
-    if has_malformed_group_task_entries(config_text) or uses_unsupported_dataset_script(
-        config_text
+    if task.get("name", "") in INCOMPATIBLE_TASK_NAMES:
+        compatibility = "incompatible"
+    elif uses_gated_dataset(config_text):
+        compatibility = "gated"
+    elif task.get("name", "") in UNKNOWN_TASK_NAMES:
+        compatibility = "unknown"
+    elif (
+        has_malformed_group_task_entries(config_text)
+        or uses_unsupported_dataset_script(config_text)
+        or uses_unavailable_dataset(config_text)
+        or uses_unavailable_bleurt_metric(config_text)
+        or uses_unavailable_metric(config_text)
+        or uses_unsafe_code_eval_metric(config_text)
     ):
         compatibility = "incompatible"
     elif output_type == "generate_until":
@@ -191,11 +229,32 @@ def task_output_type(config_text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def dataset_paths(config_text: str) -> set[str]:
+    return {match.group(1).strip() for match in _DATASET_PATH_RE.finditer(config_text)}
+
+
+def uses_gated_dataset(config_text: str) -> bool:
+    return bool(dataset_paths(config_text) & GATED_DATASET_PATHS)
+
+
 def uses_unsupported_dataset_script(config_text: str) -> bool:
-    dataset_paths = {
-        match.group(1).strip() for match in _DATASET_PATH_RE.finditer(config_text)
-    }
-    return bool(dataset_paths & UNSUPPORTED_DATASET_SCRIPT_PATHS)
+    return bool(dataset_paths(config_text) & UNSUPPORTED_DATASET_SCRIPT_PATHS)
+
+
+def uses_unavailable_dataset(config_text: str) -> bool:
+    return bool(dataset_paths(config_text) & UNAVAILABLE_DATASET_PATHS)
+
+
+def uses_unavailable_bleurt_metric(config_text: str) -> bool:
+    return bool(_BLEURT_METRIC_RE.search(config_text))
+
+
+def uses_unavailable_metric(config_text: str) -> bool:
+    return bool(_UNAVAILABLE_METRIC_RE.search(config_text))
+
+
+def uses_unsafe_code_eval_metric(config_text: str) -> bool:
+    return bool(_CODE_EVAL_METRIC_RE.search(config_text))
 
 
 def has_malformed_group_task_entries(config_text: str) -> bool:
@@ -277,7 +336,7 @@ def read_lm_eval_config(
 def make_handler(
     manager: JobManager,
     static_dir: str | Path,
-    lemonade_base_url: str = DEFAULT_LEMONADE_BASE_URL,
+    openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
 ):
     static_root = Path(static_dir)
 
@@ -338,7 +397,7 @@ def make_handler(
 
         def _handle_models(self, query: str) -> None:
             params = parse_qs(query)
-            base_url = params.get("base_url", [lemonade_base_url])[0]
+            base_url = params.get("base_url", [openai_base_url])[0]
             try:
                 models = fetch_models(base_url=base_url)
             except Exception as exc:  # pragma: no cover
@@ -392,7 +451,7 @@ def serve(
     port: int = 8080,
     data_dir: str | Path = "data",
     static_dir: str | Path = "static",
-    lemonade_base_url: str = DEFAULT_LEMONADE_BASE_URL,
+    openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
     lm_eval_python: str | None = None,
     max_concurrent_jobs: int = 1,
 ) -> None:
@@ -400,11 +459,11 @@ def serve(
         data_dir=data_dir,
         project_root=Path.cwd(),
         lm_eval_python=lm_eval_python,
-        lemonade_base_url=lemonade_base_url,
+        openai_base_url=openai_base_url,
         telemetry_probe=probe_lemonade_chat_telemetry,
         max_concurrent_jobs=max_concurrent_jobs,
     )
-    handler = make_handler(manager, static_dir, lemonade_base_url)
+    handler = make_handler(manager, static_dir, openai_base_url)
     httpd = ThreadingHTTPServer((host, port), handler)
     print(f"Serving lm-eval WebUI at http://{host}:{port}")
     httpd.serve_forever()
