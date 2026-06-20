@@ -45,8 +45,58 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
             "base_url=http://localhost:11434/v1/v1/chat/completions", command
         )
 
+    def test_eval_command_enables_streaming_for_in_run_ttft(self):
+        EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
+        build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
+
+        command, _env = build_eval_command(
+            EvalRequest(model_id="Model-A", tasks=["gsm8k"], output_path="out"),
+            project_root="/repo",
+        )
+
+        self.assertIn("stream_responses=True", command)
+
 
 class LemonadeModelTests(unittest.TestCase):
+    def test_stream_response_json_records_client_ttft(self):
+        stream_response_json = symbol(
+            "lm_eval_webui.lemonade_model", "stream_response_json"
+        )
+
+        class Response:
+            ok = True
+            text = ""
+
+            def raise_for_status(self):
+                return None
+
+            def iter_lines(self, decode_unicode=False):
+                lines = [
+                    'data: {"model":"Model-A","choices":[{"index":0,"delta":{"role":"assistant"}}]}',
+                    'data: {"choices":[{"index":0,"delta":{"content":"red"}}],"timings":{"predicted_n":1,"predicted_ms":10}}',
+                    'data: {"choices":[{"index":0,"delta":{"content":" blue"}}],"usage":{"completion_tokens":2}}',
+                    "data: [DONE]",
+                ]
+                return (
+                    lines
+                    if decode_unicode
+                    else [line.encode("utf-8") for line in lines]
+                )
+
+        times = iter([101.0, 102.0, 103.0, 104.0, 105.0])
+
+        output = stream_response_json(
+            Response(), started=100.0, clock=lambda: next(times)
+        )
+
+        self.assertEqual(output["model"], "Model-A")
+        self.assertEqual(output["choices"][0]["message"]["content"], "red blue")
+        self.assertEqual(output["timings"]["time_to_headers_s"], 1.0)
+        self.assertEqual(output["timings"]["time_to_first_event_s"], 2.0)
+        self.assertEqual(output["timings"]["ttft_s"], 3.0)
+        self.assertEqual(output["timings"]["predicted_n"], 1)
+        self.assertEqual(output["usage"], {"completion_tokens": 2})
+
     def test_normalize_models_extracts_llamacpp_runtime_backend(self):
         normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
 
@@ -275,6 +325,86 @@ output_type: generate_until
                 )
 
                 self.assertEqual(task["compatibility"], "unknown")
+
+
+class JobManagerTelemetryTests(unittest.TestCase):
+    def test_probe_is_skipped_when_benchmark_ttft_exists(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        probe_called = False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            telemetry_path = Path(tmp) / "telemetry.jsonl"
+            telemetry_path.write_text(
+                json.dumps(
+                    {
+                        "timings": {
+                            "predicted_n": 2,
+                            "predicted_ms": 100,
+                            "ttft_s": 0.25,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def telemetry_probe(_base_url, _model_id):
+                nonlocal probe_called
+                probe_called = True
+                return {"ttft_s": 10.0}
+
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                run_async=False,
+                telemetry_probe=telemetry_probe,
+            )
+
+            telemetry = manager._collect_telemetry(
+                {
+                    "telemetry_path": str(telemetry_path),
+                    "openai_base_url": "http://example.test",
+                    "model_id": "Model-A",
+                },
+                0,
+            )
+
+        self.assertEqual(telemetry["ttft_s"], 0.25)
+        self.assertFalse(probe_called)
+        self.assertNotIn("probe_ttft_s", telemetry)
+        self.assertNotIn("error", telemetry)
+
+    def test_probe_ttft_is_used_when_benchmark_ttft_is_missing(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            telemetry_path = Path(tmp) / "telemetry.jsonl"
+            telemetry_path.write_text(
+                json.dumps({"timings": {"predicted_n": 2, "predicted_ms": 100}}) + "\n",
+                encoding="utf-8",
+            )
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                run_async=False,
+                telemetry_probe=lambda _base_url, _model_id: {
+                    "ttft_s": 10.0,
+                    "time_to_headers_s": 9.0,
+                },
+            )
+
+            telemetry = manager._collect_telemetry(
+                {
+                    "telemetry_path": str(telemetry_path),
+                    "openai_base_url": "http://example.test",
+                    "model_id": "Model-A",
+                },
+                0,
+            )
+
+        self.assertEqual(telemetry["ttft_s"], 10.0)
+        self.assertEqual(telemetry["probe_ttft_s"], 10.0)
+        self.assertEqual(telemetry["probe_time_to_headers_s"], 9.0)
 
 
 class JobManagerConcurrencyTests(unittest.TestCase):

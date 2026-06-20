@@ -80,6 +80,7 @@ def build_eval_command(
         f"num_concurrent={request.num_concurrent}",
         f"timeout={request.timeout}",
         f"max_gen_toks={request.max_gen_toks}",
+        "stream_responses=True",
     ]
     if request.telemetry_path:
         model_args.append(f"telemetry_path={request.telemetry_path}")

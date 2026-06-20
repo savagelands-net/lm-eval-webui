@@ -284,7 +284,11 @@ class JobManager:
         self, job: dict[str, Any], returncode: int | None
     ) -> dict[str, Any]:
         telemetry = aggregate_telemetry_file(job.get("telemetry_path"))
-        if returncode == 0 and self.telemetry_probe is not None:
+        if (
+            returncode == 0
+            and self.telemetry_probe is not None
+            and "ttft_s" not in telemetry
+        ):
             try:
                 probe = self.telemetry_probe(
                     job.get("openai_base_url")
@@ -295,8 +299,12 @@ class JobManager:
                 telemetry["error"] = str(exc)
             else:
                 for key, value in (probe or {}).items():
-                    if key != "timings":
-                        telemetry[key] = value
+                    if key == "timings":
+                        continue
+                    target_key = key if key.startswith("probe_") else f"probe_{key}"
+                    telemetry[target_key] = value
+                    if key == "ttft_s" and "ttft_s" not in telemetry:
+                        telemetry["ttft_s"] = value
         return telemetry
 
     def _remove_job_artifacts(self, job: dict[str, Any]) -> None:
