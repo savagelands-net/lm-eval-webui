@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -223,7 +224,9 @@ def _scored_metrics(task: str, metrics: dict[str, Any]) -> list[tuple[str, float
 def _is_numeric_metric(metric: str, value: Any) -> bool:
     if metric in _META_KEYS or metric.endswith("_stderr") or "_stderr," in metric:
         return False
-    return not isinstance(value, bool) and isinstance(value, (int, float))
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
 
 
 def _metric_base(metric: str) -> str:

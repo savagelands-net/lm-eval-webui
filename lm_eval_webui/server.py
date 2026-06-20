@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import mimetypes
 import re
 import subprocess
@@ -87,6 +88,18 @@ UNKNOWN_TASK_NAMES = {
     "meddialog_qsumm",
     "tinyGSM8k",
 }
+
+
+def json_safe(value: Any) -> Any:
+    """Return a JSON-serializable value without non-standard NaN/Infinity floats."""
+
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    return value
 
 
 def write_response(
@@ -427,7 +440,9 @@ def make_handler(
         def _json(
             self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK
         ) -> None:
-            body = json.dumps(payload, indent=2).encode("utf-8")
+            body = json.dumps(json_safe(payload), indent=2, allow_nan=False).encode(
+                "utf-8"
+            )
             write_response(self, status, "application/json; charset=utf-8", body)
 
         def _serve_static(self, path: str) -> None:

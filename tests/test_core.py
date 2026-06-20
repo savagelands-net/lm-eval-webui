@@ -1,6 +1,9 @@
+import json
+import math
 import tempfile
 import threading
 import time
+import types
 import unittest
 from importlib import import_module
 from pathlib import Path
@@ -105,7 +108,7 @@ output_type: generate_until
 
                 task = annotate_task_compatibility(
                     {"name": task_name, "description": f"{task_name}.yaml"},
-                    lambda _path: config_text,
+                    lambda _path, text=config_text: text,
                 )
 
                 self.assertEqual(task["compatibility"], "incompatible")
@@ -210,7 +213,7 @@ output_type: generate_until
 
                 task = annotate_task_compatibility(
                     {"name": task_name, "description": f"{task_name}.yaml"},
-                    lambda _path: config_text,
+                    lambda _path, text=config_text: text,
                 )
 
                 self.assertEqual(task["compatibility"], "incompatible")
@@ -476,6 +479,82 @@ class LeaderboardScoringTests(unittest.TestCase):
         )
         self.assertEqual(entry["category_scores"][0]["category"], "Math")
         self.assertEqual(entry["category_scores"][0]["score"], 50.0)
+
+
+class ResultJsonEncodingTests(unittest.TestCase):
+    def test_result_rows_skip_non_finite_metric_values(self):
+        extract_result_rows = symbol("lm_eval_webui.results", "extract_result_rows")
+
+        rows = extract_result_rows(
+            "job-1",
+            {
+                "model_name": "Model-A",
+                "results": {
+                    "bbq_generate": {
+                        "acc,none": 0.5,
+                        "accuracy_disamb,none": math.nan,
+                        "amb_bias_score,none": math.inf,
+                    }
+                },
+            },
+        )
+
+        self.assertEqual([row["metric"] for row in rows], ["acc,none"])
+        self.assertEqual(rows[0]["value"], 0.5)
+
+    def test_leaderboard_ignores_non_finite_scores(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+
+        entry = extract_leaderboard_entry(
+            {"id": "job-1", "model_id": "Model-A", "status": "succeeded"},
+            {
+                "model_name": "Model-A",
+                "results": {
+                    "gsm8k": {
+                        "exact_match,strict-match": math.nan,
+                        "exact_match,flexible-extract": 1.0,
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(entry["overall_score"], 100.0)
+        self.assertEqual(entry["task_scores"][0]["score"], 100.0)
+
+    def test_json_responses_replace_non_finite_numbers_with_null(self):
+        make_handler = symbol("lm_eval_webui.server", "make_handler")
+        Handler = make_handler(object(), "static")
+        handler = Handler.__new__(Handler)
+        handler.headers = []
+        handler.body = b""
+
+        class Writer:
+            def write(self, body):
+                handler.body += body
+
+        def send_response(self, status):
+            self.status = status
+
+        def send_header(self, name, value):
+            self.headers.append((name, value))
+
+        def end_headers(self):
+            return None
+
+        handler.wfile = Writer()
+        handler.send_response = types.MethodType(send_response, handler)
+        handler.send_header = types.MethodType(send_header, handler)
+        handler.end_headers = types.MethodType(end_headers, handler)
+
+        handler._json({"value": math.nan, "nested": {"rate": math.inf}})
+
+        self.assertNotIn(b"NaN", handler.body)
+        self.assertNotIn(b"Infinity", handler.body)
+        self.assertEqual(
+            json.loads(handler.body), {"value": None, "nested": {"rate": None}}
+        )
 
 
 class BrokenPipeResponseTests(unittest.TestCase):
