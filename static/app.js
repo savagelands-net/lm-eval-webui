@@ -125,7 +125,11 @@ function renderModels() {
 function renderTasks() {
 	const list = $("taskList");
 	list.replaceChildren();
-	if (!state.selectedTasks.size && state.tasks.length && !state.hasAutoSelectedTask) {
+	if (
+		!state.selectedTasks.size &&
+		state.tasks.length &&
+		!state.hasAutoSelectedTask
+	) {
 		state.selectedTasks.add(state.tasks[0].name);
 		state.hasAutoSelectedTask = true;
 	}
@@ -133,10 +137,12 @@ function renderTasks() {
 	const filter = $("taskFilter").value.trim().toLowerCase();
 	const hideIncompatible = $("hideIncompatibleTasks").checked;
 	const hideGated = $("hideGatedTasks").checked;
+	const hideNonEnglish = $("hideNonEnglishTasks").checked;
 	const selectedCategories = selectedTaskCategories();
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideGated && task.compatibility === "gated") return false;
+		if (hideNonEnglish && task.language_scope === "non_english") return false;
 		if (!selectedCategories.has(task.category || "Other")) return false;
 		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
 			.toLowerCase()
@@ -670,6 +676,7 @@ $("unselectVisibleTasks").addEventListener("click", unselectVisibleTasks);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);
 $("hideGatedTasks").addEventListener("change", resetTaskPage);
+$("hideNonEnglishTasks").addEventListener("change", resetTaskPage);
 TASK_CATEGORY_FILTERS.forEach(({ id }) =>
 	$(id).addEventListener("change", resetTaskPage),
 );

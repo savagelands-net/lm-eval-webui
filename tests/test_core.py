@@ -555,6 +555,46 @@ output_type: generate_until
         self.assertIn("output_type: generate_until", config_text or "")
         self.assertIn("task: example", config_text or "")
 
+    def test_task_language_scope_marks_non_english_tasks(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "mmmlu_zh_cn_abstract_algebra",
+            "truthfulqa-multi_gen_es",
+            "openai_mmlu_yor_prompt_1",
+            "include_base_44_arabic",
+            "flores_afr-eng",
+            "toksuite_turkish_web_search_query",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"task: {task_name}\n"
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, config_text=config_text: config_text,
+                )
+
+                self.assertEqual(task["language_scope"], "non_english")
+
+    def test_task_language_scope_keeps_english_tasks(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "gsm8k",
+            "mmlu_prox_en_biology",
+            "truthfulqa-multi_gen_en",
+            "code2text_python",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"task: {task_name}\n"
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, config_text=config_text: config_text,
+                )
+
+                self.assertEqual(task["language_scope"], "english")
+
     def test_remaining_smoked_tasks_are_marked_compatible(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
@@ -1178,6 +1218,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('value="rocm"', index)
         self.assertIn('id="hideGatedTasks"', index)
         self.assertIn("gated</label", index)
+        self.assertIn('id="hideNonEnglishTasks"', index)
+        self.assertIn("hide non-English", index)
+        self.assertIn("hideNonEnglishTasks", script)
+        self.assertIn('task.language_scope === "non_english"', script)
         self.assertNotIn('id="hideUnknownTasks"', index)
         self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)

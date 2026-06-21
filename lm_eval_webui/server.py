@@ -248,6 +248,64 @@ INCOMPATIBLE_TASK_PATTERNS = tuple(
     )
 )
 UNKNOWN_TASK_NAMES: set[str] = set()
+NON_ENGLISH_TASK_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:^|[_-])(?:af|am|ar|bn|ca|cs|da|de|el|es|eu|fa|fi|fr|gl|gu|ha|hi|hr|hu|hy|id|it|ja|kn|ko|ml|mr|ne|nl|nno|nob|nso|pt|ro|ru|sk|sr|sv|sw|ta|te|th|tr|uk|ur|vi|wo|yo|zh|zu)(?:[_-]|$)",
+        r"^afri",
+        r"^afrobench",
+        r"^arab",
+        r"^aradice",
+        r"^basque",
+        r"^catalan",
+        r"^ceval",
+        r"^cmmlu",
+        r"^darija",
+        r"^egymmlu",
+        r"^evalita",
+        r"^flores",
+        r"^french",
+        r"^galician",
+        r"^global_mmlu_(?!full_en)",
+        r"^haerae",
+        r"^hrm8k(?!_en)",
+        r"^include_base_44_",
+        r"^japanese",
+        r"^kbl",
+        r"^kmmlu",
+        r"^kobest",
+        r"^kormedmcqa",
+        r"^mafand",
+        r"^masakha",
+        r"^m_mmlu_(?!en$)",
+        r"^mela",
+        r"^mgsm",
+        r"^mmmlu_(?!en(?:_|$))",
+        r"^mmlu_(?:de|es|fr|hi|it|pt|th)_llama",
+        r"^mmlu_prox(?:_lite)?_(?!en(?:_|$))[a-z]{2}(?:_|$)",
+        r"^naijarc",
+        r"^nor",
+        r"^ntrex",
+        r"^openai_mmlu_(?!eng|en)",
+        r"^portuguese",
+        r"^spanish",
+        r"^tatoeba",
+        r"^tmlu",
+        r"^tmmlu",
+        r"^toksuite_(?:chinese|farsi|italian|turkish)",
+        r"^translation",
+        r"^trasnlation",
+        r"^truthfulqa[-_]multi_(?!(?:gen|mc1|mc2)_en(?:[^a-z0-9]|$))",
+        r"^turkish",
+        r"^uhura[-_]arc[-_]easy",
+        r"^uyghur",
+        r"^wmt",
+        r"^xlsum",
+        r"^xnli",
+        r"^xstorycloze",
+        r"^xwinograd",
+    )
+)
 
 
 def json_safe(value: Any) -> Any:
@@ -309,6 +367,8 @@ def _merge_tasks(
                 "description": task.get("description", ""),
                 "compatibility": task.get("compatibility", "unknown"),
                 "category": task.get("category") or task_category(name),
+                "language_scope": task.get("language_scope")
+                or task_language_scope(name, task.get("description", "")),
             }
         )
         seen.add(name)
@@ -325,6 +385,15 @@ def task_category(name: str) -> str:
 
 def task_matches_pattern(name: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
     return any(pattern.search(name) for pattern in patterns)
+
+
+def task_language_scope(name: str, *metadata: str) -> str:
+    searchable = " ".join([name, *metadata]).lower()
+    return (
+        "non_english"
+        if task_matches_pattern(searchable, NON_ENGLISH_TASK_PATTERNS)
+        else "english"
+    )
 
 
 def load_available_tasks(
@@ -405,7 +474,11 @@ def annotate_task_compatibility(
         compatibility = "incompatible"
     else:
         compatibility = "incompatible"
-    return {**task, "compatibility": compatibility}
+    return {
+        **task,
+        "compatibility": compatibility,
+        "language_scope": task_language_scope(task_name, config_path, config_text),
+    }
 
 
 def task_output_type(config_text: str) -> str | None:
