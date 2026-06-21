@@ -6,6 +6,7 @@ const state = {
 	leaderboard: [],
 	selectedJobId: null,
 	selectedJobs: new Set(),
+	expandedJobs: new Set(),
 	selectedModels: new Set(),
 	selectedTasks: new Set(),
 	visibleTaskNames: [],
@@ -231,6 +232,9 @@ function renderJobs() {
 	state.selectedJobs = new Set(
 		[...state.selectedJobs].filter((id) => existing.has(id)),
 	);
+	state.expandedJobs = new Set(
+		[...state.expandedJobs].filter((id) => existing.has(id)),
+	);
 	if (!state.jobs.length) {
 		setText(list, "No jobs yet.");
 		$("jobLog").textContent = "";
@@ -247,18 +251,31 @@ function renderJobs() {
 				: state.selectedJobs.delete(job.id);
 			renderSelectedJobs();
 		});
-		const button = document.createElement("button");
-		button.className = "job";
-		button.type = "button";
-		button.append(
-			summaryBlock(job.model_id, `${job.tasks.join(", ")} · ${job.id}`),
-		);
-		const status = document.createElement("span");
-		status.className = `status ${job.status}`;
-		status.textContent = job.status;
-		button.append(status);
-		button.addEventListener("click", () => selectJob(job.id));
-		row.append(checkbox, button);
+		const details = document.createElement("details");
+		details.className = "job-details";
+		details.open = state.expandedJobs.has(job.id);
+		details.addEventListener("toggle", () => {
+			details.open
+				? state.expandedJobs.add(job.id)
+				: state.expandedJobs.delete(job.id);
+		});
+		const summary = document.createElement("summary");
+		summary.className = "job-summary";
+		summary.append(summaryBlock(job.model_id, `Job ${job.id}`), statusBadge(job));
+		summary.addEventListener("click", () => selectJob(job.id));
+		const expanded = div("job-expanded");
+		const header = div("job-expanded-header");
+		header.append(summaryBlock(job.model_id, `Job ${job.id}`), statusBadge(job));
+		const taskList = document.createElement("ul");
+		taskList.className = "job-task-list";
+		job.tasks.forEach((taskName) => {
+			const taskItem = document.createElement("li");
+			taskItem.textContent = taskName;
+			taskList.append(taskItem);
+		});
+		expanded.append(header, taskList);
+		details.append(summary, expanded);
+		row.append(checkbox, details);
 		list.append(row);
 	});
 	renderSelectedJobs();
@@ -503,6 +520,12 @@ async function startJobs() {
 	}
 }
 
+function statusBadge(job) {
+	const status = document.createElement("span");
+	status.className = `status ${job.status}`;
+	status.textContent = job.status;
+	return status;
+}
 function summaryBlock(title, meta) {
 	const span = document.createElement("span"),
 		strong = document.createElement("strong"),

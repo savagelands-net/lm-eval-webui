@@ -273,15 +273,53 @@ summary {
 	display: grid;
 	grid-template-columns: auto 1fr;
 	gap: 10px;
-	align-items: center;
+	align-items: start;
 }
 .job-row .job-select {
-	margin: 0;
+	margin: 14px 0 0;
 }
-.job {
-	grid-template-columns: 1fr auto;
-	align-items: center;
+.job-details {
 	width: 100%;
+	min-width: 0;
+}
+.job-summary,
+.job-expanded-header {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 12px;
+	align-items: center;
+}
+.job-summary {
+	cursor: pointer;
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: var(--panel-2);
+	list-style-position: inside;
+}
+.job-summary:hover {
+	border-color: var(--accent);
+}
+.job-expanded {
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-top: 0;
+	border-radius: 0 0 12px 12px;
+	background: color-mix(in srgb, var(--panel-2), transparent 30%);
+}
+.job-details[open] .job-summary {
+	border-radius: 12px 12px 0 0;
+}
+.job-task-list {
+	max-height: 220px;
+	overflow: auto;
+	margin: 12px 0 0;
+	padding-left: 28px;
+	color: var(--muted);
+}
+.job-task-list li {
+	padding: 2px 0;
+	overflow-wrap: anywhere;
 }
 .status {
 	font-weight: 700;
