@@ -261,11 +261,17 @@ function renderJobs() {
 		});
 		const summary = document.createElement("summary");
 		summary.className = "job-summary";
-		summary.append(summaryBlock(job.model_id, `Job ${job.id}`), statusBadge(job));
+		summary.append(
+			summaryBlock(job.model_id, `Job ${job.id}`),
+			statusBadge(job),
+		);
 		summary.addEventListener("click", () => selectJob(job.id));
 		const expanded = div("job-expanded");
 		const header = div("job-expanded-header");
-		header.append(summaryBlock(job.model_id, `Job ${job.id}`), statusBadge(job));
+		header.append(
+			summaryBlock(job.model_id, `Job ${job.id}`),
+			statusBadge(job),
+		);
 		const taskList = document.createElement("ul");
 		taskList.className = "job-task-list";
 		job.tasks.forEach((taskName) => {
