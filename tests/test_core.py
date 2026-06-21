@@ -555,28 +555,100 @@ output_type: generate_until
         self.assertIn("output_type: generate_until", config_text or "")
         self.assertIn("task: example", config_text or "")
 
-    def test_slow_unverified_tasks_are_marked_unknown(self):
+    def test_remaining_smoked_tasks_are_marked_compatible(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
         )
         for task_name in (
-            "meddialog_qsumm",
             "graphwalks_128k",
-            "graphwalks_1M",
+            "code2text",
+            "ntrex_afr-eng",
+            "ntrex_eng-afr_prompt_3",
+            "adr_prompt_1",
+            "adr_tasks",
+            "jfinqa",
         ):
             with self.subTest(task_name=task_name):
-                config_text = f"""
-task: {task_name}
-dataset_path: lighteval/med_dialog
-output_type: generate_until
-"""
-
+                config_text = f"task: {task_name}\n"
                 task = annotate_task_compatibility(
                     {"name": task_name, "description": f"{task_name}.yaml"},
                     lambda _path, text=config_text: text,
                 )
 
-                self.assertEqual(task["compatibility"], "unknown")
+                self.assertEqual(task["compatibility"], "compatible")
+
+    def test_remaining_smoked_failures_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "graphwalks_1M",
+            "graphwalks",
+            "meddialog_qsumm",
+            "humaneval_infilling",
+            "longbench",
+            "longbench_2wikimqa",
+            "longbench2_single",
+            "scrolls_qasper",
+            "agieval",
+            "leaderboard",
+            "leaderboard_gpqa",
+            "leaderboard_musr",
+            "tinyBenchmarks",
+            "openllm",
+            "pythia",
+            "afrimgsm-irokobench",
+            "afrixnli_en_direct",
+            "african_flores",
+            "flores_afr-eng",
+            "mafand_afr-eng",
+            "afriqa_prompt_1",
+            "afrisenti_prompt_1",
+            "masakhanews_prompt_1",
+            "masakhaner_prompt_1",
+            "masakhapos_prompt_1",
+            "nollysenti_prompt_1",
+            "sib_prompt_1",
+            "injongointent_prompt_1",
+            "include_base_44_arabic",
+            "20_newsgroups",
+            "ag_news",
+            "cnn_dailymail",
+            "doc_vqa",
+            "stsb",
+            "med_concepts_qa_atc",
+            "multimedqa",
+            "japanese_leaderboard",
+            "wmdp",
+            "pawsx",
+            "xcopa",
+            "xnli",
+            "xstorycloze",
+            "xwinograd",
+            "blimp",
+            "lambada",
+            "lambada_cloze",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"task: {task_name}\n"
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, text=config_text: text,
+                )
+
+                self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_unclassified_no_output_tasks_default_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+
+        task = annotate_task_compatibility(
+            {"name": "new_unclassified_group", "description": "new_group.yaml"},
+            lambda _path: "group: new_unclassified_group\ntask:\n  - child_task\n",
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
 
 
 class JobManagerTelemetryTests(unittest.TestCase):

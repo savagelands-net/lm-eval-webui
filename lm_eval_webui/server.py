@@ -100,6 +100,9 @@ COMPATIBLE_TASK_NAMES = {
     "code2text_php",
     "code2text_python",
     "code2text_ruby",
+    "code2text",
+    "graphwalks_128k",
+    "jfinqa",
     "jsonschema_bench_hard",
     "jsonschema_bench_medium",
 }
@@ -133,6 +136,9 @@ INCOMPATIBLE_TASK_NAMES = {
     "toksuite_italian_code_language_script_switching",
     "toksuite_stem_unicode_formatting",
     "toksuite_turkish_code_language_script_switching",
+    "graphwalks",
+    "graphwalks_1M",
+    "meddialog_qsumm",
     "tinyGSM8k",
 }
 COMPATIBLE_TASK_PATTERNS = tuple(
@@ -156,6 +162,8 @@ COMPATIBLE_TASK_PATTERNS = tuple(
         r"^mmlu_llama(?:_|$)",
         r"^mmlu_pro(?:_plus)?(?:_|$)",
         r"^metabench_gsm8k_subset$",
+        r"^adr(?:_|$)",
+        r"^ntrex(?:_|$|-)",
     )
 )
 INCOMPATIBLE_TASK_PATTERNS = tuple(
@@ -198,13 +206,48 @@ INCOMPATIBLE_TASK_PATTERNS = tuple(
         r"^mmlu_(?!.*(?:generative|flan_cot|flan_n_shot_generative|llama|pro|prox|cot)).*",
         r"^math_word_problems$",
         r"^pile_dm-mathematics$",
+        r"^20_newsgroups$",
+        r"^ag_news$",
+        r"^agieval(?:_|$)",
+        r"^afriqa(?:_|$)",
+        r"^african_flores(?:_|$)",
+        r"^afrimgsm",
+        r"^afrisenti(?:_|$)",
+        r"^afrixnli",
+        r"^belebele(?:_|$)",
+        r"^blimp$",
+        r"^cnn_dailymail$",
+        r"^doc_vqa$",
+        r"^flores(?:_|$|-)",
+        r"^humaneval_infilling$",
+        r"^include_base_44_",
+        r"^injongointent(?:_|$)",
+        r"^japanese_leaderboard$",
+        r"^lambada(?:_|$)",
+        r"^leaderboard(?:$|_gpqa$|_musr$)",
+        r"^longbench(?:_|$|2)",
+        r"^mafand(?:_|$|-)",
+        r"^masakhaner(?:_|$)",
+        r"^masakhanews(?:_|$)",
+        r"^masakhapos(?:_|$)",
+        r"^med_concepts_qa(?:_|$)",
+        r"^multimedqa$",
+        r"^nollysenti(?:_|$)",
+        r"^openllm$",
+        r"^pawsx$",
+        r"^pythia$",
+        r"^scrolls(?:_|$)",
+        r"^sib(?:_|$)",
+        r"^stsb$",
+        r"^tinyBenchmarks$",
+        r"^wmdp$",
+        r"^xcopa$",
+        r"^xnli(?:_|$)",
+        r"^xstorycloze$",
+        r"^xwinograd$",
     )
 )
-UNKNOWN_TASK_NAMES = {
-    "graphwalks_128k",
-    "graphwalks_1M",
-    "meddialog_qsumm",
-}
+UNKNOWN_TASK_NAMES: set[str] = set()
 
 
 def json_safe(value: Any) -> Any:
@@ -361,7 +404,7 @@ def annotate_task_compatibility(
     elif output_type:
         compatibility = "incompatible"
     else:
-        compatibility = "unknown"
+        compatibility = "incompatible"
     return {**task, "compatibility": compatibility}
 
 
