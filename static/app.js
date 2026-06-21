@@ -245,6 +245,23 @@ function renderSelectedJobs() {
 	const count = state.selectedJobs.size;
 	$("selectedJobCount").textContent = `${count.toLocaleString()} selected`;
 	$("clearSelectedJobs").disabled = count === 0;
+	syncSelectAllJobs();
+}
+function syncSelectAllJobs() {
+	const checkbox = $("selectAllJobs"),
+		count = state.selectedJobs.size,
+		total = state.jobs.length;
+	checkbox.disabled = total === 0;
+	checkbox.checked = total > 0 && count === total;
+	checkbox.indeterminate = count > 0 && count < total;
+}
+function toggleAllJobs() {
+	if ($("selectAllJobs").checked) {
+		state.selectedJobs = new Set(state.jobs.map((job) => job.id));
+	} else {
+		state.selectedJobs.clear();
+	}
+	renderJobs();
 }
 async function selectJob(jobId) {
 	state.selectedJobId = jobId;
@@ -613,6 +630,7 @@ function changeTaskPage(delta) {
 
 $("refreshModels").addEventListener("click", loadModels);
 $("modelFilter").addEventListener("input", renderModels);
+$("selectAllJobs").addEventListener("change", toggleAllJobs);
 $("clearSelectedJobs").addEventListener("click", clearSelectedJobs);
 $("clearFailedJobs").addEventListener("click", clearFailedJobs);
 $("refreshJobs").addEventListener("click", () =>

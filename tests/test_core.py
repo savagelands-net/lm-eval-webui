@@ -940,6 +940,8 @@ class SmokeTests(unittest.TestCase):
         script = Path("static/app.js").read_text(encoding="utf-8")
 
         self.assertIn('id="clearSelectedJobs"', index)
+        self.assertIn('id="selectAllJobs"', index)
+        self.assertIn('Select all jobs', index)
         self.assertIn('id="selectedJobCount"', index)
         self.assertIn('id="maxConcurrentJobs"', index)
         self.assertIn('id="llamacppBackend"', index)
@@ -960,6 +962,9 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="selectVisibleTasks"', index)
         self.assertIn("function selectVisibleTasks", script)
         self.assertIn("job-select", script)
+        self.assertIn("selectAllJobs", script)
+        self.assertIn("function toggleAllJobs", script)
+        self.assertIn("function syncSelectAllJobs", script)
         self.assertIn("clearSelectedJobs", script)
         self.assertIn("max_concurrent_jobs", script)
         self.assertIn("llamacpp_backend", script)
