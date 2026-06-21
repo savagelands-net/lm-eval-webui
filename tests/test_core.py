@@ -7,6 +7,7 @@ import types
 import unittest
 from importlib import import_module
 from pathlib import Path
+from typing import Any
 
 
 def symbol(module_name, attribute):
@@ -56,8 +57,47 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
 
         self.assertIn("stream_responses=True", command)
 
+    def test_eval_command_passes_selected_llamacpp_backend(self):
+        EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
+        build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
+
+        command, _env = build_eval_command(
+            EvalRequest(
+                model_id="Model-A",
+                tasks=["gsm8k"],
+                output_path="out",
+                llamacpp_backend="vulkan",
+            ),
+            project_root="/repo",
+        )
+
+        self.assertIn("llamacpp_backend=vulkan", command)
+
 
 class LemonadeModelTests(unittest.TestCase):
+    def test_add_runtime_options_adds_selected_llamacpp_backend(self):
+        add_runtime_options = symbol(
+            "lm_eval_webui.lemonade_model", "add_runtime_options"
+        )
+
+        payload: dict[str, Any] = {"model": "Model-A"}
+        add_runtime_options(payload, llamacpp_backend="rocm")
+
+        recipe_options = payload["recipe_options"]
+        self.assertEqual(payload["llamacpp_backend"], "rocm")
+        self.assertIsInstance(recipe_options, dict)
+        self.assertEqual(recipe_options["llamacpp_backend"], "rocm")
+
+    def test_add_runtime_options_omits_auto_llamacpp_backend(self):
+        add_runtime_options = symbol(
+            "lm_eval_webui.lemonade_model", "add_runtime_options"
+        )
+
+        payload: dict[str, Any] = {"model": "Model-A"}
+        add_runtime_options(payload, llamacpp_backend="")
+
+        self.assertNotIn("llamacpp_backend", payload)
+
     def test_stream_response_json_records_client_ttft(self):
         stream_response_json = symbol(
             "lm_eval_webui.lemonade_model", "stream_response_json"
@@ -353,6 +393,30 @@ output_type: generate_until
 
 
 class JobManagerTelemetryTests(unittest.TestCase):
+    def test_job_persists_requested_llamacpp_backend(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                run_async=False,
+                launcher=lambda _command, _env, _log_path: 0,
+            )
+
+            created = manager.create_jobs(
+                {
+                    "model_ids": ["Model-A"],
+                    "tasks": ["gsm8k"],
+                    "llamacpp_backend": "vulkan",
+                }
+            )
+            job = manager.get_job(created[0]["id"])
+
+        self.assertIn("llamacpp_backend=vulkan", job["command"])
+        self.assertEqual(job["requested_llamacpp_backend"], "vulkan")
+        self.assertEqual(job["provider_backend"], "vulkan")
+
     def test_successful_job_persists_runtime_backend_metadata(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
 
@@ -801,6 +865,11 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="clearSelectedJobs"', index)
         self.assertIn('id="selectedJobCount"', index)
         self.assertIn('id="maxConcurrentJobs"', index)
+        self.assertIn('id="llamacppBackend"', index)
+        self.assertIn("Model runtime options", index)
+        self.assertIn("Benchmark options", index)
+        self.assertIn('value="vulkan"', index)
+        self.assertIn('value="rocm"', index)
         self.assertIn('id="hideGatedTasks"', index)
         self.assertIn("gated</label", index)
         self.assertIn('value="1"', index)
@@ -816,6 +885,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("job-select", script)
         self.assertIn("clearSelectedJobs", script)
         self.assertIn("max_concurrent_jobs", script)
+        self.assertIn("llamacpp_backend", script)
+        self.assertIn("llamacppBackend", script)
         self.assertIn("openai_base_url", script)
         self.assertIn("openaiBaseUrl", script)
         self.assertIn("function modelForEntry", script)

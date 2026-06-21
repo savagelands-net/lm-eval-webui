@@ -24,6 +24,7 @@ from .telemetry import aggregate_telemetry_file
 Launcher = Callable[[list[str], dict[str, str], Path], int]
 TelemetryProbe = Callable[[str, str], dict[str, Any]]
 ModelMetadataProbe = Callable[[str, str], dict[str, Any]]
+LLAMACPP_BACKENDS = {"system", "vulkan", "rocm"}
 
 
 def default_launcher(command: list[str], env: dict[str, str], log_path: Path) -> int:
@@ -189,6 +190,9 @@ class JobManager:
         openai_base_url = payload.get(
             "openai_base_url", payload.get("lemonade_base_url", self.openai_base_url)
         )
+        llamacpp_backend = self._optional_llamacpp_backend(
+            payload.get("llamacpp_backend")
+        )
         request = EvalRequest(
             model_id=model_id,
             tasks=tasks,
@@ -207,6 +211,7 @@ class JobManager:
             log_samples=bool(payload.get("log_samples", False)),
             predict_only=bool(payload.get("predict_only", False)),
             telemetry_path=str(telemetry_path),
+            llamacpp_backend=llamacpp_backend,
         )
         command, env = build_eval_command(request, self.project_root)
         now = time.time()
@@ -230,6 +235,16 @@ class JobManager:
             "error": None,
             "_env": env,
         }
+        if llamacpp_backend:
+            job.update(
+                {
+                    "requested_llamacpp_backend": llamacpp_backend,
+                    "provider_backend": llamacpp_backend,
+                    "lemonade_backend": llamacpp_backend,
+                    "runtime_backend": llamacpp_backend,
+                    "llamacpp_backend": llamacpp_backend,
+                }
+            )
         self._write_job(job)
         return self._public_job(job)
 
@@ -389,3 +404,15 @@ class JobManager:
         if value in (None, ""):
             return None
         return int(value)
+
+    @staticmethod
+    def _optional_llamacpp_backend(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        normalized = str(value).strip().lower()
+        if normalized in {"auto", "default"}:
+            return None
+        if normalized not in LLAMACPP_BACKENDS:
+            allowed = ", ".join(sorted(LLAMACPP_BACKENDS))
+            raise ValueError(f"llama.cpp backend must be one of: {allowed}")
+        return normalized

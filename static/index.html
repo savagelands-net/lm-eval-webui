@@ -98,7 +98,21 @@
           </div>
         </div>
         <details>
-          <summary>Advanced options</summary>
+          <summary>Model runtime options</summary>
+          <div class="grid four">
+            <label
+              >llama.cpp backend
+              <select id="llamacppBackend">
+                <option value="">Auto / endpoint default</option>
+                <option value="system">system</option>
+                <option value="vulkan">vulkan</option>
+                <option value="rocm">rocm</option>
+              </select>
+            </label>
+          </div>
+        </details>
+        <details>
+          <summary>Benchmark options</summary>
           <div class="grid four">
             <label>Limit <input id="limit" value="1" /></label>
             <label

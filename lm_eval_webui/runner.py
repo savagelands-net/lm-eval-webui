@@ -37,6 +37,7 @@ class EvalRequest:
     log_samples: bool = False
     predict_only: bool = False
     telemetry_path: str | None = None
+    llamacpp_backend: str | None = None
     extra_args: list[str] | None = None
 
 
@@ -84,6 +85,8 @@ def build_eval_command(
     ]
     if request.telemetry_path:
         model_args.append(f"telemetry_path={request.telemetry_path}")
+    if request.llamacpp_backend:
+        model_args.append(f"llamacpp_backend={request.llamacpp_backend}")
 
     command = [
         find_lm_eval_python(request.lm_eval_python),

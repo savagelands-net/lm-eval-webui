@@ -55,6 +55,20 @@ def truthy(value: Any) -> bool:
     return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+def add_runtime_options(
+    payload: dict[str, Any], llamacpp_backend: Any = None
+) -> dict[str, Any]:
+    backend = str(llamacpp_backend or "").strip().lower()
+    if backend and backend not in {"auto", "default"}:
+        payload["llamacpp_backend"] = backend
+        recipe_options = payload.get("recipe_options")
+        if not isinstance(recipe_options, dict):
+            recipe_options = {}
+        recipe_options["llamacpp_backend"] = backend
+        payload["recipe_options"] = recipe_options
+    return payload
+
+
 def stream_response_json(
     response: Any,
     started: float,
@@ -147,9 +161,11 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
         *args: Any,
         telemetry_path: str | None = None,
         stream_responses: Any = False,
+        llamacpp_backend: Any = None,
         **kwargs: Any,
     ) -> None:
         self._stream_responses = truthy(stream_responses)
+        self._llamacpp_backend = llamacpp_backend
         super().__init__(*args, **kwargs)
         global _CURRENT_TELEMETRY_PATH
         _CURRENT_TELEMETRY_PATH = str(telemetry_path) if telemetry_path else None
@@ -179,6 +195,7 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
             eos=self.eos_string,
             **kwargs,
         )
+        add_runtime_options(payload, self._llamacpp_backend)
         payload["stream"] = True
         requests_module = importlib.import_module("requests")
 

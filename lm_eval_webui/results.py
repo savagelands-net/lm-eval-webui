@@ -99,8 +99,10 @@ def extract_leaderboard_entry(
 ) -> dict[str, Any]:
     raw_model_metadata = model_metadata or job.get("model_metadata") or {}
     model_metadata = raw_model_metadata if isinstance(raw_model_metadata, dict) else {}
-    config = result_json.get("config") or {}
-    telemetry = job.get("telemetry") or {}
+    raw_config = result_json.get("config") or {}
+    config = raw_config if isinstance(raw_config, dict) else {}
+    raw_telemetry = job.get("telemetry") or {}
+    telemetry = raw_telemetry if isinstance(raw_telemetry, dict) else {}
     task_scores: list[dict[str, Any]] = []
     for task, metrics in (result_json.get("results") or {}).items():
         if not isinstance(metrics, dict):
@@ -122,9 +124,7 @@ def extract_leaderboard_entry(
                 "samples": _samples_for_task(str(task), result_json, metrics),
             }
         )
-    score_values = [
-        task["score"] for task in task_scores if task.get("score") is not None
-    ]
+    score_values = [task["score"] for task in task_scores]
     provider_backend = (
         model_metadata.get("runtime_backend")
         or model_metadata.get("llamacpp_backend")

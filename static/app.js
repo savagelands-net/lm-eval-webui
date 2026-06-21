@@ -436,6 +436,7 @@ async function startJobs() {
 		model_ids: modelIds,
 		tasks,
 		openai_base_url: $("openaiBaseUrl").value.trim(),
+		llamacpp_backend: $("llamacppBackend").value || null,
 		limit: $("limit").value.trim() || null,
 		num_fewshot:
 			$("numFewshot").value === "" ? null : Number($("numFewshot").value),
