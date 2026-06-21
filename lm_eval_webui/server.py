@@ -63,6 +63,9 @@ _TOP_LEVEL_TASK_LIST_RE = re.compile(r"^task\s*:\s*$")
 _DATASET_PATH_RE = re.compile(
     r"^\s*dataset_path\s*:\s*['\"]?([^'\"\n#]+)", re.MULTILINE
 )
+_INCLUDE_RE = re.compile(
+    r"^\s*['\"]?include['\"]?\s*:\s*['\"]?([^'\"\n#\[{]+)", re.MULTILINE
+)
 _BLEURT_METRIC_RE = re.compile(r"^\s*-?\s*metric\s*:\s*['\"]?bleurt\b", re.MULTILINE)
 _UNAVAILABLE_METRIC_RE = re.compile(
     r"^\s*-?\s*metric\s*:\s*['\"]?(?:wer)\b", re.MULTILINE
@@ -130,12 +133,77 @@ INCOMPATIBLE_TASK_NAMES = {
     "toksuite_italian_code_language_script_switching",
     "toksuite_stem_unicode_formatting",
     "toksuite_turkish_code_language_script_switching",
+    "tinyGSM8k",
 }
+COMPATIBLE_TASK_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"^bigbench_.*_generate_until$",
+        r"^bbh(?:_|$)",
+        r"^truthfulqa-multi_gen_",
+        r"^nortruthfulqa_gen_",
+        r"^hendrycks_math",
+        r"^leaderboard_(?:instruction_following|math_hard)$",
+        r"^minerva_math(?:_|$)",
+        r"^score_(?:prompt_robustness_math|non_greedy_robustness_math|robustness_math)$",
+        r"^score_robustness_mmlu_pro$",
+        r"^mmlu_cot_llama(?:_|$)",
+        r"^mmlu_prox(?:_lite)?_[a-z]{2}(?:_|$)",
+        r"^mmlu_(?:.*_generative(?:_spanish)?|redux_.*_generative)$",
+        r"^mmlu_flan_cot_(?:fewshot|zeroshot)(?:_|$)",
+        r"^mmlu_flan_n_shot_generative(?:_|$)",
+        r"^mmlu_(?:de|es|fr|hi|it|pt|th)_llama(?:_|$)",
+        r"^mmlu_llama(?:_|$)",
+        r"^mmlu_pro(?:_plus)?(?:_|$)",
+        r"^metabench_gsm8k_subset$",
+    )
+)
+INCOMPATIBLE_TASK_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"^bigbench_.*multiple_choice.*",
+        r"^truthfulqa.*_(?:mc1|mc2)(?:_|$)",
+        r"^truthfulqa(?:$|[-_]multi$|_multilingual$|_gl$)",
+        r"^truthfulqa_mc2$",
+        r"^nortruthfulqa_mc_",
+        r"^global_mmlu_",
+        r"^mmmlu(?:_|$)",
+        r"^m_mmlu(?:_|$)",
+        r"^cmmlu(?:_|$)",
+        r"^kmmlu(?:_|$)",
+        r"^mmlusr(?:_|$)",
+        r"^openai_mmlu(?:_|$)",
+        r"^AraDiCE_ArabicMMLU",
+        r"^arabicmmlu(?:_|$)",
+        r"^darijammlu(?:_|$)",
+        r"^egymmlu(?:_|$)",
+        r"^afrimmlu",
+        r"^uhura[-_]arc[-_]easy(?:_|$)",
+        r"^naijarc(?:_|$)",
+        r"^ceval-valid_",
+        r"^noor_",
+        r"^turkishmmlu(?:_|$)",
+        r"^tmmluplus(?:_|$)",
+        r"^toksuite_math(?:_|$)",
+        r"^agieval_.*math",
+        r"^arabic_leaderboard_.*(?:arc|hellaswag|mmlu)",
+        r"^afrobench_mmlu_tasks$",
+        r"^ai2_arc$",
+        r"^arc_(?:multilingual|challenge_mt)$",
+        r"^hellaswag_multilingual$",
+        r"^leaderboard_bbh$",
+        r"^libra_complex_reasoning_and_mathematical_problems$",
+        r"^metabench_(?:arc|hellaswag|mmlu|truthfulqa|winogrande)_subset$",
+        r"^mmlu$",
+        r"^mmlu_(?!.*(?:generative|flan_cot|flan_n_shot_generative|llama|pro|prox|cot)).*",
+        r"^math_word_problems$",
+        r"^pile_dm-mathematics$",
+    )
+)
 UNKNOWN_TASK_NAMES = {
     "graphwalks_128k",
     "graphwalks_1M",
     "meddialog_qsumm",
-    "tinyGSM8k",
 }
 
 
@@ -212,6 +280,10 @@ def task_category(name: str) -> str:
     return "Other"
 
 
+def task_matches_pattern(name: str, patterns: tuple[re.Pattern[str], ...]) -> bool:
+    return any(pattern.search(name) for pattern in patterns)
+
+
 def load_available_tasks(
     lm_eval_python: str | None = None,
     run_command: Callable[..., Any] = subprocess.run,
@@ -262,13 +334,18 @@ def annotate_task_compatibility(
     config_text = config_reader(config_path) if config_path else None
     config_text = config_text or ""
     output_type = task_output_type(config_text)
-    if task.get("name", "") in INCOMPATIBLE_TASK_NAMES:
+    task_name = task.get("name", "")
+    if task_name in INCOMPATIBLE_TASK_NAMES or task_matches_pattern(
+        task_name, INCOMPATIBLE_TASK_PATTERNS
+    ):
         compatibility = "incompatible"
     elif uses_gated_dataset(config_text):
         compatibility = "gated"
-    elif task.get("name", "") in UNKNOWN_TASK_NAMES:
+    elif task_name in UNKNOWN_TASK_NAMES:
         compatibility = "unknown"
-    elif task.get("name", "") in COMPATIBLE_TASK_NAMES:
+    elif task_name in COMPATIBLE_TASK_NAMES or task_matches_pattern(
+        task_name, COMPATIBLE_TASK_PATTERNS
+    ):
         compatibility = "compatible"
     elif (
         has_malformed_group_task_entries(config_text)
@@ -341,7 +418,10 @@ def has_malformed_group_task_entries(config_text: str) -> bool:
             break
         if not stripped.startswith("- "):
             continue
-        first_key = stripped[2:].split(":", 1)[0].strip()
+        entry = stripped[2:].strip()
+        if ":" not in entry:
+            continue
+        first_key = entry.split(":", 1)[0].strip()
         if first_key and first_key not in {"task", "group"}:
             return True
     return False
@@ -376,25 +456,93 @@ def read_lm_eval_config(
 ) -> str | None:
     if not config_path:
         return None
+    root = (
+        Path(package_root)
+        if package_root is not None
+        else find_lm_eval_package_root("python")
+    )
+    path = _lm_eval_config_path(config_path, root)
+    if path is None:
+        return None
+    return _read_lm_eval_config(path, root, set())
+
+
+def _lm_eval_config_path(config_path: str, package_root: Path | None) -> Path | None:
     path = Path(config_path)
-    if not path.is_absolute():
-        root = (
-            Path(package_root)
-            if package_root is not None
-            else find_lm_eval_package_root("python")
-        )
-        if root is None:
-            return None
-        parts = path.parts
-        path = (
-            root.joinpath(*parts[1:])
-            if parts and parts[0] == "lm_eval"
-            else root / path
-        )
+    if path.is_absolute():
+        return path
+    if package_root is None:
+        return None
+    parts = path.parts
+    path = (
+        package_root.joinpath(*parts[1:])
+        if parts and parts[0] == "lm_eval"
+        else package_root / path
+    )
+    return path
+
+
+def _read_lm_eval_config(
+    path: Path, package_root: Path | None, seen: set[Path]
+) -> str | None:
     try:
-        return path.read_text(encoding="utf-8")
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    if resolved in seen:
+        return ""
+    seen.add(resolved)
+    try:
+        config_text = path.read_text(encoding="utf-8")
     except OSError:
         return None
+    included_texts: list[str] = []
+    for match in _INCLUDE_RE.finditer(config_text):
+        include_path = _resolve_lm_eval_include(match.group(1), path, package_root)
+        if include_path is None:
+            continue
+        include_text = _read_lm_eval_config(include_path, package_root, seen)
+        if include_text:
+            included_texts.append(include_text)
+    return "\n".join([*included_texts, config_text])
+
+
+def _resolve_lm_eval_include(
+    include_path: str, source_path: Path, package_root: Path | None
+) -> Path | None:
+    raw = include_path.strip().strip("'\"")
+    if not raw:
+        return None
+    path = Path(raw)
+    candidates: list[Path] = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
+        candidates.append(source_path.parent / path)
+        if package_root is not None:
+            parts = path.parts
+            candidates.append(
+                package_root.joinpath(*parts[1:])
+                if parts and parts[0] == "lm_eval"
+                else package_root / path
+            )
+    for candidate in _include_path_candidates(candidates):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _include_path_candidates(paths: list[Path]) -> list[Path]:
+    candidates: list[Path] = []
+    for path in paths:
+        candidates.append(path)
+        if path.suffix != ".yaml":
+            candidates.append(path.with_suffix(".yaml"))
+            candidates.append(Path(f"{path}.yaml"))
+        path_text = str(path)
+        if path_text.endswith("_yaml"):
+            candidates.append(Path(f"{path_text[:-5]}.yaml"))
+    return candidates
 
 
 def make_handler(

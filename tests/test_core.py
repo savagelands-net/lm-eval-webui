@@ -444,6 +444,117 @@ output_type: generate_until
 
                 self.assertEqual(task["compatibility"], "incompatible")
 
+    def test_smoked_reasoning_instruction_math_tasks_are_marked_compatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "bigbench_natural_instructions_generate_until",
+            "bigbench_elementary_math_qa_generate_until",
+            "hendrycks_math500",
+            "bbh_cot_fewshot_boolean_expressions",
+            "truthfulqa-multi_gen_en",
+            "mmlu_cot_llama_abstract_algebra",
+            "mmlu_prox_en_biology",
+            "mmlu_prox_lite_en_biology",
+            "metabench_gsm8k_subset",
+            "score_prompt_robustness_math",
+            "score_non_greedy_robustness_math",
+            "score_robustness_math",
+            "score_robustness_mmlu_pro",
+            "leaderboard_instruction_following",
+            "leaderboard_math_hard",
+            "minerva_math",
+            "mmlu_college_mathematics_generative",
+            "mmlu_llama_college_mathematics",
+            "mmlu_pro_biology",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
+"""
+
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, text=config_text: text,
+                )
+
+                self.assertEqual(task["compatibility"], "compatible")
+
+    def test_smoked_reasoning_instruction_math_failures_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "tinyGSM8k",
+            "bigbench_elementary_math_qa_multiple_choice",
+            "agieval_sat_math",
+            "pile_dm-mathematics",
+            "truthfulqa-multi_mc1_en",
+            "afrimmlu_direct_eng_prompt_1",
+            "tmmluplus_logic_reasoning",
+            "global_mmlu_full_en_abstract_algebra",
+            "toksuite_math_canonical",
+            "math_word_problems",
+            "m_mmlu_en",
+            "cmmlu_college_mathematics",
+            "arc_multilingual",
+            "metabench_mmlu_subset",
+            "metabench_arc_subset",
+            "AraDiCE_ArabicMMLU_egy",
+            "uhura-arc-easy_en_prompt_1",
+            "naijarc_yor_prompt_1",
+            "openai_mmlu_yor_prompt_1",
+            "openai_mmlu",
+            "mmmlu_zh_cn_abstract_algebra",
+            "nortruthfulqa_mc_nno",
+            "nortruthfulqa_mc_nob",
+            "truthfulqa",
+            "truthfulqa-multi",
+            "truthfulqa_gl",
+            "truthfulqa_multi",
+            "truthfulqa_multilingual",
+            "libra_complex_reasoning_and_mathematical_problems",
+            "leaderboard_bbh",
+            "mmlu_college_mathematics",
+            "mmlu_flan_n_shot_loglikelihood_college_mathematics",
+            "mmlu_humanities_continuation",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
+output_type: generate_until
+"""
+
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, text=config_text: text,
+                )
+
+                self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_lm_eval_config_reader_expands_simple_includes(self):
+        read_lm_eval_config = symbol("lm_eval_webui.server", "read_lm_eval_config")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tasks_dir = root / "tasks"
+            tasks_dir.mkdir()
+            (tasks_dir / "generate_until_template.yaml").write_text(
+                "output_type: generate_until\n", encoding="utf-8"
+            )
+            task_path = tasks_dir / "example.yaml"
+            task_path.write_text(
+                "include: generate_until_template_yaml\ntask: example\n",
+                encoding="utf-8",
+            )
+
+            config_text = read_lm_eval_config(str(task_path), root)
+
+        self.assertIsNotNone(config_text)
+        self.assertIn("output_type: generate_until", config_text or "")
+        self.assertIn("task: example", config_text or "")
+
     def test_slow_unverified_tasks_are_marked_unknown(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
@@ -452,7 +563,6 @@ output_type: generate_until
             "meddialog_qsumm",
             "graphwalks_128k",
             "graphwalks_1M",
-            "tinyGSM8k",
         ):
             with self.subTest(task_name=task_name):
                 config_text = f"""
