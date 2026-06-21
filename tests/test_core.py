@@ -367,6 +367,83 @@ output_type: generate_until
 
         self.assertEqual(task["compatibility"], "incompatible")
 
+    def test_smoked_coding_tasks_are_marked_compatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "jsonschema_bench",
+            "bigbench_bbq_lite_json_generate_until",
+            "bigbench_code_line_description_generate_until",
+            "bigbench_codenames_generate_until",
+            "bigbench_simple_arithmetic_json_generate_until",
+            "bigbench_simple_arithmetic_json_subtasks_generate_until",
+            "code2text_go",
+            "code2text_java",
+            "code2text_javascript",
+            "code2text_php",
+            "code2text_python",
+            "code2text_ruby",
+            "jsonschema_bench_hard",
+            "jsonschema_bench_medium",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
+"""
+
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, text=config_text: text,
+                )
+
+                self.assertEqual(task["compatibility"], "compatible")
+
+    def test_smoked_coding_failures_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task_name in (
+            "bigbench_bbq_lite_json_multiple_choice",
+            "bigbench_code_line_description_multiple_choice",
+            "bigbench_simple_arithmetic_json_multiple_choice_generate_until",
+            "bigbench_simple_arithmetic_multiple_targets_json_generate_until",
+            "humaneval_64_instruct",
+            "humaneval_instruct",
+            "humaneval_plus",
+            "humaneval_random_span_infilling",
+            "humaneval_single_line_infilling",
+            "humaneval_single_line_infilling_light",
+            "infinitebench_code_debug",
+            "infinitebench_code_run",
+            "longbench_code_tasks",
+            "longbench_code_tasks_e",
+            "longbench_lcc",
+            "longbench_lcc_e",
+            "longbench_repobench-p",
+            "longbench_repobench-p_e",
+            "longbench2_code",
+            "mbpp_plus",
+            "mbpp_plus_instruct",
+            "toksuite_chinese_code_language_script_switching",
+            "toksuite_farsi_code_language_script_switching",
+            "toksuite_italian_code_language_script_switching",
+            "toksuite_stem_unicode_formatting",
+            "toksuite_turkish_code_language_script_switching",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
+output_type: generate_until
+"""
+
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, text=config_text: text,
+                )
+
+                self.assertEqual(task["compatibility"], "incompatible")
+
     def test_slow_unverified_tasks_are_marked_unknown(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"

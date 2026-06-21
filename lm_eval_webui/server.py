@@ -48,7 +48,10 @@ COMMON_TASKS = [
 ]
 TASK_CATEGORY_PATTERNS = [
     ("Math", ("gsm8k", "math", "aime", "amc", "minerva")),
-    ("Coding / Structured Output", ("json", "schema", "code", "humaneval", "mbpp")),
+    (
+        "Coding / Structured Output",
+        ("json", "schema", "code", "humaneval", "mbpp", "repobench", "longbench_lcc"),
+    ),
     ("Instruction Following", ("ifeval", "instruction")),
     ("Reasoning", ("arc", "bbh", "truthful", "mmlu", "hellaswag", "winogrande")),
 ]
@@ -81,7 +84,53 @@ UNAVAILABLE_DATASET_PATHS = {
     "proxectonos/summarization_gl",
 }
 GATED_DATASET_PATHS = {"gplsi/cocoteros_va", "gplsi/truthfulqa_va"}
-INCOMPATIBLE_TASK_NAMES = {"ifeval_ca", "ifeval_es", "niah_single_1"}
+COMPATIBLE_TASK_NAMES = {
+    "jsonschema_bench",
+    "bigbench_bbq_lite_json_generate_until",
+    "bigbench_code_line_description_generate_until",
+    "bigbench_codenames_generate_until",
+    "bigbench_simple_arithmetic_json_generate_until",
+    "bigbench_simple_arithmetic_json_subtasks_generate_until",
+    "code2text_go",
+    "code2text_java",
+    "code2text_javascript",
+    "code2text_php",
+    "code2text_python",
+    "code2text_ruby",
+    "jsonschema_bench_hard",
+    "jsonschema_bench_medium",
+}
+INCOMPATIBLE_TASK_NAMES = {
+    "ifeval_ca",
+    "ifeval_es",
+    "niah_single_1",
+    "bigbench_bbq_lite_json_multiple_choice",
+    "bigbench_code_line_description_multiple_choice",
+    "bigbench_simple_arithmetic_json_multiple_choice_generate_until",
+    "bigbench_simple_arithmetic_multiple_targets_json_generate_until",
+    "humaneval_64_instruct",
+    "humaneval_instruct",
+    "humaneval_plus",
+    "humaneval_random_span_infilling",
+    "humaneval_single_line_infilling",
+    "humaneval_single_line_infilling_light",
+    "infinitebench_code_debug",
+    "infinitebench_code_run",
+    "longbench_code_tasks",
+    "longbench_code_tasks_e",
+    "longbench_lcc",
+    "longbench_lcc_e",
+    "longbench_repobench-p",
+    "longbench_repobench-p_e",
+    "longbench2_code",
+    "mbpp_plus",
+    "mbpp_plus_instruct",
+    "toksuite_chinese_code_language_script_switching",
+    "toksuite_farsi_code_language_script_switching",
+    "toksuite_italian_code_language_script_switching",
+    "toksuite_stem_unicode_formatting",
+    "toksuite_turkish_code_language_script_switching",
+}
 UNKNOWN_TASK_NAMES = {
     "graphwalks_128k",
     "graphwalks_1M",
@@ -219,6 +268,8 @@ def annotate_task_compatibility(
         compatibility = "gated"
     elif task.get("name", "") in UNKNOWN_TASK_NAMES:
         compatibility = "unknown"
+    elif task.get("name", "") in COMPATIBLE_TASK_NAMES:
+        compatibility = "compatible"
     elif (
         has_malformed_group_task_entries(config_text)
         or uses_unsupported_dataset_script(config_text)
