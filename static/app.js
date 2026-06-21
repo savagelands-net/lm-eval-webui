@@ -9,6 +9,7 @@ const state = {
 	selectedModels: new Set(),
 	selectedTasks: new Set(),
 	visibleTaskNames: [],
+	hasAutoSelectedTask: false,
 	taskPage: 0,
 };
 
@@ -49,6 +50,7 @@ async function loadTasks() {
 	state.visibleTaskNames = [];
 	setTaskLoading(true);
 	$("selectVisibleTasks").disabled = true;
+	$("unselectVisibleTasks").disabled = true;
 	setText($("taskList"), "Loading lm-eval tasks…");
 	try {
 		const payload = await api("/api/tasks");
@@ -116,8 +118,10 @@ function renderModels() {
 function renderTasks() {
 	const list = $("taskList");
 	list.replaceChildren();
-	if (!state.selectedTasks.size && state.tasks.length)
+	if (!state.selectedTasks.size && state.tasks.length && !state.hasAutoSelectedTask) {
 		state.selectedTasks.add(state.tasks[0].name);
+		state.hasAutoSelectedTask = true;
+	}
 	renderSelectedTasks();
 	const filter = $("taskFilter").value.trim().toLowerCase();
 	const hideIncompatible = $("hideIncompatibleTasks").checked;
@@ -147,6 +151,7 @@ function renderTasks() {
 	$("taskPrev").disabled = state.taskPage <= 0;
 	$("taskNext").disabled = state.taskPage >= pageCount - 1;
 	$("selectVisibleTasks").disabled = renderedTasks.length === 0;
+	$("unselectVisibleTasks").disabled = renderedTasks.length === 0;
 	renderedTasks.forEach((task) => {
 		const item = div("item");
 		const label = document.createElement("label");
@@ -177,6 +182,12 @@ function setTaskLoading(isLoading) {
 function selectVisibleTasks() {
 	state.visibleTaskNames.forEach((taskName) =>
 		state.selectedTasks.add(taskName),
+	);
+	renderTasks();
+}
+function unselectVisibleTasks() {
+	state.visibleTaskNames.forEach((taskName) =>
+		state.selectedTasks.delete(taskName),
 	);
 	renderTasks();
 }
@@ -641,6 +652,7 @@ $("refreshAll").addEventListener("click", () =>
 );
 $("startJobs").addEventListener("click", startJobs);
 $("selectVisibleTasks").addEventListener("click", selectVisibleTasks);
+$("unselectVisibleTasks").addEventListener("click", unselectVisibleTasks);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);
 $("hideGatedTasks").addEventListener("change", resetTaskPage);

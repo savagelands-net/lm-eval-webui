@@ -1038,6 +1038,28 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("no-store", server)
         self.assertIn("BrokenPipeError", server)
 
+    def test_static_ui_exposes_visible_task_bulk_controls(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="selectVisibleTasks"', index)
+        self.assertIn('id="unselectVisibleTasks"', index)
+        self.assertIn("Select visible", index)
+        self.assertIn("Unselect visible", index)
+        self.assertIn("function selectVisibleTasks", script)
+        self.assertIn("function unselectVisibleTasks", script)
+        self.assertIn("state.selectedTasks.delete(taskName)", script)
+        self.assertIn("hasAutoSelectedTask", script)
+        self.assertIn("!state.hasAutoSelectedTask", script)
+        self.assertIn(
+            '$("selectVisibleTasks").addEventListener("click", selectVisibleTasks)',
+            script,
+        )
+        self.assertIn(
+            '$("unselectVisibleTasks").addEventListener("click", unselectVisibleTasks)',
+            script,
+        )
+
     def test_common_tasks_have_categories(self):
         common_tasks = symbol("lm_eval_webui.server", "COMMON_TASKS")
         by_name = {task["name"]: task for task in common_tasks}
