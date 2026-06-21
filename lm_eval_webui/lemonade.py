@@ -56,9 +56,7 @@ def loaded_model_metadata_from_health(
         return {
             "model_name": model_name,
             "recipe": recipe,
-            "llamacpp_backend": str(llamacpp_backend)
-            if llamacpp_backend
-            else None,
+            "llamacpp_backend": str(llamacpp_backend) if llamacpp_backend else None,
             "runtime_backend": runtime_backend,
             "device": loaded.get("device"),
             "checkpoint": loaded.get("checkpoint", ""),

@@ -98,9 +98,7 @@ def extract_leaderboard_entry(
     model_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw_model_metadata = model_metadata or job.get("model_metadata") or {}
-    model_metadata = (
-        raw_model_metadata if isinstance(raw_model_metadata, dict) else {}
-    )
+    model_metadata = raw_model_metadata if isinstance(raw_model_metadata, dict) else {}
     config = result_json.get("config") or {}
     telemetry = job.get("telemetry") or {}
     task_scores: list[dict[str, Any]] = []
