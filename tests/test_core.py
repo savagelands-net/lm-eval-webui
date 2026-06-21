@@ -1178,6 +1178,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('value="rocm"', index)
         self.assertIn('id="hideGatedTasks"', index)
         self.assertIn("gated</label", index)
+        self.assertNotIn('id="hideUnknownTasks"', index)
+        self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)
         self.assertIn("lm-eval Benchmark WebUI", index)
         self.assertNotIn("Local lm-eval Benchmark WebUI", index)

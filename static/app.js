@@ -126,11 +126,9 @@ function renderTasks() {
 	const filter = $("taskFilter").value.trim().toLowerCase();
 	const hideIncompatible = $("hideIncompatibleTasks").checked;
 	const hideGated = $("hideGatedTasks").checked;
-	const hideUnknown = $("hideUnknownTasks").checked;
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideGated && task.compatibility === "gated") return false;
-		if (hideUnknown && task.compatibility === "unknown") return false;
 		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
 			.toLowerCase()
 			.includes(filter);
@@ -656,7 +654,6 @@ $("unselectVisibleTasks").addEventListener("click", unselectVisibleTasks);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);
 $("hideGatedTasks").addEventListener("change", resetTaskPage);
-$("hideUnknownTasks").addEventListener("change", resetTaskPage);
 $("taskPrev").addEventListener("click", () => changeTaskPage(-1));
 $("taskNext").addEventListener("click", () => changeTaskPage(1));
 $("metricSelect").addEventListener("change", renderResults);
