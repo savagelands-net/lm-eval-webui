@@ -251,7 +251,7 @@ UNKNOWN_TASK_NAMES: set[str] = set()
 NON_ENGLISH_TASK_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"(?:^|[_-])(?:af|am|ar|bn|ca|cs|da|de|el|es|eu|fa|fi|fr|gl|gu|ha|hi|hr|hu|hy|id|it|ja|kn|ko|ml|mr|ne|nl|nno|nob|nso|pt|ro|ru|sk|sr|sv|sw|ta|te|th|tr|uk|ur|vi|wo|yo|zh|zu)(?:[_-]|$)",
+        r"(?:^|[_-])(?:af|am|ar|bn|ca|cs|da|de|el|es|eu|fa|fi|fr|gl|gu|ha|hi|hr|hu|hy|id|it|ja|kn|ko|ml|mr|ne|nl|nno|nob|nso|pt|ro|ru|sk|sr|sv|sw|ta|te|th|tr|uk|ur|vi|wo|yo|zh|zu)(?:[^a-z0-9]|$)",
         r"^afri",
         r"^afrobench",
         r"^arab",
@@ -267,6 +267,7 @@ NON_ENGLISH_TASK_PATTERNS = tuple(
         r"^french",
         r"^galician",
         r"^global_mmlu_(?!full_en)",
+        r"^global_piqa_prompted_(?!eng_latn(?:[^a-z0-9]|$))",
         r"^haerae",
         r"^hrm8k(?!_en)",
         r"^include_base_44_",
@@ -287,8 +288,10 @@ NON_ENGLISH_TASK_PATTERNS = tuple(
         r"^nor",
         r"^ntrex",
         r"^openai_mmlu_(?!eng|en)",
+        r"^pisa_(?!en(?:[^a-z0-9]|$))",
         r"^portuguese",
         r"^spanish",
+        r"(?:^|[_-])spanish[a-z]*(?:[^a-z0-9]|$)",
         r"^tatoeba",
         r"^tmlu",
         r"^tmmlu",
@@ -301,6 +304,8 @@ NON_ENGLISH_TASK_PATTERNS = tuple(
         r"^uyghur",
         r"^wmt",
         r"^xlsum",
+        r"^xquad_(?!en(?:[^a-z0-9]|$))",
+        r"^xquag_(?!en(?:[^a-z0-9]|$))",
         r"^xnli",
         r"^xstorycloze",
         r"^xwinograd",

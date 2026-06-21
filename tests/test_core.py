@@ -566,6 +566,20 @@ output_type: generate_until
             "include_base_44_arabic",
             "flores_afr-eng",
             "toksuite_turkish_web_search_query",
+            "mmlu_redux_spanish_generative",
+            "mmlu_high_school_mathematics_generative_spanish",
+            "global_piqa_prompted_spa_latn_spai",
+            "global_piqa_prompted_deu_latn",
+            "global_piqa_prompted_jpn_jpan",
+            "pisa_ch",
+            "pisa_de",
+            "pisa_es",
+            "pisa_fr",
+            "pisa_it",
+            "xquad_ar",
+            "xquad_de",
+            "xquad_es",
+            "xquad_zh",
         ):
             with self.subTest(task_name=task_name):
                 config_text = f"task: {task_name}\n"
@@ -585,6 +599,10 @@ output_type: generate_until
             "mmlu_prox_en_biology",
             "truthfulqa-multi_gen_en",
             "code2text_python",
+            "global_piqa_prompted_eng_latn",
+            "pisa_en",
+            "pisa_en_llm_judged",
+            "xquad_en",
         ):
             with self.subTest(task_name=task_name):
                 config_text = f"task: {task_name}\n"
