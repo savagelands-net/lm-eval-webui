@@ -23,6 +23,15 @@ _TASK_CATEGORIES = {
     "jsonschema_bench_easy": "Coding / Structured Output",
     "ifeval": "Instruction Following",
 }
+_TASK_CATEGORY_PATTERNS = [
+    ("Math", ("gsm8k", "math", "aime", "amc", "minerva")),
+    (
+        "Coding / Structured Output",
+        ("json", "schema", "code", "humaneval", "mbpp", "repobench", "longbench_lcc"),
+    ),
+    ("Instruction Following", ("ifeval", "instruction")),
+    ("Reasoning", ("arc", "bbh", "truthful", "mmlu", "hellaswag", "winogrande")),
+]
 _TASK_SCORE_METRICS = {
     "gsm8k": [
         "exact_match,strict-match",
@@ -110,9 +119,9 @@ def extract_leaderboard_entry(
         scored_metrics = _scored_metrics(str(task), metrics)
         if not scored_metrics:
             continue
-        score = sum(_score_value(value) for _metric, value in scored_metrics) / len(
-            scored_metrics
-        )
+        score = sum(
+            _score_value(metric, value) for metric, value in scored_metrics
+        ) / len(scored_metrics)
         task_scores.append(
             {
                 "task": str(task),
@@ -187,7 +196,13 @@ def _category_scores(task_scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _task_category(task: str) -> str:
-    return _TASK_CATEGORIES.get(task, "Other")
+    if task in _TASK_CATEGORIES:
+        return _TASK_CATEGORIES[task]
+    normalized = task.lower()
+    for category, needles in _TASK_CATEGORY_PATTERNS:
+        if any(needle in normalized for needle in needles):
+            return category
+    return "Other"
 
 
 def _scored_metrics(task: str, metrics: dict[str, Any]) -> list[tuple[str, float]]:
@@ -245,7 +260,9 @@ def _samples_for_task(
     return metrics.get("sample_len")
 
 
-def _score_value(value: float) -> float:
+def _score_value(metric: str, value: float) -> float:
+    if _metric_base(metric) in {"smoothed_bleu_4"}:
+        return value
     return value * 100 if 0 <= value <= 1 else value
 
 

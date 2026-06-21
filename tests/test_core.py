@@ -827,6 +827,50 @@ class LeaderboardScoringTests(unittest.TestCase):
         self.assertEqual(entry["category_scores"][0]["category"], "Math")
         self.assertEqual(entry["category_scores"][0]["score"], 50.0)
 
+    def test_coding_results_use_coding_category_not_other(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+        entry = extract_leaderboard_entry(
+            {"id": "job-1", "model_id": "Model-A", "status": "succeeded"},
+            {
+                "model_name": "Model-A",
+                "results": {
+                    "bigbench_simple_arithmetic_json_generate_until": {
+                        "exact_match,none": 1.0,
+                    },
+                    "code2text_python": {
+                        "smoothed_bleu_4,none": 1.25,
+                    },
+                    "jsonschema_bench_medium": {
+                        "schema_compliance,none": 0.0,
+                    },
+                },
+            },
+        )
+
+        categories = {score["category"] for score in entry["category_scores"]}
+        self.assertIn("Coding / Structured Output", categories)
+        self.assertNotIn("Other", categories)
+
+    def test_code2text_bleu_scores_are_not_ratio_scaled(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+        entry = extract_leaderboard_entry(
+            {"id": "job-1", "model_id": "Model-A", "status": "succeeded"},
+            {
+                "model_name": "Model-A",
+                "results": {
+                    "code2text_ruby": {
+                        "smoothed_bleu_4,none": 0.9130374376116006,
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(entry["task_scores"][0]["score"], 0.9130374376116006)
+
 
 class ResultJsonEncodingTests(unittest.TestCase):
     def test_result_rows_skip_non_finite_metric_values(self):
@@ -941,7 +985,8 @@ class SmokeTests(unittest.TestCase):
 
         self.assertIn('id="clearSelectedJobs"', index)
         self.assertIn('id="selectAllJobs"', index)
-        self.assertIn('Select all jobs', index)
+        self.assertIn("Select all", index)
+        self.assertIn("jobs</label", index)
         self.assertIn('id="selectedJobCount"', index)
         self.assertIn('id="maxConcurrentJobs"', index)
         self.assertIn('id="llamacppBackend"', index)
