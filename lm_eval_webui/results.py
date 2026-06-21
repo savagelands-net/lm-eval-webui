@@ -97,7 +97,10 @@ def extract_leaderboard_entry(
     result_json: dict[str, Any],
     model_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    model_metadata = model_metadata or {}
+    raw_model_metadata = model_metadata or job.get("model_metadata") or {}
+    model_metadata = (
+        raw_model_metadata if isinstance(raw_model_metadata, dict) else {}
+    )
     config = result_json.get("config") or {}
     telemetry = job.get("telemetry") or {}
     task_scores: list[dict[str, Any]] = []
@@ -127,10 +130,12 @@ def extract_leaderboard_entry(
     provider_backend = (
         model_metadata.get("runtime_backend")
         or model_metadata.get("llamacpp_backend")
-        or model_metadata.get("recipe")
         or job.get("provider_backend")
         or job.get("lemonade_backend")
     )
+    recipe = model_metadata.get("recipe") or job.get("recipe")
+    if not provider_backend and recipe and recipe != "llamacpp":
+        provider_backend = recipe
     return {
         "job_id": job.get("id"),
         "model": _model_name(result_json),

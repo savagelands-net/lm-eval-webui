@@ -513,12 +513,15 @@ function categoryBadge(category = "Other") {
 	badge.textContent = category || "Other";
 	return badge;
 }
+function specificRuntimeBackend(value) {
+	return value && value !== "llamacpp" ? value : null;
+}
 function modelBackendLabel(entry, model) {
 	return (
-		entry.provider_backend ||
-		entry.lemonade_backend ||
-		model?.runtime_backend ||
-		model?.recipe ||
+		specificRuntimeBackend(entry.provider_backend) ||
+		specificRuntimeBackend(entry.lemonade_backend) ||
+		specificRuntimeBackend(model?.runtime_backend) ||
+		specificRuntimeBackend(model?.recipe) ||
 		"—"
 	);
 }

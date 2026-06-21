@@ -23,6 +23,7 @@ from .telemetry import aggregate_telemetry_file
 
 Launcher = Callable[[list[str], dict[str, str], Path], int]
 TelemetryProbe = Callable[[str, str], dict[str, Any]]
+ModelMetadataProbe = Callable[[str, str], dict[str, Any]]
 
 
 def default_launcher(command: list[str], env: dict[str, str], log_path: Path) -> int:
@@ -48,6 +49,7 @@ class JobManager:
         openai_base_url: str = "https://llm.savagelands.net",
         lemonade_base_url: str | None = None,
         telemetry_probe: TelemetryProbe | None = None,
+        model_metadata_probe: ModelMetadataProbe | None = None,
         max_concurrent_jobs: int = 1,
     ) -> None:
         self.data_dir = Path(data_dir)
@@ -58,6 +60,7 @@ class JobManager:
         self.openai_base_url = (lemonade_base_url or openai_base_url).rstrip("/")
         self.lemonade_base_url = self.openai_base_url
         self.telemetry_probe = telemetry_probe
+        self.model_metadata_probe = model_metadata_probe
         self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
         self._active_jobs = 0
         self._scheduler = threading.Condition(threading.RLock())
@@ -268,6 +271,8 @@ class JobManager:
                 str(path) for path in find_result_files(job["output_path"])
             ]
             job["telemetry"] = self._collect_telemetry(job, returncode)
+            job["model_metadata"] = self._collect_model_metadata(job, returncode)
+            self._apply_model_metadata(job)
             job["status"] = "succeeded" if returncode == 0 else "failed"
         except Exception as exc:  # pragma: no cover
             job["status"] = "failed"
@@ -306,6 +311,51 @@ class JobManager:
                     if key == "ttft_s" and "ttft_s" not in telemetry:
                         telemetry["ttft_s"] = value
         return telemetry
+
+    def _collect_model_metadata(
+        self, job: dict[str, Any], returncode: int | None
+    ) -> dict[str, Any]:
+        if returncode != 0 or self.model_metadata_probe is None:
+            existing = job.get("model_metadata")
+            return existing if isinstance(existing, dict) else {}
+        try:
+            metadata = self.model_metadata_probe(
+                job.get("openai_base_url")
+                or job.get("lemonade_base_url", self.openai_base_url),
+                job["model_id"],
+            )
+        except Exception as exc:  # pragma: no cover
+            return {"error": str(exc)}
+        return {
+            str(key): value
+            for key, value in (metadata or {}).items()
+            if value not in (None, "")
+        }
+
+    @staticmethod
+    def _apply_model_metadata(job: dict[str, Any]) -> None:
+        metadata = job.get("model_metadata") or {}
+        if not isinstance(metadata, dict):
+            return
+        provider_backend = metadata.get("runtime_backend") or metadata.get(
+            "llamacpp_backend"
+        )
+        recipe = metadata.get("recipe")
+        if not provider_backend and recipe and recipe != "llamacpp":
+            provider_backend = recipe
+        if provider_backend:
+            job["provider_backend"] = provider_backend
+            job["lemonade_backend"] = provider_backend
+        for key in (
+            "runtime_backend",
+            "llamacpp_backend",
+            "recipe",
+            "context_window",
+            "device",
+            "checkpoint",
+        ):
+            if metadata.get(key) not in (None, ""):
+                job[key] = metadata[key]
 
     def _remove_job_artifacts(self, job: dict[str, Any]) -> None:
         for key in ("log_path", "output_path", "telemetry_path"):

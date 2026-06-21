@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .jobs import JobManager
-from .lemonade import DEFAULT_OPENAI_BASE_URL, fetch_models
+from .lemonade import DEFAULT_OPENAI_BASE_URL, fetch_loaded_model_metadata, fetch_models
 from .runner import find_lm_eval_python
 from .telemetry import probe_lemonade_chat_telemetry
 
@@ -476,6 +476,7 @@ def serve(
         lm_eval_python=lm_eval_python,
         openai_base_url=openai_base_url,
         telemetry_probe=probe_lemonade_chat_telemetry,
+        model_metadata_probe=fetch_loaded_model_metadata,
         max_concurrent_jobs=max_concurrent_jobs,
     )
     handler = make_handler(manager, static_dir, openai_base_url)

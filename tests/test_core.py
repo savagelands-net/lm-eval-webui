@@ -116,6 +116,31 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(models[0]["llamacpp_backend"], "vulkan")
         self.assertEqual(models[0]["runtime_backend"], "vulkan")
 
+    def test_health_metadata_extracts_llamacpp_runtime_backend(self):
+        loaded_model_metadata_from_health = symbol(
+            "lm_eval_webui.lemonade", "loaded_model_metadata_from_health"
+        )
+
+        metadata = loaded_model_metadata_from_health(
+            {
+                "all_models_loaded": [
+                    {
+                        "model_name": "Gemma-4-31B-it-GGUF",
+                        "checkpoint": "unsloth/gemma-4-31B-it-GGUF:Q4_K_M",
+                        "device": "gpu",
+                        "recipe": "llamacpp",
+                        "recipe_options": {"llamacpp_backend": "rocm"},
+                    }
+                ]
+            },
+            "Gemma-4-31B-it-GGUF",
+        )
+
+        self.assertEqual(metadata["recipe"], "llamacpp")
+        self.assertEqual(metadata["llamacpp_backend"], "rocm")
+        self.assertEqual(metadata["runtime_backend"], "rocm")
+        self.assertEqual(metadata["device"], "gpu")
+
 
 class TaskCompatibilityTests(unittest.TestCase):
     def test_malformed_generate_until_group_is_marked_incompatible(self):
@@ -328,6 +353,57 @@ output_type: generate_until
 
 
 class JobManagerTelemetryTests(unittest.TestCase):
+    def test_successful_job_persists_runtime_backend_metadata(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        def launcher(command, _env, _log_path):
+            output_path = Path(command[command.index("--output_path") + 1])
+            result_dir = output_path / "Model-A"
+            result_dir.mkdir(parents=True)
+            (result_dir / "results_2026-06-21T00-00-00.json").write_text(
+                json.dumps(
+                    {
+                        "config": {
+                            "model": "openai-compatible-chat-completions",
+                            "model_args": {"model": "Model-A"},
+                            "limit": 1,
+                        },
+                        "results": {
+                            "gsm8k": {
+                                "exact_match,strict-match": 1.0,
+                                "exact_match,flexible-extract": 1.0,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=launcher,
+                run_async=False,
+                model_metadata_probe=lambda _base_url, _model_id: {
+                    "recipe": "llamacpp",
+                    "llamacpp_backend": "vulkan",
+                    "runtime_backend": "vulkan",
+                    "device": "gpu",
+                },
+            )
+
+            created = manager.create_jobs(
+                {"model_ids": ["Model-A"], "tasks": ["gsm8k"]}
+            )
+            job = manager.get_job(created[0]["id"])
+            leaderboard = manager.leaderboard_entries()
+
+        self.assertEqual(job["model_metadata"]["runtime_backend"], "vulkan")
+        self.assertEqual(job["provider_backend"], "vulkan")
+        self.assertEqual(leaderboard[0]["provider_backend"], "vulkan")
+
     def test_probe_is_skipped_when_benchmark_ttft_exists(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
         probe_called = False
