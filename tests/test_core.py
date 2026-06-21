@@ -1242,6 +1242,10 @@ class SmokeTests(unittest.TestCase):
                     self.assertIn(label, index)
                 self.assertIn(checkbox_id, script)
 
+        self.assertLess(
+            index.index('id="taskCategoryReasoning"'),
+            index.index('id="hideIncompatibleTasks"'),
+        )
         self.assertIn("TASK_CATEGORY_FILTERS", script)
         self.assertIn("function selectedTaskCategories", script)
         self.assertIn("selectedCategories.has", script)
