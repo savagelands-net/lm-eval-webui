@@ -23,6 +23,13 @@ const LEADERBOARD_CATEGORIES = [
 	"Instruction Following",
 	"Other",
 ];
+const TASK_CATEGORY_FILTERS = [
+	{ id: "taskCategoryReasoning", category: "Reasoning" },
+	{ id: "taskCategoryMath", category: "Math" },
+	{ id: "taskCategoryCoding", category: "Coding / Structured Output" },
+	{ id: "taskCategoryInstruction", category: "Instruction Following" },
+	{ id: "taskCategoryOther", category: "Other" },
+];
 
 async function api(path, options = {}) {
 	const response = await fetch(path, {
@@ -126,9 +133,11 @@ function renderTasks() {
 	const filter = $("taskFilter").value.trim().toLowerCase();
 	const hideIncompatible = $("hideIncompatibleTasks").checked;
 	const hideGated = $("hideGatedTasks").checked;
+	const selectedCategories = selectedTaskCategories();
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideGated && task.compatibility === "gated") return false;
+		if (!selectedCategories.has(task.category || "Other")) return false;
 		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
 			.toLowerCase()
 			.includes(filter);
@@ -636,6 +645,13 @@ function changeTaskPage(delta) {
 	state.taskPage = Math.max(0, state.taskPage + delta);
 	renderTasks();
 }
+function selectedTaskCategories() {
+	return new Set(
+		TASK_CATEGORY_FILTERS.filter(({ id }) => $(id).checked).map(
+			({ category }) => category,
+		),
+	);
+}
 
 $("refreshModels").addEventListener("click", loadModels);
 $("modelFilter").addEventListener("input", renderModels);
@@ -654,6 +670,9 @@ $("unselectVisibleTasks").addEventListener("click", unselectVisibleTasks);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);
 $("hideGatedTasks").addEventListener("change", resetTaskPage);
+TASK_CATEGORY_FILTERS.forEach(({ id }) =>
+	$(id).addEventListener("change", resetTaskPage),
+);
 $("taskPrev").addEventListener("click", () => changeTaskPage(-1));
 $("taskNext").addEventListener("click", () => changeTaskPage(1));
 $("metricSelect").addEventListener("change", renderResults);

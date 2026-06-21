@@ -1222,6 +1222,30 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("no-store", server)
         self.assertIn("BrokenPipeError", server)
 
+    def test_static_ui_exposes_task_category_filters(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
+
+        for checkbox_id, label in (
+            ("taskCategoryReasoning", "Reasoning"),
+            ("taskCategoryMath", "Math"),
+            ("taskCategoryCoding", "Coding / Structured Output"),
+            ("taskCategoryInstruction", "Instruction Following"),
+            ("taskCategoryOther", "Other"),
+        ):
+            with self.subTest(checkbox_id=checkbox_id):
+                self.assertIn(f'id="{checkbox_id}"', index)
+                if label == "Coding / Structured Output":
+                    self.assertIn("Coding /", index)
+                    self.assertIn("Structured Output", index)
+                else:
+                    self.assertIn(label, index)
+                self.assertIn(checkbox_id, script)
+
+        self.assertIn("TASK_CATEGORY_FILTERS", script)
+        self.assertIn("function selectedTaskCategories", script)
+        self.assertIn("selectedCategories.has", script)
+
     def test_static_ui_exposes_visible_task_bulk_controls(self):
         index = Path("static/index.html").read_text(encoding="utf-8")
         script = Path("static/app.js").read_text(encoding="utf-8")
