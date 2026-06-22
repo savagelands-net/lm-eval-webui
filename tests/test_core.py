@@ -877,6 +877,7 @@ output_type: generate_until
             "ag_news",
             "cnn_dailymail",
             "doc_vqa",
+            "bigbench_list_functions_generate_until",
             "stsb",
             "med_concepts_qa_atc",
             "multimedqa",
@@ -1441,7 +1442,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="hideGatedTasks"', index)
         self.assertIn("gated</label", index)
         self.assertIn('id="leafTasksOnly"', index)
-        self.assertIn("leaf tasks only</label", index)
+        self.assertIn("leaf tasks only</label", " ".join(index.split()))
         self.assertIn('id="hideNonEnglishTasks"', index)
         self.assertIn("non-English</label", index)
         self.assertIn("hideNonEnglishTasks", script)

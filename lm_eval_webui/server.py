@@ -117,6 +117,7 @@ INCOMPATIBLE_TASK_NAMES = {
     "ifeval_ca",
     "ifeval_es",
     "niah_single_1",
+    "bigbench_list_functions_generate_until",
     "bigbench_bbq_lite_json_multiple_choice",
     "bigbench_code_line_description_multiple_choice",
     "bigbench_simple_arithmetic_json_multiple_choice_generate_until",
