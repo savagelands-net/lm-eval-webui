@@ -384,6 +384,17 @@ output_type: generate_until
 
         self.assertEqual(truthfulqa_task["compatibility"], "gated")
 
+        gpqa_task = annotate_task_compatibility(
+            {"name": "gpqa_main_generative_n_shot", "description": "gpqa.yaml"},
+            lambda _path: """
+task: gpqa_main_generative_n_shot
+dataset_path: Idavidrein/gpqa
+output_type: generate_until
+""",
+        )
+
+        self.assertEqual(gpqa_task["compatibility"], "gated")
+
     def test_unavailable_dataset_tasks_are_marked_incompatible(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
