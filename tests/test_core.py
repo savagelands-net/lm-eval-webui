@@ -396,6 +396,17 @@ output_type: generate_until
 
         self.assertEqual(gpqa_task["compatibility"], "gated")
 
+        salt_task = annotate_task_compatibility(
+            {"name": "salt_eng-swa_prompt_1", "description": "salt.yaml"},
+            lambda _path: """
+task: salt_eng-swa_prompt_1
+dataset_path: Sunbird/salt
+output_type: generate_until
+""",
+        )
+
+        self.assertEqual(salt_task["compatibility"], "gated")
+
     def test_unavailable_dataset_tasks_are_marked_incompatible(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"

@@ -87,7 +87,12 @@ UNAVAILABLE_DATASET_PATHS = {
     "fixie-ai/endpointing-audio",
     "proxectonos/summarization_gl",
 }
-GATED_DATASET_PATHS = {"Idavidrein/gpqa", "gplsi/cocoteros_va", "gplsi/truthfulqa_va"}
+GATED_DATASET_PATHS = {
+    "Idavidrein/gpqa",
+    "Sunbird/salt",
+    "gplsi/cocoteros_va",
+    "gplsi/truthfulqa_va",
+}
 COMPATIBLE_TASK_NAMES = {
     "jsonschema_bench",
     "bigbench_bbq_lite_json_generate_until",
