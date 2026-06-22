@@ -44,6 +44,7 @@ COMMON_TASKS = [
         "description": "BIG-Bench Hard CoT generation group",
         "compatibility": "compatible",
         "category": "Reasoning",
+        "kind": "group",
     },
 ]
 TASK_CATEGORY_PATTERNS = [
@@ -383,6 +384,7 @@ def _merge_tasks(
             "category": task.get("category") or task_category(name),
             "language_scope": task.get("language_scope")
             or task_language_scope(name, task.get("description", "")),
+            "kind": task.get("kind") or "task",
         }
         if name in by_name:
             by_name[name].update(normalized)
@@ -479,8 +481,6 @@ def annotate_task_compatibility(
         compatibility = "incompatible"
     elif uses_gated_dataset(config_text):
         compatibility = "gated"
-    elif is_aggregate_task_spec(task, config_text):
-        compatibility = "incompatible"
     elif task_name in UNKNOWN_TASK_NAMES:
         compatibility = "unknown"
     elif task_name in COMPATIBLE_TASK_NAMES or task_matches_pattern(
@@ -505,6 +505,7 @@ def annotate_task_compatibility(
     return {
         **task,
         "compatibility": compatibility,
+        "kind": task_kind(task, config_text),
         "language_scope": task_language_scope(task_name, config_path, config_text),
     }
 
@@ -522,9 +523,11 @@ def uses_gated_dataset(config_text: str) -> bool:
     return bool(dataset_paths(config_text) & GATED_DATASET_PATHS)
 
 
-def is_aggregate_task_spec(task: dict[str, str], config_text: str) -> bool:
+def task_kind(task: dict[str, str], config_text: str) -> str:
     kind = task.get("kind", "").lower()
-    return kind in {"group", "tag"} or bool(_GROUP_RE.search(config_text))
+    if kind in {"task", "group", "tag"}:
+        return kind
+    return "group" if _GROUP_RE.search(config_text) else "task"
 
 
 def uses_unsupported_dataset_script(config_text: str) -> bool:

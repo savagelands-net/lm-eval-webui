@@ -549,22 +549,28 @@ output_type: generate_until
 
                 self.assertEqual(task["compatibility"], "incompatible")
 
-    def test_aggregate_groups_and_tags_are_marked_incompatible(self):
+    def test_aggregate_groups_and_tags_are_marked_with_kind(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
         )
-        for task in (
-            {"name": "bbh", "description": "bbh.yaml", "kind": "group"},
-            {
-                "name": "bbh_cot_fewshot",
-                "description": "bbh_cot_fewshot.yaml",
-                "kind": "group",
-            },
-            {
-                "name": "mmlu_cot_llama_humanities_tasks",
-                "description": "",
-                "kind": "tag",
-            },
+        for task, expected_kind in (
+            ({"name": "bbh", "description": "bbh.yaml", "kind": "group"}, "group"),
+            (
+                {
+                    "name": "bbh_cot_fewshot",
+                    "description": "bbh_cot_fewshot.yaml",
+                    "kind": "group",
+                },
+                "group",
+            ),
+            (
+                {
+                    "name": "mmlu_cot_llama_humanities_tasks",
+                    "description": "",
+                    "kind": "tag",
+                },
+                "tag",
+            ),
         ):
             with self.subTest(task_name=task["name"]):
                 classified = annotate_task_compatibility(
@@ -576,7 +582,8 @@ task:
 """,
                 )
 
-                self.assertEqual(classified["compatibility"], "incompatible")
+                self.assertEqual(classified["kind"], expected_kind)
+                self.assertEqual(classified["compatibility"], "compatible")
 
     def test_lm_eval_task_table_parser_records_row_kind(self):
         parse_lm_eval_task_table = symbol(
@@ -629,7 +636,8 @@ task:
         )
         by_name = {task["name"]: task for task in tasks}
 
-        self.assertEqual(by_name["bbh_cot_zeroshot"]["compatibility"], "incompatible")
+        self.assertEqual(by_name["bbh_cot_zeroshot"]["kind"], "group")
+        self.assertEqual(by_name["bbh_cot_zeroshot"]["compatibility"], "compatible")
 
     def test_smoked_reasoning_instruction_math_tasks_are_marked_compatible(self):
         annotate_task_compatibility = symbol(
@@ -1432,10 +1440,15 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('value="rocm"', index)
         self.assertIn('id="hideGatedTasks"', index)
         self.assertIn("gated</label", index)
+        self.assertIn('id="leafTasksOnly"', index)
+        self.assertIn("leaf tasks only</label", index)
         self.assertIn('id="hideNonEnglishTasks"', index)
         self.assertIn("non-English</label", index)
         self.assertIn("hideNonEnglishTasks", script)
         self.assertIn('task.language_scope === "non_english"', script)
+        self.assertIn("leafTasksOnly", script)
+        self.assertIn('(task.kind || "task") !== "task"', script)
+        self.assertIn("kindBadge(task.kind)", script)
         self.assertNotIn('id="hideUnknownTasks"', index)
         self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)
