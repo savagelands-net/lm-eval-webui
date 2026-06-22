@@ -371,22 +371,24 @@ def _merge_tasks(
     preferred: list[dict[str, str]], discovered: list[dict[str, str]]
 ) -> list[dict[str, str]]:
     merged: list[dict[str, str]] = []
-    seen: set[str] = set()
+    by_name: dict[str, dict[str, str]] = {}
     for task in [*preferred, *discovered]:
         name = task.get("name", "").strip()
-        if not name or name in seen:
+        if not name:
             continue
-        merged.append(
-            {
-                "name": name,
-                "description": task.get("description", ""),
-                "compatibility": task.get("compatibility", "unknown"),
-                "category": task.get("category") or task_category(name),
-                "language_scope": task.get("language_scope")
-                or task_language_scope(name, task.get("description", "")),
-            }
-        )
-        seen.add(name)
+        normalized = {
+            "name": name,
+            "description": task.get("description", ""),
+            "compatibility": task.get("compatibility", "unknown"),
+            "category": task.get("category") or task_category(name),
+            "language_scope": task.get("language_scope")
+            or task_language_scope(name, task.get("description", "")),
+        }
+        if name in by_name:
+            by_name[name].update(normalized)
+            continue
+        merged.append(normalized)
+        by_name[name] = normalized
     return merged
 
 
@@ -440,16 +442,25 @@ def load_available_tasks(
 
 def parse_lm_eval_task_table(output: str) -> list[dict[str, str]]:
     tasks: list[dict[str, str]] = []
+    current_kind = "task"
     for line in output.splitlines():
         stripped = line.strip()
         if not stripped.startswith("|") or set(stripped) <= {"|", "-"}:
             continue
         columns = [column.strip() for column in stripped.strip("|").split("|")]
-        if not columns or columns[0] in {"Group", ""}:
+        if not columns or columns[0] == "":
+            continue
+        if columns[0] in {"Group", "Tag", "Task"}:
+            current_kind = columns[0].lower()
             continue
         config_path = columns[1] if len(columns) > 1 else ""
         tasks.append(
-            {"name": columns[0], "description": config_path, "config_path": config_path}
+            {
+                "name": columns[0],
+                "description": config_path,
+                "config_path": config_path,
+                "kind": current_kind,
+            }
         )
     return tasks
 
@@ -468,6 +479,8 @@ def annotate_task_compatibility(
         compatibility = "incompatible"
     elif uses_gated_dataset(config_text):
         compatibility = "gated"
+    elif is_aggregate_task_spec(task, config_text):
+        compatibility = "incompatible"
     elif task_name in UNKNOWN_TASK_NAMES:
         compatibility = "unknown"
     elif task_name in COMPATIBLE_TASK_NAMES or task_matches_pattern(
@@ -507,6 +520,11 @@ def dataset_paths(config_text: str) -> set[str]:
 
 def uses_gated_dataset(config_text: str) -> bool:
     return bool(dataset_paths(config_text) & GATED_DATASET_PATHS)
+
+
+def is_aggregate_task_spec(task: dict[str, str], config_text: str) -> bool:
+    kind = task.get("kind", "").lower()
+    return kind in {"group", "tag"} or bool(_GROUP_RE.search(config_text))
 
 
 def uses_unsupported_dataset_script(config_text: str) -> bool:

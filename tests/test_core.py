@@ -549,6 +549,88 @@ output_type: generate_until
 
                 self.assertEqual(task["compatibility"], "incompatible")
 
+    def test_aggregate_groups_and_tags_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        for task in (
+            {"name": "bbh", "description": "bbh.yaml", "kind": "group"},
+            {
+                "name": "bbh_cot_fewshot",
+                "description": "bbh_cot_fewshot.yaml",
+                "kind": "group",
+            },
+            {
+                "name": "mmlu_cot_llama_humanities_tasks",
+                "description": "",
+                "kind": "tag",
+            },
+        ):
+            with self.subTest(task_name=task["name"]):
+                classified = annotate_task_compatibility(
+                    task,
+                    lambda _path: """
+group: aggregate
+task:
+  - child_task
+""",
+                )
+
+                self.assertEqual(classified["compatibility"], "incompatible")
+
+    def test_lm_eval_task_table_parser_records_row_kind(self):
+        parse_lm_eval_task_table = symbol(
+            "lm_eval_webui.server", "parse_lm_eval_task_table"
+        )
+        output = """
+| Group | Config Location |
+|-------|-----------------|
+| bbh | lm_eval/tasks/bbh/_bbh.yaml |
+
+| Tag |
+|-----|
+| mmlu_cot_llama_humanities_tasks |
+
+| Task | Config Location | Output Type |
+|------|-----------------|-------------|
+| bbh_cot_fewshot_boolean_expressions | lm_eval/tasks/bbh/boolean_expressions.yaml | generate_until |
+"""
+
+        rows = parse_lm_eval_task_table(output)
+
+        self.assertEqual(
+            [(row["name"], row["kind"]) for row in rows],
+            [
+                ("bbh", "group"),
+                ("mmlu_cot_llama_humanities_tasks", "tag"),
+                ("bbh_cot_fewshot_boolean_expressions", "task"),
+            ],
+        )
+
+    def test_common_task_aggregate_entries_do_not_mask_discovered_kind(self):
+        load_available_tasks = symbol("lm_eval_webui.server", "load_available_tasks")
+
+        class Completed:
+            returncode = 0
+            stdout = """
+| Group | Config Location |
+|-------|-----------------|
+| bbh_cot_zeroshot | lm_eval/tasks/bbh/cot_zeroshot/_bbh_cot_zeroshot.yaml |
+"""
+
+        tasks = load_available_tasks(
+            "/home/iain/.venv/lm-eval/bin/python",
+            run_command=lambda *_args, **_kwargs: Completed(),
+            config_reader=lambda _path: """
+group: bbh_cot_zeroshot
+task:
+  - bbh_cot_zeroshot_boolean_expressions
+""",
+        )
+        by_name = {task["name"]: task for task in tasks}
+
+        self.assertEqual(by_name["bbh_cot_zeroshot"]["compatibility"], "incompatible")
+
     def test_smoked_reasoning_instruction_math_tasks_are_marked_compatible(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
