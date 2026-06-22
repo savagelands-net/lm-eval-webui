@@ -80,6 +80,7 @@ UNSUPPORTED_DATASET_SCRIPT_PATHS = {
     "baber/logiqa2",
     "allenai/qasper",
     "csebuetnlp/xlsum",
+    "facebook/mlqa",
 }
 UNAVAILABLE_DATASET_PATHS = {
     "Rakuten/JGLUE",

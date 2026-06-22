@@ -285,6 +285,7 @@ task:
             ("french_bench_orangesum_title", "orange_sum"),
             ("ja_leaderboard_jaqket_v2", "kumapo/JAQKET"),
             ("logieval", "baber/logiqa2"),
+            ("mlqa_en_en", "facebook/mlqa"),
             ("qasper_freeform", "allenai/qasper"),
             ("xlsum_es", "csebuetnlp/xlsum"),
         ):
