@@ -102,6 +102,15 @@ main {
 	padding: 7px 10px;
 	font-size: 0.9rem;
 }
+.task-view-mode {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 0.9rem;
+}
+.task-view-mode select {
+	padding: 7px 10px;
+}
 .row {
 	display: flex;
 	gap: 12px;

@@ -1445,6 +1445,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('value="leaves" selected', index)
         self.assertIn('value="groups"', index)
         self.assertIn("Groups / tags", index)
+        list_actions = index[index.index('class="row list-actions"') : index.index('id="taskSpinner"')]
+        self.assertIn('id="taskViewMode"', list_actions)
+        task_filter_rows = index[index.index('class="row task-filters"') : index.index('<p class="hint">')]
+        self.assertNotIn('id="taskViewMode"', task_filter_rows)
         self.assertNotIn('id="leafTasksOnly"', index)
         self.assertNotIn("leafTasksOnly", script)
         self.assertIn('id="hideNonEnglishTasks"', index)

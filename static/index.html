@@ -50,6 +50,13 @@
                 <button id="unselectVisibleTasks" type="button" disabled>
                   Unselect visible
                 </button>
+                <label class="task-view-mode"
+                  >Task view
+                  <select id="taskViewMode">
+                    <option value="leaves" selected>Leaf tasks</option>
+                    <option value="groups">Groups / tags</option>
+                  </select></label
+                >
                 <span
                   id="taskSpinner"
                   class="loading-indicator"
@@ -101,13 +108,6 @@
               <label class="check compact"
                 ><input id="hideGatedTasks" type="checkbox" checked /> hide
                 gated</label
-              >
-              <label class="compact"
-                >Task view
-                <select id="taskViewMode">
-                  <option value="leaves" selected>Leaf tasks</option>
-                  <option value="groups">Groups / tags</option>
-                </select></label
               >
               <label class="check compact"
                 ><input id="hideNonEnglishTasks" type="checkbox" checked /> hide

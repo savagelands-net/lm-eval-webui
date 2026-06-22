@@ -136,8 +136,10 @@ function renderTasks() {
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideGated && task.compatibility === "gated") return false;
-		if (taskViewMode === "leaves" && (task.kind || "task") !== "task") return false;
-		if (taskViewMode === "groups" && (task.kind || "task") === "task") return false;
+		if (taskViewMode === "leaves" && (task.kind || "task") !== "task")
+			return false;
+		if (taskViewMode === "groups" && (task.kind || "task") === "task")
+			return false;
 		if (hideNonEnglish && task.language_scope === "non_english") return false;
 		if (!selectedCategories.has(task.category || "Other")) return false;
 		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
