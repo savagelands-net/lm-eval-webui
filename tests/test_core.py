@@ -57,6 +57,17 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
 
         self.assertIn("stream_responses=True", command)
 
+    def test_eval_command_applies_chat_template_by_default(self):
+        EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
+        build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
+
+        command, _env = build_eval_command(
+            EvalRequest(model_id="Model-A", tasks=["gsm8k"], output_path="out"),
+            project_root="/repo",
+        )
+
+        self.assertIn("--apply_chat_template", command)
+
     def test_eval_command_passes_selected_llamacpp_backend(self):
         EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
         build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
@@ -72,6 +83,69 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
         )
 
         self.assertIn("llamacpp_backend=vulkan", command)
+
+
+class LmEvalRunnerTests(unittest.TestCase):
+    def test_acp_duplicate_filter_registration_is_ignored(self):
+        allow_duplicate_acp_filter_registration = symbol(
+            "lm_eval_webui.lm_eval_runner",
+            "allow_duplicate_acp_filter_registration",
+        )
+        calls = []
+
+        class FakeRegistryModule:
+            def register_filter(self, name):
+                def decorate(cls):
+                    calls.append((name, cls.__name__))
+                    if len(calls) > 1:
+                        raise ValueError(
+                            "'filter' alias 'ACP_grammar_filter' already registered"
+                        )
+                    return cls
+
+                return decorate
+
+        registry_module = FakeRegistryModule()
+        allow_duplicate_acp_filter_registration(registry_module)
+
+        @registry_module.register_filter("ACP_grammar_filter")
+        class FirstFilter:
+            pass
+
+        @registry_module.register_filter("ACP_grammar_filter")
+        class SecondFilter:
+            pass
+
+        self.assertEqual(SecondFilter.__name__, "SecondFilter")
+        self.assertEqual(
+            calls,
+            [
+                ("ACP_grammar_filter", "FirstFilter"),
+                ("ACP_grammar_filter", "SecondFilter"),
+            ],
+        )
+
+    def test_non_acp_duplicate_filter_registration_still_raises(self):
+        allow_duplicate_acp_filter_registration = symbol(
+            "lm_eval_webui.lm_eval_runner",
+            "allow_duplicate_acp_filter_registration",
+        )
+
+        class FakeRegistryModule:
+            def register_filter(self, _name):
+                def decorate(_cls):
+                    raise ValueError("some other filter already registered")
+
+                return decorate
+
+        registry_module = FakeRegistryModule()
+        allow_duplicate_acp_filter_registration(registry_module)
+
+        with self.assertRaisesRegex(ValueError, "some other filter"):
+
+            @registry_module.register_filter("other_filter")
+            class OtherFilter:
+                pass
 
 
 class LemonadeModelTests(unittest.TestCase):
@@ -497,6 +571,15 @@ task: {task_name}
             "toksuite_math_canonical",
             "math_word_problems",
             "m_mmlu_en",
+            "acp_app_gen",
+            "acp_app_gen_with_pddl",
+            "acp_reach_mcq",
+            "infinitebench_kv_retrieval",
+            "infinitebench_longbook_choice_en",
+            "infinitebench_passkey",
+            "ruler_cwe",
+            "ruler_qa_squad",
+            "ruler_vt",
             "cmmlu_college_mathematics",
             "arc_multilingual",
             "metabench_mmlu_subset",
