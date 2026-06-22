@@ -126,31 +126,33 @@ function renderModels() {
 function renderTasks() {
 	const list = $("taskList");
 	list.replaceChildren();
-	if (
-		!state.selectedTasks.size &&
-		state.tasks.length &&
-		!state.hasAutoSelectedTask
-	) {
-		state.selectedTasks.add(state.tasks[0].name);
-		state.hasAutoSelectedTask = true;
-	}
-	renderSelectedTasks();
 	const filter = $("taskFilter").value.trim().toLowerCase();
 	const hideIncompatible = $("hideIncompatibleTasks").checked;
 	const hideGated = $("hideGatedTasks").checked;
-	const leafTasksOnly = $("leafTasksOnly").checked;
+	const taskViewMode = $("taskViewMode").value;
+	pruneSelectedTasksForViewMode(taskViewMode);
 	const hideNonEnglish = $("hideNonEnglishTasks").checked;
 	const selectedCategories = selectedTaskCategories();
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideGated && task.compatibility === "gated") return false;
-		if (leafTasksOnly && (task.kind || "task") !== "task") return false;
+		if (taskViewMode === "leaves" && (task.kind || "task") !== "task") return false;
+		if (taskViewMode === "groups" && (task.kind || "task") === "task") return false;
 		if (hideNonEnglish && task.language_scope === "non_english") return false;
 		if (!selectedCategories.has(task.category || "Other")) return false;
 		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
 			.toLowerCase()
 			.includes(filter);
 	});
+	if (
+		!state.selectedTasks.size &&
+		matchingTasks.length &&
+		!state.hasAutoSelectedTask
+	) {
+		state.selectedTasks.add(matchingTasks[0].name);
+		state.hasAutoSelectedTask = true;
+	}
+	renderSelectedTasks();
 	const pageCount = Math.max(
 		1,
 		Math.ceil(matchingTasks.length / TASKS_PER_PAGE),
@@ -207,6 +209,20 @@ function unselectVisibleTasks() {
 		state.selectedTasks.delete(taskName),
 	);
 	renderTasks();
+}
+function taskMatchesViewMode(task, taskViewMode) {
+	const kind = task.kind || "task";
+	return taskViewMode === "groups" ? kind !== "task" : kind === "task";
+}
+function pruneSelectedTasksForViewMode(taskViewMode) {
+	if (!state.selectedTasks.size || !state.tasks.length) return;
+	const tasksByName = new Map(state.tasks.map((task) => [task.name, task]));
+	state.selectedTasks = new Set(
+		[...state.selectedTasks].filter((taskName) => {
+			const task = tasksByName.get(taskName);
+			return task && taskMatchesViewMode(task, taskViewMode);
+		}),
+	);
 }
 function renderSelectedTasks() {
 	const list = $("selectedTasksList");
@@ -733,7 +749,7 @@ $("unselectVisibleTasks").addEventListener("click", unselectVisibleTasks);
 $("taskFilter").addEventListener("input", resetTaskPage);
 $("hideIncompatibleTasks").addEventListener("change", resetTaskPage);
 $("hideGatedTasks").addEventListener("change", resetTaskPage);
-$("leafTasksOnly").addEventListener("change", resetTaskPage);
+$("taskViewMode").addEventListener("change", resetTaskPage);
 $("hideNonEnglishTasks").addEventListener("change", resetTaskPage);
 TASK_CATEGORY_FILTERS.forEach(({ id }) =>
 	$(id).addEventListener("change", resetTaskPage),

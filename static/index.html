@@ -102,8 +102,12 @@
                 ><input id="hideGatedTasks" type="checkbox" checked /> hide
                 gated</label
               >
-              <label class="check compact"
-                ><input id="leafTasksOnly" type="checkbox" checked /> leaf tasks only</label
+              <label class="compact"
+                >Task view
+                <select id="taskViewMode">
+                  <option value="leaves" selected>Leaf tasks</option>
+                  <option value="groups">Groups / tags</option>
+                </select></label
               >
               <label class="check compact"
                 ><input id="hideNonEnglishTasks" type="checkbox" checked /> hide
