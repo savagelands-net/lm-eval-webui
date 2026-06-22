@@ -312,13 +312,26 @@ function toggleAllJobs() {
 }
 async function selectJob(jobId) {
 	state.selectedJobId = jobId;
+	await loadSelectedJobLog({ forceScroll: true });
+}
+async function loadSelectedJobLog({ forceScroll = false } = {}) {
+	if (!state.selectedJobId) return;
+	const log = $("jobLog");
+	const autoScroll = forceScroll || shouldAutoScrollLog(log);
 	try {
-		const { job } = await api(`/api/jobs/${jobId}`);
-		$("jobLog").textContent =
-			`$ ${job.command.join(" ")}\n\n${job.log_tail || "No log output yet."}`;
+		const { job } = await api(`/api/jobs/${state.selectedJobId}`);
+		const content = `$ ${job.command.join(" ")}\n\n${job.log_tail || "No log output yet."}`;
+		if (log.textContent !== content) log.textContent = content;
 	} catch (error) {
-		$("jobLog").textContent = error.message;
+		log.textContent = error.message;
 	}
+	if (autoScroll) scrollLogToBottom(log);
+}
+function shouldAutoScrollLog(log) {
+	return log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+}
+function scrollLogToBottom(log) {
+	log.scrollTop = log.scrollHeight;
 }
 
 function renderLeaderboard() {
@@ -694,10 +707,16 @@ $("selectAllJobs").addEventListener("change", toggleAllJobs);
 $("clearSelectedJobs").addEventListener("click", clearSelectedJobs);
 $("clearFailedJobs").addEventListener("click", clearFailedJobs);
 $("refreshJobs").addEventListener("click", () =>
-	Promise.all([loadJobs(), loadResults()]),
+	Promise.all([loadJobs(), loadResults(), loadSelectedJobLog()]),
 );
 $("refreshAll").addEventListener("click", () =>
-	Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]),
+	Promise.all([
+		loadModels(),
+		loadTasks(),
+		loadJobs(),
+		loadResults(),
+		loadSelectedJobLog(),
+	]),
 );
 $("startJobs").addEventListener("click", startJobs);
 $("selectVisibleTasks").addEventListener("click", selectVisibleTasks);
@@ -714,4 +733,7 @@ $("taskNext").addEventListener("click", () => changeTaskPage(1));
 $("metricSelect").addEventListener("change", renderResults);
 
 Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]);
-setInterval(() => Promise.all([loadJobs(), loadResults()]), 5000);
+setInterval(
+	() => Promise.all([loadJobs(), loadResults(), loadSelectedJobLog()]),
+	5000,
+);

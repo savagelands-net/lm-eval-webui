@@ -235,6 +235,7 @@ INCOMPATIBLE_TASK_PATTERNS = tuple(
         r"^masakhapos(?:_|$)",
         r"^med_concepts_qa(?:_|$)",
         r"^multimedqa$",
+        r"^niah(?:_|$)",
         r"^nollysenti(?:_|$)",
         r"^openllm$",
         r"^pawsx$",

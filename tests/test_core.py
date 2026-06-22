@@ -440,18 +440,26 @@ process_results: !function utils.process_results
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
         )
-        config_text = """
-task: niah_single_1
+        for task_name in (
+            "niah_single_1",
+            "niah_single_2",
+            "niah_multikey_1",
+            "niah_multiquery",
+            "niah_multivalue",
+        ):
+            with self.subTest(task_name=task_name):
+                config_text = f"""
+task: {task_name}
 dataset_path: ""
 output_type: generate_until
 """
 
-        task = annotate_task_compatibility(
-            {"name": "niah_single_1", "description": "niah_single_1.yaml"},
-            lambda _path: config_text,
-        )
+                task = annotate_task_compatibility(
+                    {"name": task_name, "description": f"{task_name}.yaml"},
+                    lambda _path, text=config_text: text,
+                )
 
-        self.assertEqual(task["compatibility"], "incompatible")
+                self.assertEqual(task["compatibility"], "incompatible")
 
     def test_smoked_coding_tasks_are_marked_compatible(self):
         annotate_task_compatibility = symbol(
@@ -1377,6 +1385,12 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("<summary>Jobs", index)
         self.assertIn("Could not load results", script)
         self.assertIn("setTaskLoading", script)
+        self.assertIn("function loadSelectedJobLog", script)
+        self.assertIn("function shouldAutoScrollLog", script)
+        self.assertIn("function scrollLogToBottom", script)
+        self.assertIn("loadSelectedJobLog()", script)
+        self.assertIn("shouldAutoScrollLog(log)", script)
+        self.assertIn("scrollLogToBottom(log)", script)
         self.assertIn("spinner", index)
         styles = Path("static/styles.css").read_text(encoding="utf-8")
         self.assertIn("selector-panel", styles)
