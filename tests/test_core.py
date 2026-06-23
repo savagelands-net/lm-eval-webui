@@ -232,6 +232,24 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(models[0]["llamacpp_backend"], "vulkan")
         self.assertEqual(models[0]["runtime_backend"], "vulkan")
 
+    def test_normalize_models_reports_system_for_llamacpp_without_explicit_backend(self):
+        normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
+
+        models = normalize_models(
+            {
+                "data": [
+                    {
+                        "id": "Model-A",
+                        "downloaded": True,
+                        "recipe": "llamacpp",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(models[0]["llamacpp_backend"], "system")
+        self.assertEqual(models[0]["runtime_backend"], "system")
+
     def test_health_metadata_extracts_llamacpp_runtime_backend(self):
         loaded_model_metadata_from_health = symbol(
             "lm_eval_webui.lemonade", "loaded_model_metadata_from_health"
@@ -256,6 +274,28 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(metadata["llamacpp_backend"], "rocm")
         self.assertEqual(metadata["runtime_backend"], "rocm")
         self.assertEqual(metadata["device"], "gpu")
+
+    def test_health_metadata_reports_system_for_llamacpp_without_explicit_backend(self):
+        loaded_model_metadata_from_health = symbol(
+            "lm_eval_webui.lemonade", "loaded_model_metadata_from_health"
+        )
+
+        metadata = loaded_model_metadata_from_health(
+            {
+                "all_models_loaded": [
+                    {
+                        "model_name": "Gemma-4-31B-it-GGUF",
+                        "checkpoint": "unsloth/gemma-4-31B-it-GGUF:Q4_K_M",
+                        "recipe": "llamacpp",
+                    }
+                ]
+            },
+            "Gemma-4-31B-it-GGUF",
+        )
+
+        self.assertEqual(metadata["recipe"], "llamacpp")
+        self.assertEqual(metadata["llamacpp_backend"], "system")
+        self.assertEqual(metadata["runtime_backend"], "system")
 
 
 class TaskCompatibilityTests(unittest.TestCase):
@@ -1386,6 +1426,27 @@ class LeaderboardScoringTests(unittest.TestCase):
             entry["provider_backend"], "openai-compatible-chat-completions"
         )
 
+    def test_leaderboard_reports_system_not_llamacpp_for_recipe_only_metadata(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+
+        entry = extract_leaderboard_entry(
+            {
+                "id": "job-1",
+                "model_id": "Model-A",
+                "status": "succeeded",
+                "backend": "openai-compatible-chat-completions",
+                "model_metadata": {"recipe": "llamacpp"},
+            },
+            {
+                "model_name": "Model-A",
+                "results": {"gsm8k": {"exact_match,strict-match": 1.0}},
+            },
+        )
+
+        self.assertEqual(entry["provider_backend"], "system")
+
     def test_coding_results_use_coding_category_not_other(self):
         extract_leaderboard_entry = symbol(
             "lm_eval_webui.results", "extract_leaderboard_entry"
@@ -1614,7 +1675,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("function modelForEntry", script)
         self.assertIn("runtime_backend", script)
         self.assertIn("entry.backend", script)
-        self.assertNotIn('value !== "llamacpp"', script)
+        self.assertIn("function isClientBackend", script)
+        self.assertIn("isClientBackend(backend)", script)
+        self.assertIn("model?.llamacpp_backend", script)
+        self.assertNotIn("specificRuntimeBackend(model?.recipe)", script)
         self.assertIn("Other", script)
         self.assertIn("categoryBadge", script)
         self.assertNotIn("compatibility: ${compatibility}", script)

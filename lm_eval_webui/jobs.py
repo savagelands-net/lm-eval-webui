@@ -374,18 +374,36 @@ class JobManager:
     ) -> str | None:
         metadata = metadata or {}
         for value in (
-            metadata.get("runtime_backend"),
             metadata.get("llamacpp_backend"),
-            job.get("runtime_backend"),
+            metadata.get("runtime_backend"),
             job.get("llamacpp_backend"),
             job.get("requested_llamacpp_backend"),
-            metadata.get("recipe"),
-            job.get("recipe"),
-            job.get("backend"),
+            job.get("runtime_backend"),
+            job.get("provider_backend"),
+            job.get("lemonade_backend"),
         ):
-            if value not in (None, ""):
-                return str(value)
-        return None
+            backend = JobManager._concrete_backend(value)
+            if backend:
+                return backend
+        for recipe in (metadata.get("recipe"), job.get("recipe")):
+            backend = JobManager._recipe_backend(recipe)
+            if backend:
+                return backend
+        return JobManager._concrete_backend(job.get("backend"))
+
+    @staticmethod
+    def _concrete_backend(value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        backend = str(value)
+        return None if backend == "llamacpp" else backend
+
+    @staticmethod
+    def _recipe_backend(recipe: Any) -> str | None:
+        if recipe in (None, ""):
+            return None
+        backend = str(recipe)
+        return "system" if backend == "llamacpp" else backend
 
     def _remove_job_artifacts(self, job: dict[str, Any]) -> None:
         for key in ("log_path", "output_path", "telemetry_path"):

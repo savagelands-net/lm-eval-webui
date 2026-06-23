@@ -31,6 +31,10 @@ const TASK_CATEGORY_FILTERS = [
 	{ id: "taskCategoryInstruction", category: "Instruction Following" },
 	{ id: "taskCategoryOther", category: "Other" },
 ];
+const CLIENT_BACKENDS = new Set([
+	"openai-compatible-chat-completions",
+	"lemonade-chat-completions",
+]);
 
 async function api(path, options = {}) {
 	const response = await fetch(path, {
@@ -624,16 +628,30 @@ function kindBadge(kind = "task") {
 	badge.textContent = kind || "task";
 	return badge;
 }
+function isClientBackend(backend) {
+	return CLIENT_BACKENDS.has(String(backend));
+}
 function specificRuntimeBackend(value) {
-	return value ? String(value) : null;
+	if (!value) return null;
+	const backend = String(value);
+	return backend === "llamacpp" || isClientBackend(backend) ? null : backend;
+}
+function recipeBackend(recipe) {
+	if (!recipe) return null;
+	const backend = String(recipe);
+	return backend === "llamacpp" ? "system" : backend;
 }
 function modelBackendLabel(entry, model) {
 	return (
 		specificRuntimeBackend(entry.provider_backend) ||
 		specificRuntimeBackend(entry.lemonade_backend) ||
+		specificRuntimeBackend(entry.llamacpp_backend) ||
+		specificRuntimeBackend(entry.requested_llamacpp_backend) ||
 		specificRuntimeBackend(entry.runtime_backend) ||
+		specificRuntimeBackend(model?.llamacpp_backend) ||
 		specificRuntimeBackend(model?.runtime_backend) ||
-		specificRuntimeBackend(model?.recipe) ||
+		recipeBackend(entry.recipe) ||
+		recipeBackend(model?.recipe) ||
 		specificRuntimeBackend(entry.backend) ||
 		"unknown"
 	);

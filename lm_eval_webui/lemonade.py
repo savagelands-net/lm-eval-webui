@@ -36,7 +36,7 @@ def _runtime_backend(recipe: str, recipe_options: dict[str, Any]) -> str:
     explicit = recipe_options.get("llamacpp_backend")
     if explicit:
         return str(explicit)
-    return "" if recipe == "llamacpp" else recipe
+    return "system" if recipe == "llamacpp" else recipe
 
 
 def loaded_model_metadata_from_health(
@@ -51,12 +51,11 @@ def loaded_model_metadata_from_health(
             continue
         recipe = str(loaded.get("recipe") or "")
         recipe_options = loaded.get("recipe_options") or {}
-        llamacpp_backend = recipe_options.get("llamacpp_backend")
         runtime_backend = _runtime_backend(recipe, recipe_options)
         return {
             "model_name": model_name,
             "recipe": recipe,
-            "llamacpp_backend": str(llamacpp_backend) if llamacpp_backend else None,
+            "llamacpp_backend": runtime_backend if recipe == "llamacpp" else None,
             "runtime_backend": runtime_backend,
             "device": loaded.get("device"),
             "checkpoint": loaded.get("checkpoint", ""),
@@ -92,7 +91,6 @@ def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
         labels = item.get("labels") or []
         recipe = str(item.get("recipe", ""))
         recipe_options = item.get("recipe_options") or {}
-        llamacpp_backend = recipe_options.get("llamacpp_backend")
         runtime_backend = _runtime_backend(recipe, recipe_options)
         normalized.append(
             {
@@ -102,7 +100,7 @@ def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "size_gb": item.get("size"),
                 "context_window": item.get("max_context_window"),
                 "recipe": recipe,
-                "llamacpp_backend": llamacpp_backend,
+                "llamacpp_backend": runtime_backend if recipe == "llamacpp" else None,
                 "runtime_backend": runtime_backend,
                 "checkpoint": item.get("checkpoint", ""),
                 "suggested": bool(item.get("suggested", False)),

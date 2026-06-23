@@ -74,6 +74,40 @@ def _model_name(result_json: dict[str, Any]) -> str:
     )
 
 
+def _concrete_backend(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    backend = str(value)
+    return None if backend == "llamacpp" else backend
+
+
+def _recipe_backend(recipe: Any) -> str | None:
+    if recipe in (None, ""):
+        return None
+    backend = str(recipe)
+    return "system" if backend == "llamacpp" else backend
+
+
+def _provider_backend(job: dict[str, Any], metadata: dict[str, Any]) -> str | None:
+    for value in (
+        metadata.get("llamacpp_backend"),
+        metadata.get("runtime_backend"),
+        job.get("llamacpp_backend"),
+        job.get("requested_llamacpp_backend"),
+        job.get("runtime_backend"),
+        job.get("provider_backend"),
+        job.get("lemonade_backend"),
+    ):
+        backend = _concrete_backend(value)
+        if backend:
+            return backend
+    for recipe in (metadata.get("recipe"), job.get("recipe")):
+        backend = _recipe_backend(recipe)
+        if backend:
+            return backend
+    return _concrete_backend(job.get("backend"))
+
+
 def extract_result_rows(
     job_id: str, result_json: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -134,18 +168,7 @@ def extract_leaderboard_entry(
             }
         )
     score_values = [task["score"] for task in task_scores]
-    provider_backend = (
-        model_metadata.get("runtime_backend")
-        or model_metadata.get("llamacpp_backend")
-        or job.get("runtime_backend")
-        or job.get("llamacpp_backend")
-        or job.get("requested_llamacpp_backend")
-        or job.get("provider_backend")
-        or job.get("lemonade_backend")
-        or model_metadata.get("recipe")
-        or job.get("recipe")
-        or job.get("backend")
-    )
+    provider_backend = _provider_backend(job, model_metadata)
     return {
         "job_id": job.get("id"),
         "model": _model_name(result_json),
