@@ -74,6 +74,10 @@ _UNAVAILABLE_METRIC_RE = re.compile(
 _CODE_EVAL_METRIC_RE = re.compile(
     r"^\s*-?\s*metric\s*:\s*!function\s+utils\.pass_at", re.MULTILINE
 )
+_OPENAI_JUDGE_PROCESS_RESULTS_RE = re.compile(
+    r"^\s*process_results\s*:\s*!function\s+utils\.pisa_process_results_llm_judged\b",
+    re.MULTILINE,
+)
 UNSUPPORTED_DATASET_SCRIPT_PATHS = {
     "EleutherAI/unscramble",
     "kumapo/JAQKET",
@@ -495,6 +499,7 @@ def annotate_task_compatibility(
         or uses_unavailable_bleurt_metric(config_text)
         or uses_unavailable_metric(config_text)
         or uses_unsafe_code_eval_metric(config_text)
+        or uses_openai_judge_process_results(config_text)
     ):
         compatibility = "incompatible"
     elif output_type == "generate_until":
@@ -549,6 +554,10 @@ def uses_unavailable_metric(config_text: str) -> bool:
 
 def uses_unsafe_code_eval_metric(config_text: str) -> bool:
     return bool(_CODE_EVAL_METRIC_RE.search(config_text))
+
+
+def uses_openai_judge_process_results(config_text: str) -> bool:
+    return bool(_OPENAI_JUDGE_PROCESS_RESULTS_RE.search(config_text))
 
 
 def has_malformed_group_task_entries(config_text: str) -> bool:

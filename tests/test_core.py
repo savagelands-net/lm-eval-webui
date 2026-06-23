@@ -357,6 +357,23 @@ metric_list:
 
         self.assertEqual(task["compatibility"], "incompatible")
 
+    def test_openai_judged_process_result_tasks_are_marked_incompatible(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: pisa_en_llm_judged
+output_type: generate_until
+process_results: !function utils.pisa_process_results_llm_judged
+"""
+
+        task = annotate_task_compatibility(
+            {"name": "pisa_en_llm_judged", "description": "pisa_en_llm_judged.yaml"},
+            lambda _path: config_text,
+        )
+
+        self.assertEqual(task["compatibility"], "incompatible")
+
     def test_gated_dataset_tasks_are_marked_gated(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
@@ -1445,9 +1462,13 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('value="leaves" selected', index)
         self.assertIn('value="groups"', index)
         self.assertIn("Groups / tags", index)
-        list_actions = index[index.index('class="row list-actions"') : index.index('id="taskSpinner"')]
+        list_actions = index[
+            index.index('class="row list-actions"') : index.index('id="taskSpinner"')
+        ]
         self.assertIn('id="taskViewMode"', list_actions)
-        task_filter_rows = index[index.index('class="row task-filters"') : index.index('<p class="hint">')]
+        task_filter_rows = index[
+            index.index('class="row task-filters"') : index.index('<p class="hint">')
+        ]
         self.assertNotIn('id="taskViewMode"', task_filter_rows)
         self.assertNotIn('id="leafTasksOnly"', index)
         self.assertNotIn("leafTasksOnly", script)
