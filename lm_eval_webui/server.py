@@ -6,6 +6,7 @@ import importlib.util
 import json
 import math
 import mimetypes
+import os
 import re
 import subprocess
 from collections.abc import Callable
@@ -499,7 +500,7 @@ def annotate_task_compatibility(
         or uses_unavailable_bleurt_metric(config_text)
         or uses_unavailable_metric(config_text)
         or uses_unsafe_code_eval_metric(config_text)
-        or uses_openai_judge_process_results(config_text)
+        or uses_unavailable_openai_judge_process_results(config_text)
     ):
         compatibility = "incompatible"
     elif output_type == "generate_until":
@@ -558,6 +559,14 @@ def uses_unsafe_code_eval_metric(config_text: str) -> bool:
 
 def uses_openai_judge_process_results(config_text: str) -> bool:
     return bool(_OPENAI_JUDGE_PROCESS_RESULTS_RE.search(config_text))
+
+
+def uses_unavailable_openai_judge_process_results(config_text: str) -> bool:
+    return uses_openai_judge_process_results(config_text) and not has_openai_api_key()
+
+
+def has_openai_api_key() -> bool:
+    return bool(os.getenv("OPENAI_API_KEY", "").strip())
 
 
 def has_malformed_group_task_entries(config_text: str) -> bool:

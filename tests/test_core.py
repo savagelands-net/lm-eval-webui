@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import tempfile
 import threading
 import time
@@ -8,6 +9,7 @@ import unittest
 from importlib import import_module
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 def symbol(module_name, attribute):
@@ -357,7 +359,7 @@ metric_list:
 
         self.assertEqual(task["compatibility"], "incompatible")
 
-    def test_openai_judged_process_result_tasks_are_marked_incompatible(self):
+    def test_openai_judged_process_result_tasks_require_openai_api_key(self):
         annotate_task_compatibility = symbol(
             "lm_eval_webui.server", "annotate_task_compatibility"
         )
@@ -367,12 +369,37 @@ output_type: generate_until
 process_results: !function utils.pisa_process_results_llm_judged
 """
 
-        task = annotate_task_compatibility(
-            {"name": "pisa_en_llm_judged", "description": "pisa_en_llm_judged.yaml"},
-            lambda _path: config_text,
-        )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            task = annotate_task_compatibility(
+                {
+                    "name": "pisa_en_llm_judged",
+                    "description": "pisa_en_llm_judged.yaml",
+                },
+                lambda _path: config_text,
+            )
 
         self.assertEqual(task["compatibility"], "incompatible")
+
+    def test_openai_judged_process_result_tasks_are_available_with_openai_api_key(self):
+        annotate_task_compatibility = symbol(
+            "lm_eval_webui.server", "annotate_task_compatibility"
+        )
+        config_text = """
+task: pisa_en_llm_judged
+output_type: generate_until
+process_results: !function utils.pisa_process_results_llm_judged
+"""
+
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            task = annotate_task_compatibility(
+                {
+                    "name": "pisa_en_llm_judged",
+                    "description": "pisa_en_llm_judged.yaml",
+                },
+                lambda _path: config_text,
+            )
+
+        self.assertEqual(task["compatibility"], "compatible")
 
     def test_gated_dataset_tasks_are_marked_gated(self):
         annotate_task_compatibility = symbol(
