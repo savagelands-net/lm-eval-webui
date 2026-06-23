@@ -1,4 +1,4 @@
-"""Command-line entrypoint for the lm-eval Benchmark WebUI."""
+"""Command-line entrypoint for the Lemonade lm-eval Benchmark WebUI."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ from lm_eval_webui.server import serve
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the lm-eval Benchmark WebUI")
+    parser = argparse.ArgumentParser(
+        description="Run the Lemonade lm-eval Benchmark WebUI"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--data-dir", default="data")

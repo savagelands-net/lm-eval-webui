@@ -137,12 +137,15 @@ def extract_leaderboard_entry(
     provider_backend = (
         model_metadata.get("runtime_backend")
         or model_metadata.get("llamacpp_backend")
+        or job.get("runtime_backend")
+        or job.get("llamacpp_backend")
+        or job.get("requested_llamacpp_backend")
         or job.get("provider_backend")
         or job.get("lemonade_backend")
+        or model_metadata.get("recipe")
+        or job.get("recipe")
+        or job.get("backend")
     )
-    recipe = model_metadata.get("recipe") or job.get("recipe")
-    if not provider_backend and recipe and recipe != "llamacpp":
-        provider_backend = recipe
     return {
         "job_id": job.get("id"),
         "model": _model_name(result_json),

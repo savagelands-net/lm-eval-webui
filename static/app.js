@@ -625,15 +625,17 @@ function kindBadge(kind = "task") {
 	return badge;
 }
 function specificRuntimeBackend(value) {
-	return value && value !== "llamacpp" ? value : null;
+	return value ? String(value) : null;
 }
 function modelBackendLabel(entry, model) {
 	return (
 		specificRuntimeBackend(entry.provider_backend) ||
 		specificRuntimeBackend(entry.lemonade_backend) ||
+		specificRuntimeBackend(entry.runtime_backend) ||
 		specificRuntimeBackend(model?.runtime_backend) ||
 		specificRuntimeBackend(model?.recipe) ||
-		"—"
+		specificRuntimeBackend(entry.backend) ||
+		"unknown"
 	);
 }
 function modelForEntry(entry) {

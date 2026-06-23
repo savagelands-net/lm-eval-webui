@@ -1,4 +1,4 @@
-# lm-eval Benchmark WebUI
+# Lemonade lm-eval Benchmark WebUI
 
 A small stdlib Python WebUI for selecting OpenAI-compatible chat models,
 launching `lm-evaluation-harness` benchmarks, and viewing rolled-up leaderboard

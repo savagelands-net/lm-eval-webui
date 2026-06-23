@@ -351,16 +351,7 @@ class JobManager:
     def _apply_model_metadata(job: dict[str, Any]) -> None:
         metadata = job.get("model_metadata") or {}
         if not isinstance(metadata, dict):
-            return
-        provider_backend = metadata.get("runtime_backend") or metadata.get(
-            "llamacpp_backend"
-        )
-        recipe = metadata.get("recipe")
-        if not provider_backend and recipe and recipe != "llamacpp":
-            provider_backend = recipe
-        if provider_backend:
-            job["provider_backend"] = provider_backend
-            job["lemonade_backend"] = provider_backend
+            metadata = {}
         for key in (
             "runtime_backend",
             "llamacpp_backend",
@@ -371,6 +362,30 @@ class JobManager:
         ):
             if metadata.get(key) not in (None, ""):
                 job[key] = metadata[key]
+        provider_backend = JobManager._provider_backend(job, metadata)
+        if provider_backend:
+            job["provider_backend"] = provider_backend
+            job["lemonade_backend"] = provider_backend
+            job.setdefault("runtime_backend", provider_backend)
+
+    @staticmethod
+    def _provider_backend(
+        job: dict[str, Any], metadata: dict[str, Any] | None = None
+    ) -> str | None:
+        metadata = metadata or {}
+        for value in (
+            metadata.get("runtime_backend"),
+            metadata.get("llamacpp_backend"),
+            job.get("runtime_backend"),
+            job.get("llamacpp_backend"),
+            job.get("requested_llamacpp_backend"),
+            metadata.get("recipe"),
+            job.get("recipe"),
+            job.get("backend"),
+        ):
+            if value not in (None, ""):
+                return str(value)
+        return None
 
     def _remove_job_artifacts(self, job: dict[str, Any]) -> None:
         for key in ("log_path", "output_path", "telemetry_path"):

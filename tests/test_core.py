@@ -1034,6 +1034,54 @@ class JobManagerTelemetryTests(unittest.TestCase):
         self.assertEqual(job["provider_backend"], "vulkan")
         self.assertEqual(leaderboard[0]["provider_backend"], "vulkan")
 
+    def test_successful_job_falls_back_to_backend_when_metadata_probe_misses(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        def launcher(command, _env, _log_path):
+            output_path = Path(command[command.index("--output_path") + 1])
+            result_dir = output_path / "Model-A"
+            result_dir.mkdir(parents=True)
+            (result_dir / "results_2026-06-21T00-00-00.json").write_text(
+                json.dumps(
+                    {
+                        "config": {
+                            "model": "openai-compatible-chat-completions",
+                            "model_args": {"model": "Model-A"},
+                            "limit": 1,
+                        },
+                        "results": {
+                            "gsm8k": {
+                                "exact_match,strict-match": 1.0,
+                                "exact_match,flexible-extract": 1.0,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=launcher,
+                run_async=False,
+                model_metadata_probe=lambda _base_url, _model_id: {},
+            )
+
+            created = manager.create_jobs(
+                {"model_ids": ["Model-A"], "tasks": ["gsm8k"]}
+            )
+            job = manager.get_job(created[0]["id"])
+            leaderboard = manager.leaderboard_entries()
+
+        self.assertEqual(job["runtime_backend"], "openai-compatible-chat-completions")
+        self.assertEqual(job["provider_backend"], "openai-compatible-chat-completions")
+        self.assertEqual(
+            leaderboard[0]["provider_backend"], "openai-compatible-chat-completions"
+        )
+
     def test_probe_is_skipped_when_benchmark_ttft_exists(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
         probe_called = False
@@ -1316,6 +1364,28 @@ class LeaderboardScoringTests(unittest.TestCase):
         self.assertEqual(entry["category_scores"][0]["category"], "Math")
         self.assertEqual(entry["category_scores"][0]["score"], 50.0)
 
+    def test_leaderboard_falls_back_to_job_backend_when_runtime_metadata_missing(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+
+        entry = extract_leaderboard_entry(
+            {
+                "id": "job-1",
+                "model_id": "Model-A",
+                "status": "succeeded",
+                "backend": "openai-compatible-chat-completions",
+            },
+            {
+                "model_name": "Model-A",
+                "results": {"gsm8k": {"exact_match,strict-match": 1.0}},
+            },
+        )
+
+        self.assertEqual(
+            entry["provider_backend"], "openai-compatible-chat-completions"
+        )
+
     def test_coding_results_use_coding_category_not_other(self):
         extract_leaderboard_entry = symbol(
             "lm_eval_webui.results", "extract_leaderboard_entry"
@@ -1514,7 +1584,7 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn('id="hideUnknownTasks"', index)
         self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)
-        self.assertIn("lm-eval Benchmark WebUI", index)
+        self.assertIn("Lemonade lm-eval Benchmark WebUI", index)
         self.assertNotIn("Local lm-eval Benchmark WebUI", index)
         self.assertIn("OpenAI-compatible base URL", index)
         self.assertIn('id="openaiBaseUrl"', index)
@@ -1543,6 +1613,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("openaiBaseUrl", script)
         self.assertIn("function modelForEntry", script)
         self.assertIn("runtime_backend", script)
+        self.assertIn("entry.backend", script)
+        self.assertNotIn('value !== "llamacpp"', script)
         self.assertIn("Other", script)
         self.assertIn("categoryBadge", script)
         self.assertNotIn("compatibility: ${compatibility}", script)
