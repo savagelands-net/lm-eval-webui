@@ -287,8 +287,7 @@ summary {
 	width: 100%;
 	min-width: 0;
 }
-.job-summary,
-.job-expanded-header {
+.job-summary {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
 	gap: 12px;

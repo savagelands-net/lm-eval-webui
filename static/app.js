@@ -292,11 +292,6 @@ function renderJobs() {
 		summary.append(summaryBlock(job.model_id, `Job ${job.id}`), summaryActions);
 		summary.addEventListener("click", () => selectJob(job.id));
 		const expanded = div("job-expanded");
-		const header = div("job-expanded-header");
-		header.append(
-			summaryBlock(job.model_id, `Job ${job.id}`),
-			statusBadge(job),
-		);
 		const taskList = document.createElement("ul");
 		taskList.className = "job-task-list";
 		job.tasks.forEach((taskName) => {
@@ -304,7 +299,7 @@ function renderJobs() {
 			taskItem.textContent = taskName;
 			taskList.append(taskItem);
 		});
-		expanded.append(header, taskList);
+		expanded.append(taskList);
 		details.append(summary, expanded);
 		row.append(details);
 		list.append(row);
