@@ -232,7 +232,9 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(models[0]["llamacpp_backend"], "vulkan")
         self.assertEqual(models[0]["runtime_backend"], "vulkan")
 
-    def test_normalize_models_reports_system_for_llamacpp_without_explicit_backend(self):
+    def test_normalize_models_reports_system_for_llamacpp_without_explicit_backend(
+        self,
+    ):
         normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
 
         models = normalize_models(
@@ -1201,6 +1203,112 @@ class JobManagerTelemetryTests(unittest.TestCase):
         self.assertEqual(telemetry["probe_time_to_headers_s"], 9.0)
 
 
+class JobManagerRerunTests(unittest.TestCase):
+    def test_rerun_jobs_creates_fresh_jobs_from_saved_settings(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+
+        def launcher(command, _env, _log_path):
+            commands.append(command)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=launcher,
+                run_async=False,
+            )
+            original = manager.create_jobs(
+                {
+                    "model_ids": ["Model-A"],
+                    "tasks": ["gsm8k", "ifeval"],
+                    "openai_base_url": "http://example.test",
+                    "backend": "openai-compatible-chat-completions",
+                    "llamacpp_backend": "rocm",
+                    "limit": "2",
+                    "num_fewshot": 3,
+                    "batch_size": "4",
+                    "max_gen_toks": 128,
+                    "num_concurrent": 2,
+                    "timeout": 45,
+                    "apply_chat_template": False,
+                    "fewshot_as_multiturn": True,
+                    "log_samples": True,
+                    "predict_only": True,
+                }
+            )[0]
+
+            rerun = manager.rerun_jobs([original["id"]])[0]
+            original_job = manager.get_job(original["id"])
+            rerun_job = manager.get_job(rerun["id"])
+
+        self.assertNotEqual(rerun_job["id"], original_job["id"])
+        self.assertEqual(rerun_job["rerun_of"], original_job["id"])
+        self.assertEqual(rerun_job["model_id"], "Model-A")
+        self.assertEqual(rerun_job["tasks"], ["gsm8k", "ifeval"])
+        self.assertEqual(rerun_job["openai_base_url"], "http://example.test")
+        self.assertEqual(rerun_job["requested_llamacpp_backend"], "rocm")
+        self.assertEqual(rerun_job["eval_options"]["limit"], "2")
+        self.assertEqual(rerun_job["eval_options"]["num_fewshot"], 3)
+        self.assertEqual(rerun_job["eval_options"]["batch_size"], "4")
+        self.assertEqual(rerun_job["eval_options"]["max_gen_toks"], 128)
+        self.assertEqual(rerun_job["eval_options"]["num_concurrent"], 2)
+        self.assertEqual(rerun_job["eval_options"]["timeout"], 45)
+        self.assertFalse(rerun_job["eval_options"]["apply_chat_template"])
+        self.assertTrue(rerun_job["eval_options"]["fewshot_as_multiturn"])
+        self.assertTrue(rerun_job["eval_options"]["log_samples"])
+        self.assertTrue(rerun_job["eval_options"]["predict_only"])
+        self.assertEqual(len(commands), 2)
+        self.assertIn("--limit", commands[1])
+        self.assertIn("2", commands[1])
+        self.assertIn("llamacpp_backend=rocm", commands[1])
+        self.assertNotEqual(
+            commands[0][commands[0].index("--output_path") + 1],
+            commands[1][commands[1].index("--output_path") + 1],
+        )
+
+    def test_rerun_jobs_skips_missing_ids(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                run_async=False,
+            )
+
+            reruns = manager.rerun_jobs(["missing-job"])
+
+        self.assertEqual(reruns, [])
+
+    def test_rerun_jobs_skips_jobs_without_model_or_tasks(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                run_async=False,
+            )
+            (Path(tmp) / "data" / "jobs" / "legacy.json").write_text(
+                json.dumps(
+                    {
+                        "id": "legacy",
+                        "model_id": "",
+                        "tasks": [],
+                        "created_at": 1,
+                        "updated_at": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            reruns = manager.rerun_jobs(["legacy"])
+
+        self.assertEqual(reruns, [])
+
+
 class JobManagerConcurrencyTests(unittest.TestCase):
     def test_async_jobs_are_serialized_by_default(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
@@ -1667,6 +1775,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("function toggleAllJobs", script)
         self.assertIn("function syncSelectAllJobs", script)
         self.assertIn("clearSelectedJobs", script)
+        self.assertIn("rerunSelectedJobs", script)
+        self.assertIn('id="rerunSelectedJobs"', index)
+        self.assertIn("/api/jobs/rerun", script)
+        self.assertIn("function rerunSelectedJobs", script)
         self.assertIn("max_concurrent_jobs", script)
         self.assertIn("llamacpp_backend", script)
         self.assertIn("llamacppBackend", script)
@@ -1705,6 +1817,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("job-task-list", styles)
         server = Path("lm_eval_webui/server.py").read_text(encoding="utf-8")
         self.assertIn("Cache-Control", server)
+        self.assertIn("/api/jobs/rerun", server)
         self.assertIn("no-store", server)
         self.assertIn("BrokenPipeError", server)
 

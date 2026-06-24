@@ -109,6 +109,19 @@ class JobManager:
                 self._run_job(job["id"])
         return created
 
+    def rerun_jobs(self, job_ids: list[str]) -> list[dict[str, Any]]:
+        created: list[dict[str, Any]] = []
+        for job_id in [str(job_id) for job_id in job_ids if str(job_id).strip()]:
+            try:
+                job = self.get_job(job_id)
+            except FileNotFoundError:
+                continue
+            payload = self._rerun_payload(job)
+            if not payload.get("model_ids") or not payload.get("tasks"):
+                continue
+            created.extend(self.create_jobs(payload))
+        return created
+
     def set_max_concurrent_jobs(self, value: int) -> None:
         with self._scheduler:
             self.max_concurrent_jobs = max(1, int(value))
@@ -215,6 +228,7 @@ class JobManager:
         )
         command, env = build_eval_command(request, self.project_root)
         now = time.time()
+        eval_options = self._eval_options(request)
         job = {
             "id": job_id,
             "model_id": model_id,
@@ -229,12 +243,15 @@ class JobManager:
             "openai_base_url": str(openai_base_url).rstrip("/"),
             "lemonade_base_url": str(openai_base_url).rstrip("/"),
             "backend": backend,
+            "eval_options": eval_options,
             "telemetry": {},
             "result_files": [],
             "returncode": None,
             "error": None,
             "_env": env,
         }
+        if payload.get("rerun_of"):
+            job["rerun_of"] = str(payload["rerun_of"])
         if llamacpp_backend:
             job.update(
                 {
@@ -404,6 +421,60 @@ class JobManager:
             return None
         backend = str(recipe)
         return "system" if backend == "llamacpp" else backend
+
+    @staticmethod
+    def _eval_options(request: EvalRequest) -> dict[str, Any]:
+        return {
+            "lm_eval_python": request.lm_eval_python,
+            "limit": request.limit,
+            "num_fewshot": request.num_fewshot,
+            "batch_size": request.batch_size,
+            "max_gen_toks": request.max_gen_toks,
+            "num_concurrent": request.num_concurrent,
+            "timeout": request.timeout,
+            "apply_chat_template": request.apply_chat_template,
+            "fewshot_as_multiturn": request.fewshot_as_multiturn,
+            "log_samples": request.log_samples,
+            "predict_only": request.predict_only,
+        }
+
+    @staticmethod
+    def _rerun_payload(job: dict[str, Any]) -> dict[str, Any]:
+        options = job.get("eval_options")
+        if not isinstance(options, dict):
+            options = {}
+        model_id = str(job.get("model_id") or "").strip()
+        payload: dict[str, Any] = {
+            "model_ids": [model_id] if model_id else [],
+            "tasks": list(job.get("tasks") or []),
+            "openai_base_url": job.get("openai_base_url")
+            or job.get("lemonade_base_url"),
+            "backend": job.get("backend", "openai-compatible-chat-completions"),
+            "rerun_of": job.get("id"),
+        }
+        for key in (
+            "lm_eval_python",
+            "limit",
+            "num_fewshot",
+            "batch_size",
+            "max_gen_toks",
+            "num_concurrent",
+            "timeout",
+            "apply_chat_template",
+            "fewshot_as_multiturn",
+            "log_samples",
+            "predict_only",
+        ):
+            if key in options:
+                payload[key] = options[key]
+            elif key in job:
+                payload[key] = job[key]
+        llamacpp_backend = job.get("requested_llamacpp_backend") or job.get(
+            "llamacpp_backend"
+        )
+        if llamacpp_backend:
+            payload["llamacpp_backend"] = llamacpp_backend
+        return payload
 
     def _remove_job_artifacts(self, job: dict[str, Any]) -> None:
         for key in ("log_path", "output_path", "telemetry_path"):

@@ -317,6 +317,7 @@ function renderSelectedJobs() {
 	const count = state.selectedJobs.size;
 	$("selectedJobCount").textContent = `${count.toLocaleString()} selected`;
 	$("clearSelectedJobs").disabled = count === 0;
+	$("rerunSelectedJobs").disabled = count === 0;
 	syncSelectAllJobs();
 }
 function syncSelectAllJobs() {
@@ -524,6 +525,26 @@ async function clearFailedJobs() {
 		$("setupMessage").textContent = `Cleared ${payload.cleared} failed job(s).`;
 		renderJobs();
 		await loadResults();
+	} catch (error) {
+		$("setupMessage").textContent = error.message;
+	}
+}
+async function rerunSelectedJobs() {
+	const jobIds = [...state.selectedJobs];
+	if (!jobIds.length) return;
+	$("setupMessage").textContent = "Rerunning selected jobs…";
+	try {
+		const payload = await api("/api/jobs/rerun", {
+			method: "POST",
+			body: JSON.stringify({ job_ids: jobIds }),
+		});
+		const created = payload.jobs || [];
+		state.selectedJobs.clear();
+		if (created.length) state.selectedJobId = created[created.length - 1].id;
+		$("setupMessage").textContent = `Started ${created.length} rerun job(s).`;
+		await loadJobs();
+		await loadResults();
+		await loadSelectedJobLog({ forceScroll: true });
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
 	}
@@ -752,6 +773,7 @@ $("refreshModels").addEventListener("click", loadModels);
 $("modelFilter").addEventListener("input", renderModels);
 $("selectAllJobs").addEventListener("change", toggleAllJobs);
 $("clearSelectedJobs").addEventListener("click", clearSelectedJobs);
+$("rerunSelectedJobs").addEventListener("click", rerunSelectedJobs);
 $("clearFailedJobs").addEventListener("click", clearFailedJobs);
 $("refreshJobs").addEventListener("click", () =>
 	Promise.all([loadJobs(), loadResults(), loadSelectedJobLog()]),

@@ -765,6 +765,19 @@ def make_handler(
                     self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                     return
                 self._json({"jobs": jobs}, HTTPStatus.CREATED)
+            elif parsed.path == "/api/jobs/rerun":
+                payload = self._read_json()
+                job_ids = payload.get("job_ids") or []
+                if isinstance(job_ids, str):
+                    job_ids = [job_ids]
+                try:
+                    jobs = manager.rerun_jobs([str(job_id) for job_id in job_ids])
+                except ValueError as exc:
+                    self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                self._json(
+                    {"jobs": jobs, "all_jobs": manager.list_jobs()}, HTTPStatus.CREATED
+                )
             elif parsed.path == "/api/jobs/clear-failed":
                 cleared = manager.clear_failed_jobs()
                 self._json({"cleared": cleared, "jobs": manager.list_jobs()})
