@@ -219,6 +219,9 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
         generations: list[str] = []
         for output in outputs:
             choices = sorted(output.get("choices", []), key=itemgetter("index"))
+            if not choices:
+                generations.append("")
+                continue
             for choice in choices:
                 message = choice.get("message") or {}
                 content = message.get("content")

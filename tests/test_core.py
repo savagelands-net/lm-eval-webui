@@ -174,6 +174,24 @@ class LemonadeModelTests(unittest.TestCase):
 
         self.assertNotIn("llamacpp_backend", payload)
 
+    def test_parse_generations_preserves_empty_choice_responses(self):
+        OpenAICompatibleChatCompletion = symbol(
+            "lm_eval_webui.lemonade_model", "OpenAICompatibleChatCompletion"
+        )
+
+        generations = OpenAICompatibleChatCompletion.parse_generations(
+            [
+                {"model": "Model-A", "timings": {"predicted_n": 0}, "choices": []},
+                {
+                    "choices": [
+                        {"index": 0, "message": {"role": "assistant", "content": "ok"}}
+                    ]
+                },
+            ]
+        )
+
+        self.assertEqual(generations, ["", "ok"])
+
     def test_stream_response_json_records_client_ttft(self):
         stream_response_json = symbol(
             "lm_eval_webui.lemonade_model", "stream_response_json"
