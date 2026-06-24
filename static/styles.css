@@ -287,6 +287,12 @@ summary {
 .job-row .job-select {
 	margin: 14px 0 0;
 }
+.job-row:has(.job-details:not([open])) {
+	align-items: center;
+}
+.job-row:has(.job-details:not([open])) .job-select {
+	margin: 0;
+}
 .job-details {
 	width: 100%;
 	min-width: 0;

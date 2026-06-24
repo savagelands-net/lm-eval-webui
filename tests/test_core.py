@@ -1815,6 +1815,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("job-summary", styles)
         self.assertIn("job-expanded", styles)
         self.assertIn("job-task-list", styles)
+        self.assertIn(".job-row:has(.job-details:not([open]))", styles)
+        self.assertIn("align-items: center", styles)
         server = Path("lm_eval_webui/server.py").read_text(encoding="utf-8")
         self.assertIn("Cache-Control", server)
         self.assertIn("/api/jobs/rerun", server)
