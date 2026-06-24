@@ -280,18 +280,8 @@ summary {
 }
 .job-row {
 	display: grid;
-	grid-template-columns: auto 1fr;
+	grid-template-columns: 1fr;
 	gap: 10px;
-	align-items: start;
-}
-.job-row .job-select {
-	margin: 14px 0 0;
-}
-.job-row:has(.job-details:not([open])) {
-	align-items: center;
-}
-.job-row:has(.job-details:not([open])) .job-select {
-	margin: 0;
 }
 .job-details {
 	width: 100%;
@@ -303,6 +293,15 @@ summary {
 	grid-template-columns: minmax(0, 1fr) auto;
 	gap: 12px;
 	align-items: center;
+}
+.job-summary-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 10px;
+}
+.job-summary-actions .job-select {
+	margin: 0;
 }
 .job-summary {
 	cursor: pointer;

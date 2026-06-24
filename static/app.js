@@ -270,6 +270,7 @@ function renderJobs() {
 		const row = div("job-row");
 		const checkbox = input("checkbox", "job-select", job.id);
 		checkbox.checked = state.selectedJobs.has(job.id);
+		checkbox.addEventListener("click", (event) => event.stopPropagation());
 		checkbox.addEventListener("change", () => {
 			checkbox.checked
 				? state.selectedJobs.add(job.id)
@@ -286,10 +287,9 @@ function renderJobs() {
 		});
 		const summary = document.createElement("summary");
 		summary.className = "job-summary";
-		summary.append(
-			summaryBlock(job.model_id, `Job ${job.id}`),
-			statusBadge(job),
-		);
+		const summaryActions = div("job-summary-actions");
+		summaryActions.append(statusBadge(job), checkbox);
+		summary.append(summaryBlock(job.model_id, `Job ${job.id}`), summaryActions);
 		summary.addEventListener("click", () => selectJob(job.id));
 		const expanded = div("job-expanded");
 		const header = div("job-expanded-header");
@@ -306,7 +306,7 @@ function renderJobs() {
 		});
 		expanded.append(header, taskList);
 		details.append(summary, expanded);
-		row.append(checkbox, details);
+		row.append(details);
 		list.append(row);
 	});
 	renderSelectedJobs();
