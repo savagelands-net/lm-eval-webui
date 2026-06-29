@@ -1,9 +1,10 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: lm-eval-webui
   namespace: lm-eval-webui
 spec:
+  serviceName: lm-eval-webui
   replicas: 1
   selector:
     matchLabels:
@@ -35,6 +36,18 @@ spec:
               value: "10"
             - name: LMEVAL_WEBUI_HF_RETRY_MAX_DELAY
               value: "120"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: token
+                  optional: true
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: token
+                  optional: true
             - name: PI_BENCH_AUTH_SOURCE
               value: /secrets/pi-auth/auth.json
             - name: PI_BENCH_REQUIRE_PI_AUTH

@@ -2212,19 +2212,50 @@ class BrokenPipeResponseTests(unittest.TestCase):
 
 
 class SmokeTests(unittest.TestCase):
-    def test_kubernetes_manifest_persists_huggingface_cache_on_data_volume(self):
-        deployment = Path("deploy/k8s/deployment.yaml").read_text(encoding="utf-8")
+    def test_kubernetes_manifest_uses_statefulset_with_data_volume(self):
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
+            encoding="utf-8"
+        )
 
-        self.assertIn("name: HF_HOME", deployment)
-        self.assertIn("value: /data/huggingface", deployment)
-        self.assertIn("name: HF_DATASETS_CACHE", deployment)
-        self.assertIn("value: /data/huggingface/datasets", deployment)
-        self.assertIn("name: LMEVAL_WEBUI_HF_RETRIES", deployment)
-        self.assertIn('value: "5"', deployment)
-        self.assertIn("name: LMEVAL_WEBUI_HF_RETRY_DELAY", deployment)
-        self.assertIn('value: "10"', deployment)
-        self.assertIn("name: LMEVAL_WEBUI_HF_RETRY_MAX_DELAY", deployment)
-        self.assertIn('value: "120"', deployment)
+        self.assertIn("kind: StatefulSet", statefulset)
+        self.assertIn("serviceName: lm-eval-webui", statefulset)
+        self.assertIn("name: data", statefulset)
+        self.assertIn("claimName: lm-eval-data", statefulset)
+        self.assertIn("mountPath: /data", statefulset)
+        self.assertFalse(Path("deploy/k8s/deployment.yaml").exists())
+
+    def test_kubernetes_manifest_persists_huggingface_cache_on_data_volume(self):
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("name: HF_HOME", statefulset)
+        self.assertIn("value: /data/huggingface", statefulset)
+        self.assertIn("name: HF_DATASETS_CACHE", statefulset)
+        self.assertIn("value: /data/huggingface/datasets", statefulset)
+        self.assertIn("name: LMEVAL_WEBUI_HF_RETRIES", statefulset)
+        self.assertIn('value: "5"', statefulset)
+        self.assertIn("name: LMEVAL_WEBUI_HF_RETRY_DELAY", statefulset)
+        self.assertIn('value: "10"', statefulset)
+        self.assertIn("name: LMEVAL_WEBUI_HF_RETRY_MAX_DELAY", statefulset)
+        self.assertIn('value: "120"', statefulset)
+
+    def test_kubernetes_manifest_supports_optional_huggingface_token(self):
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
+            encoding="utf-8"
+        )
+        secret_example = Path("deploy/k8s/huggingface-secret.example.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("name: HF_TOKEN", statefulset)
+        self.assertIn("secretKeyRef:", statefulset)
+        self.assertIn("name: huggingface-token", statefulset)
+        self.assertIn("key: token", statefulset)
+        self.assertIn("optional: true", statefulset)
+        self.assertIn("name: HUGGING_FACE_HUB_TOKEN", statefulset)
+        self.assertIn("name: huggingface-token", secret_example)
+        self.assertIn("token:", secret_example)
 
     def test_job_log_css_cannot_force_page_horizontal_scroll(self):
         styles = Path("static/styles.css").read_text(encoding="utf-8")

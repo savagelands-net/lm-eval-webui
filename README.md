@@ -75,24 +75,34 @@ docker build -f deploy/Dockerfile -t savagemindz/lm-eval-webui:latest .
 docker push savagemindz/lm-eval-webui:latest
 ```
 
-Edit `deploy/k8s/deployment.yaml` to use that image, then create the Pi auth
+Edit `deploy/k8s/statefulset.yaml` to use that image, then create the Pi auth
 secret and deploy:
 
 ```bash
 kubectl apply -f deploy/k8s/namespace.yaml
 kubectl -n lm-eval-webui create secret generic pi-auth \
   --from-file=auth.json="$HOME/.pi/agent/auth.json"
+# Optional, improves Hugging Face dataset download bandwidth/rate limits:
+kubectl -n lm-eval-webui create secret generic huggingface-token \
+  --from-literal=token="$HF_TOKEN"
 kubectl apply -f deploy/k8s/pvc.yaml
-kubectl apply -f deploy/k8s/deployment.yaml
 kubectl apply -f deploy/k8s/service.yaml
+kubectl apply -f deploy/k8s/statefulset.yaml
 ```
 
-Set `OPENAI_BASE_URL` in `deploy/k8s/deployment.yaml` to the OpenAI-compatible
-endpoint reachable from the pod. The manifest also points Hugging Face caches at
-`/data/huggingface` so downloaded lm-eval datasets persist on the `lm-eval-data`
-PVC across pod restarts. Transient Hugging Face dataset API failures are retried
-by default; tune this with `LMEVAL_WEBUI_HF_RETRIES`,
-`LMEVAL_WEBUI_HF_RETRY_DELAY`, and `LMEVAL_WEBUI_HF_RETRY_MAX_DELAY`.
+Set `OPENAI_BASE_URL` in `deploy/k8s/statefulset.yaml` to the OpenAI-compatible
+endpoint reachable from the pod. If you previously deployed the old Deployment
+manifest, delete or scale down that Deployment before applying the StatefulSet so
+only one pod uses the `ReadWriteOnce` data PVC. The example runs as a
+single-replica StatefulSet with `/data` mounted from the `lm-eval-data` PVC. It
+also points Hugging Face
+caches at `/data/huggingface` so downloaded lm-eval datasets persist across pod
+restarts. Authenticated Hugging Face downloads are optional: if the
+`huggingface-token` Secret exists, Kubernetes exposes it as `HF_TOKEN` and
+`HUGGING_FACE_HUB_TOKEN` inside the WebUI container. Transient Hugging Face
+dataset API failures are retried by default; tune this with
+`LMEVAL_WEBUI_HF_RETRIES`, `LMEVAL_WEBUI_HF_RETRY_DELAY`, and
+`LMEVAL_WEBUI_HF_RETRY_MAX_DELAY`.
 
 The Kubernetes manifest uses a privileged Docker-in-Docker sidecar. If your
 cluster disallows privileged pods, replace the sidecar with a cluster-native job
