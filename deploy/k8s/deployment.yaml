@@ -29,6 +29,12 @@ spec:
               value: /data/huggingface
             - name: HF_DATASETS_CACHE
               value: /data/huggingface/datasets
+            - name: LMEVAL_WEBUI_HF_RETRIES
+              value: "5"
+            - name: LMEVAL_WEBUI_HF_RETRY_DELAY
+              value: "10"
+            - name: LMEVAL_WEBUI_HF_RETRY_MAX_DELAY
+              value: "120"
             - name: PI_BENCH_AUTH_SOURCE
               value: /secrets/pi-auth/auth.json
             - name: PI_BENCH_REQUIRE_PI_AUTH

@@ -372,6 +372,60 @@ class LmEvalRunnerTests(unittest.TestCase):
             class OtherFilter:
                 pass
 
+    def test_transient_huggingface_gateway_timeout_is_retried(self):
+        run_cli_with_hf_retries = symbol(
+            "lm_eval_webui.lm_eval_runner", "run_cli_with_hf_retries"
+        )
+        attempts = []
+        sleeps = []
+
+        class Response:
+            status_code = 504
+            url = "https://huggingface.co/api/datasets/SaylorTwift/bbh/tree/main"
+
+        class HfError(OSError):
+            response = Response()
+
+        def cli_evaluate():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise HfError("504 Server Error: Gateway Time-out")
+            return 0
+
+        result = run_cli_with_hf_retries(
+            cli_evaluate,
+            retries=2,
+            initial_delay=0,
+            sleep=sleeps.append,
+            stderr=types.SimpleNamespace(
+                write=lambda _message: None, flush=lambda: None
+            ),
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(sleeps, [0])
+
+    def test_non_huggingface_errors_are_not_retried(self):
+        run_cli_with_hf_retries = symbol(
+            "lm_eval_webui.lm_eval_runner", "run_cli_with_hf_retries"
+        )
+        attempts = []
+
+        def cli_evaluate():
+            attempts.append(1)
+            raise RuntimeError("model endpoint failed")
+
+        with self.assertRaisesRegex(RuntimeError, "model endpoint"):
+            run_cli_with_hf_retries(
+                cli_evaluate,
+                retries=2,
+                initial_delay=0,
+                sleep=lambda _delay: None,
+            )
+
+        self.assertEqual(len(attempts), 1)
+
 
 class LemonadeModelTests(unittest.TestCase):
     def test_add_runtime_options_adds_selected_llamacpp_backend(self):
@@ -2165,6 +2219,12 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("value: /data/huggingface", deployment)
         self.assertIn("name: HF_DATASETS_CACHE", deployment)
         self.assertIn("value: /data/huggingface/datasets", deployment)
+        self.assertIn("name: LMEVAL_WEBUI_HF_RETRIES", deployment)
+        self.assertIn('value: "5"', deployment)
+        self.assertIn("name: LMEVAL_WEBUI_HF_RETRY_DELAY", deployment)
+        self.assertIn('value: "10"', deployment)
+        self.assertIn("name: LMEVAL_WEBUI_HF_RETRY_MAX_DELAY", deployment)
+        self.assertIn('value: "120"', deployment)
 
     def test_job_log_css_cannot_force_page_horizontal_scroll(self):
         styles = Path("static/styles.css").read_text(encoding="utf-8")
