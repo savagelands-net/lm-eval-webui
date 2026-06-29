@@ -7,7 +7,7 @@ results.
 ## Run
 
 ```bash
-cd lm-eval
+cd lm-eval-webui
 git submodule update --init --recursive
 python -m lm_eval_webui
 ```
