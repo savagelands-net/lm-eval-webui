@@ -1,0 +1,4 @@
+[submodule "third_party/pi-bench"]
+	path = third_party/pi-bench
+	url = https://github.com/kyuz0/pi-bench
+	ignore = dirty

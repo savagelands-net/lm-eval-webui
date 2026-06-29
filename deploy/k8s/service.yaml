@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lm-eval-webui
+  namespace: lm-eval-webui
+spec:
+  type: ClusterIP
+  selector:
+    app: lm-eval-webui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

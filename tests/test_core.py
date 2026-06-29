@@ -87,6 +87,222 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
         self.assertIn("llamacpp_backend=vulkan", command)
 
 
+class SweMiniRunnerTests(unittest.TestCase):
+    def test_swe_mini_command_uses_repo_owned_wrapper_for_codex_judge(self):
+        SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
+        build_swe_mini_command = symbol(
+            "lm_eval_webui.swe_mini", "build_swe_mini_command"
+        )
+        swe_mini_output_path = symbol("lm_eval_webui.swe_mini", "swe_mini_output_path")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "repo"
+            pi_bench_dir = project_root / "third_party" / "pi-bench"
+            scripts_dir = project_root / "scripts"
+            pi_bench_dir.mkdir(parents=True)
+            scripts_dir.mkdir()
+            wrapper = scripts_dir / "run-swe-mini.sh"
+            wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+            output_path = swe_mini_output_path(
+                "Gemma-4-26B-A4B-it-GGUF",
+                "job123",
+                "lemonade-swe",
+                pi_bench_dir=pi_bench_dir,
+            )
+
+            command, env = build_swe_mini_command(
+                SweMiniRequest(
+                    model_id="Gemma-4-26B-A4B-it-GGUF",
+                    task_target="tasks/verified-mini/django__django-12209.json",
+                    output_path=str(output_path),
+                    pi_bench_dir=str(pi_bench_dir),
+                    project_root=str(project_root),
+                    openai_base_url="https://llm.savagelands.net",
+                    judge_model="openai-codex/gpt-5.5",
+                    model_tag="job123",
+                    platform="lemonade-swe",
+                    timeout_minutes=45,
+                    pass_count=2,
+                    context_window=131072,
+                    require_pi_auth=True,
+                )
+            )
+            models_path_exists = Path(env["PI_BENCH_MODELS_JSON"]).is_file()
+
+        self.assertEqual(
+            command[:2],
+            [
+                str(wrapper),
+                "tasks/verified-mini/django__django-12209.json",
+            ],
+        )
+        self.assertIn("--provider", command)
+        self.assertIn("lemonade", command)
+        self.assertIn("--model", command)
+        self.assertIn("Gemma-4-26B-A4B-it-GGUF", command)
+        self.assertIn("--judge-model", command)
+        self.assertIn("openai-codex/gpt-5.5", command)
+        self.assertIn("--model-tag", command)
+        self.assertIn("job123", command)
+        self.assertIn("--platform", command)
+        self.assertIn("lemonade-swe", command)
+        self.assertIn("--timeout", command)
+        self.assertIn("45", command)
+        self.assertIn("--pass", command)
+        self.assertIn("2", command)
+        self.assertIn("--context", command)
+        self.assertIn("131072", command)
+        self.assertEqual(env["PI_BENCH_REQUIRE_PI_AUTH"], "1")
+        self.assertEqual(env["SWE_MINI_OUTPUT_PATH"], str(output_path))
+        self.assertEqual(env["LMEVAL_WEBUI_LAUNCH_CWD"], str(project_root))
+        self.assertEqual(env["PI_BENCH_DIR"], str(pi_bench_dir))
+        self.assertTrue(models_path_exists)
+
+    def test_default_pi_bench_dir_is_repo_submodule(self):
+        default_pi_bench_dir = symbol("lm_eval_webui.swe_mini", "default_pi_bench_dir")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "repo"
+            expected = project_root / "third_party" / "pi-bench"
+
+            self.assertEqual(default_pi_bench_dir(project_root), expected)
+
+    def test_write_swe_mini_models_json_uses_selected_endpoint_and_model(self):
+        write_swe_mini_models_json = symbol(
+            "lm_eval_webui.swe_mini", "write_swe_mini_models_json"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            models_path = write_swe_mini_models_json(
+                Path(tmp),
+                base_url="https://llm.savagelands.net",
+                model_id="Gemma-4-26B-A4B-it-GGUF",
+                context_window=131072,
+            )
+            try:
+                payload = json.loads(Path(models_path).read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                self.fail(f"invalid generated models.json: {exc}")
+
+        lemonade = payload["providers"]["lemonade"]
+        self.assertEqual(lemonade["baseUrl"], "https://llm.savagelands.net/v1")
+        self.assertEqual(lemonade["api"], "openai-completions")
+        self.assertEqual(lemonade["apiKey"], "lemonade")
+        self.assertEqual(lemonade["models"][0]["id"], "Gemma-4-26B-A4B-it-GGUF")
+        self.assertEqual(lemonade["models"][0]["contextWindow"], 131072)
+
+    def test_find_swe_mini_tasks_reads_verified_mini_task_files(self):
+        find_swe_mini_tasks = symbol("lm_eval_webui.swe_mini", "find_swe_mini_tasks")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "pi-bench" / "tasks" / "verified-mini"
+            task_dir.mkdir(parents=True)
+            (task_dir / "django__django-12209.json").write_text(
+                json.dumps(
+                    {
+                        "id": "django__django-12209",
+                        "repo": "django/django",
+                        "prompt": "Fix the queryset bug.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            tasks = find_swe_mini_tasks(task_dir.parents[1])
+
+        self.assertEqual(tasks[0]["name"], "django__django-12209")
+        self.assertEqual(tasks[0]["repo"], "django/django")
+        self.assertEqual(tasks[0]["suite"], "swe_mini")
+        self.assertEqual(tasks[0]["compatibility"], "compatible")
+        self.assertEqual(tasks[0]["kind"], "task")
+
+    def test_server_task_loader_can_return_swe_mini_tasks(self):
+        load_available_tasks = symbol("lm_eval_webui.server", "load_available_tasks")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "pi-bench" / "tasks" / "verified-mini"
+            task_dir.mkdir(parents=True)
+            (task_dir / "django__django-12209.json").write_text(
+                json.dumps(
+                    {
+                        "id": "django__django-12209",
+                        "repo": "django/django",
+                        "prompt": "Fix the queryset bug.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            tasks = load_available_tasks(
+                suite="swe_mini", pi_bench_dir=task_dir.parents[1]
+            )
+
+        self.assertEqual([task["name"] for task in tasks], ["django__django-12209"])
+        self.assertEqual(tasks[0]["suite"], "swe_mini")
+
+    def test_swe_mini_results_parse_rows_and_leaderboard(self):
+        extract_swe_mini_result_rows = symbol(
+            "lm_eval_webui.swe_mini", "extract_swe_mini_result_rows"
+        )
+        extract_swe_mini_leaderboard_entry = symbol(
+            "lm_eval_webui.swe_mini", "extract_swe_mini_leaderboard_entry"
+        )
+        summary = {
+            "totalTasks": 2,
+            "passedTasks": 1,
+            "passRate": 0.5,
+            "averageDurationMs": 1500,
+            "results": [
+                {
+                    "task": "django__django-12209",
+                    "durationMs": 1000,
+                    "judgeScore": 1,
+                    "judgeRationale": "fixed",
+                    "succeededAtAttempt": 1,
+                    "attempts": [{"judgeScore": 0}, {"judgeScore": 1}],
+                },
+                {
+                    "task": "sphinx-doc__sphinx-10435",
+                    "durationMs": 2000,
+                    "judgeScore": 0,
+                    "judgeRationale": "missed",
+                },
+            ],
+        }
+        job = {
+            "id": "job-1",
+            "suite": "swe_mini",
+            "model_id": "Model-A",
+            "status": "succeeded",
+            "provider_backend": "rocm",
+            "swe_options": {
+                "judge_model": "openai-codex/gpt-5.5",
+                "platform": "lemonade-swe",
+                "pass_count": 2,
+            },
+        }
+
+        rows = extract_swe_mini_result_rows(job, summary)
+        entry = extract_swe_mini_leaderboard_entry(job, summary)
+
+        self.assertEqual(
+            [(row["task"], row["metric"], row["value"]) for row in rows],
+            [
+                ("django__django-12209", "judge_score", 1.0),
+                ("django__django-12209", "duration_seconds", 1.0),
+                ("sphinx-doc__sphinx-10435", "judge_score", 0.0),
+                ("sphinx-doc__sphinx-10435", "duration_seconds", 2.0),
+            ],
+        )
+        self.assertTrue(all(row["suite"] == "swe_mini" for row in rows))
+        self.assertEqual(entry["suite"], "swe_mini")
+        self.assertEqual(entry["overall_score"], 50.0)
+        self.assertEqual(entry["total_tasks"], 2)
+        self.assertEqual(entry["passed_tasks"], 1)
+        self.assertEqual(entry["judge_model"], "openai-codex/gpt-5.5")
+        self.assertEqual(entry["task_scores"][0]["attempts"], 2)
+
+
 class LmEvalRunnerTests(unittest.TestCase):
     def test_acp_duplicate_filter_registration_is_ignored(self):
         allow_duplicate_acp_filter_registration = symbol(
@@ -318,6 +534,23 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(metadata["runtime_backend"], "system")
 
 
+class SweMiniWrapperScriptTests(unittest.TestCase):
+    def test_wrapper_consumes_pass_flag_instead_of_forwarding_to_pi_bench(self):
+        script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
+        pass_case = script[
+            script.index("--pass)") : script.index("shift 2", script.index("--pass)"))
+        ]
+
+        self.assertIn('PASS_COUNT="$2"', pass_case)
+        self.assertNotIn("EXTRA_ARGS", pass_case)
+
+    def test_wrapper_fails_fast_when_docker_run_produces_no_result(self):
+        script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
+
+        self.assertIn("No result file produced", script)
+        self.assertIn('exit "$EXIT_CODE"', script)
+
+
 class TaskCompatibilityTests(unittest.TestCase):
     def test_malformed_generate_until_group_is_marked_incompatible(self):
         annotate_task_compatibility = symbol(
@@ -480,33 +713,39 @@ output_type: generate_until
 
         truthfulqa_task = annotate_task_compatibility(
             {"name": "truthfulqa_va", "description": "truthfulqa_va.yaml"},
-            lambda _path: """
+            lambda _path: (
+                """
 task: truthfulqa_va
 dataset_path: gplsi/truthfulqa_va
 output_type: generate_until
-""",
+"""
+            ),
         )
 
         self.assertEqual(truthfulqa_task["compatibility"], "gated")
 
         gpqa_task = annotate_task_compatibility(
             {"name": "gpqa_main_generative_n_shot", "description": "gpqa.yaml"},
-            lambda _path: """
+            lambda _path: (
+                """
 task: gpqa_main_generative_n_shot
 dataset_path: Idavidrein/gpqa
 output_type: generate_until
-""",
+"""
+            ),
         )
 
         self.assertEqual(gpqa_task["compatibility"], "gated")
 
         salt_task = annotate_task_compatibility(
             {"name": "salt_eng-swa_prompt_1", "description": "salt.yaml"},
-            lambda _path: """
+            lambda _path: (
+                """
 task: salt_eng-swa_prompt_1
 dataset_path: Sunbird/salt
 output_type: generate_until
-""",
+"""
+            ),
         )
 
         self.assertEqual(salt_task["compatibility"], "gated")
@@ -679,11 +918,13 @@ output_type: generate_until
             with self.subTest(task_name=task["name"]):
                 classified = annotate_task_compatibility(
                     task,
-                    lambda _path: """
+                    lambda _path: (
+                        """
 group: aggregate
 task:
   - child_task
-""",
+"""
+                    ),
                 )
 
                 self.assertEqual(classified["kind"], expected_kind)
@@ -732,11 +973,13 @@ task:
         tasks = load_available_tasks(
             "/home/iain/.venv/lm-eval/bin/python",
             run_command=lambda *_args, **_kwargs: Completed(),
-            config_reader=lambda _path: """
+            config_reader=lambda _path: (
+                """
 group: bbh_cot_zeroshot
 task:
   - bbh_cot_zeroshot_boolean_expressions
-""",
+"""
+            ),
         )
         by_name = {task["name"]: task for task in tasks}
 
@@ -1227,6 +1470,180 @@ class JobManagerTelemetryTests(unittest.TestCase):
         self.assertEqual(telemetry["probe_time_to_headers_s"], 9.0)
 
 
+class JobManagerSweMiniTests(unittest.TestCase):
+    def _write_swe_task(self, pi_bench_dir: Path, task_id: str) -> None:
+        task_dir = pi_bench_dir / "tasks" / "verified-mini"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / f"{task_id}.json").write_text(
+            json.dumps(
+                {
+                    "id": task_id,
+                    "repo": "django/django",
+                    "prompt": "Fix the regression.",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_swe_mini_job_uses_suite_command_and_parses_summary(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+        envs = []
+
+        def launcher(command, env, _log_path):
+            commands.append(command)
+            envs.append(env)
+            output_path = Path(env["SWE_MINI_OUTPUT_PATH"])
+            output_path.mkdir(parents=True)
+            (output_path / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "totalTasks": 1,
+                        "passedTasks": 1,
+                        "passRate": 1.0,
+                        "averageDurationMs": 1000,
+                        "results": [
+                            {
+                                "task": "django__django-12209",
+                                "durationMs": 1000,
+                                "judgeScore": 1,
+                                "judgeRationale": "fixed",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "repo"
+            pi_bench_dir = project_root / "third_party" / "pi-bench"
+            scripts_dir = project_root / "scripts"
+            pi_bench_dir.mkdir(parents=True)
+            scripts_dir.mkdir()
+            (scripts_dir / "run-swe-mini.sh").write_text(
+                "#!/bin/sh\n", encoding="utf-8"
+            )
+            self._write_swe_task(pi_bench_dir, "django__django-12209")
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=project_root,
+                launcher=launcher,
+                run_async=False,
+                pi_bench_dir=pi_bench_dir,
+            )
+
+            created = manager.create_jobs(
+                {
+                    "suite": "swe_mini",
+                    "model_ids": ["Gemma-4-26B-A4B-it-GGUF"],
+                    "tasks": ["django__django-12209"],
+                    "judge_model": "openai-codex/gpt-5.5",
+                    "openai_base_url": "https://llm.savagelands.net",
+                    "swe_timeout": 45,
+                    "pass_count": 2,
+                    "platform": "lemonade-swe",
+                    "context_window": 131072,
+                }
+            )
+            job = manager.get_job(created[0]["id"])
+            rows = manager.result_rows()
+            leaderboard = manager.leaderboard_entries()
+            try:
+                models_json = json.loads(
+                    Path(envs[0]["PI_BENCH_MODELS_JSON"]).read_text(encoding="utf-8")
+                )
+            except json.JSONDecodeError as exc:
+                self.fail(f"invalid generated models.json: {exc}")
+
+        self.assertEqual(job["suite"], "swe_mini")
+        self.assertEqual(job["swe_options"]["judge_model"], "openai-codex/gpt-5.5")
+        self.assertEqual(job["swe_options"]["pass_count"], 2)
+        self.assertEqual(job["swe_options"]["timeout_minutes"], 45)
+        self.assertEqual(
+            job["result_files"], [str(Path(job["output_path"]) / "summary.json")]
+        )
+        self.assertEqual(
+            commands[0][0], str(project_root / "scripts" / "run-swe-mini.sh")
+        )
+        self.assertIn("--judge-model", commands[0])
+        self.assertIn("openai-codex/gpt-5.5", commands[0])
+        self.assertIn("--pass", commands[0])
+        self.assertIn("2", commands[0])
+        self.assertEqual(envs[0]["PI_BENCH_REQUIRE_PI_AUTH"], "1")
+        self.assertEqual(envs[0]["PI_BENCH_DIR"], str(pi_bench_dir))
+        self.assertEqual(envs[0]["LMEVAL_WEBUI_LAUNCH_CWD"], str(project_root))
+        self.assertEqual(
+            models_json["providers"]["lemonade"]["baseUrl"],
+            "https://llm.savagelands.net/v1",
+        )
+        self.assertEqual(rows[0]["suite"], "swe_mini")
+        self.assertEqual(leaderboard[0]["suite"], "swe_mini")
+        self.assertEqual(leaderboard[0]["overall_score"], 100.0)
+
+    def test_rerun_jobs_preserves_swe_mini_options(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+
+        def launcher(command, env, _log_path):
+            commands.append(command)
+            output_path = Path(env["SWE_MINI_OUTPUT_PATH"])
+            output_path.mkdir(parents=True)
+            (output_path / "summary.json").write_text(
+                json.dumps({"totalTasks": 0, "passedTasks": 0, "passRate": 0}),
+                encoding="utf-8",
+            )
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "repo"
+            pi_bench_dir = project_root / "third_party" / "pi-bench"
+            scripts_dir = project_root / "scripts"
+            pi_bench_dir.mkdir(parents=True)
+            scripts_dir.mkdir()
+            (scripts_dir / "run-swe-mini.sh").write_text(
+                "#!/bin/sh\n", encoding="utf-8"
+            )
+            self._write_swe_task(pi_bench_dir, "django__django-12209")
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=project_root,
+                launcher=launcher,
+                run_async=False,
+                pi_bench_dir=pi_bench_dir,
+            )
+            original = manager.create_jobs(
+                {
+                    "suite": "swe_mini",
+                    "model_ids": ["Model-A"],
+                    "tasks": ["django__django-12209"],
+                    "judge_model": "openai-codex/gpt-5.5",
+                    "pass_count": 3,
+                    "swe_timeout": 60,
+                    "platform": "lemonade-swe",
+                    "require_pi_auth": True,
+                }
+            )[0]
+
+            rerun = manager.rerun_jobs([original["id"]])[0]
+            original_job = manager.get_job(original["id"])
+            rerun_job = manager.get_job(rerun["id"])
+
+        self.assertEqual(rerun_job["suite"], "swe_mini")
+        self.assertEqual(rerun_job["rerun_of"], original_job["id"])
+        self.assertEqual(
+            rerun_job["swe_options"]["judge_model"], "openai-codex/gpt-5.5"
+        )
+        self.assertEqual(rerun_job["swe_options"]["pass_count"], 3)
+        self.assertEqual(rerun_job["swe_options"]["timeout_minutes"], 60)
+        self.assertNotEqual(rerun_job["output_path"], original_job["output_path"])
+        self.assertIn("--pass", commands[1])
+        self.assertIn("3", commands[1])
+        self.assertIn("--model-tag", commands[1])
+        self.assertIn(rerun_job["id"], commands[1])
+
+
 class JobManagerRerunTests(unittest.TestCase):
     def test_rerun_jobs_creates_fresh_jobs_from_saved_settings(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
@@ -1695,9 +2112,11 @@ class ResultJsonEncodingTests(unittest.TestCase):
 
         self.assertNotIn(b"NaN", handler.body)
         self.assertNotIn(b"Infinity", handler.body)
-        self.assertEqual(
-            json.loads(handler.body), {"value": None, "nested": {"rate": None}}
-        )
+        try:
+            payload = json.loads(handler.body)
+        except json.JSONDecodeError as exc:
+            self.fail(f"invalid JSON response: {exc}")
+        self.assertEqual(payload, {"value": None, "nested": {"rate": None}})
 
 
 class BrokenPipeResponseTests(unittest.TestCase):
@@ -1731,6 +2150,16 @@ class BrokenPipeResponseTests(unittest.TestCase):
 
 
 class SmokeTests(unittest.TestCase):
+    def test_job_log_css_cannot_force_page_horizontal_scroll(self):
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+        log_rule = styles[
+            styles.index(".log {") : styles.index("}\n", styles.index(".log {"))
+        ]
+
+        self.assertIn("max-width: 100%", log_rule)
+        self.assertIn("min-width: 0", log_rule)
+        self.assertIn("overflow-wrap: anywhere", log_rule)
+
     def test_static_ui_exposes_selected_job_controls(self):
         index = Path("static/index.html").read_text(encoding="utf-8")
         script = Path("static/app.js").read_text(encoding="utf-8")
@@ -1757,7 +2186,7 @@ class SmokeTests(unittest.TestCase):
         ]
         self.assertIn('id="taskViewMode"', list_actions)
         task_filter_rows = index[
-            index.index('class="row task-filters"') : index.index('<p class="hint">')
+            index.index('class="row task-filters"') : index.index('id="taskHint"')
         ]
         self.assertNotIn('id="taskViewMode"', task_filter_rows)
         self.assertNotIn('id="leafTasksOnly"', index)
@@ -1773,6 +2202,11 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('(task.kind || "task") === "task"', script)
         self.assertIn("function pruneSelectedTasksForViewMode", script)
         self.assertIn("state.selectedTasks = new Set", script)
+        self.assertIn('id="suiteSweMini"', index)
+        self.assertIn('id="sweJudgeModel"', index)
+        self.assertIn("openai-codex/gpt-5.5", index)
+        self.assertIn('id="sweUsePiAuth"', index)
+        self.assertIn("suite: state.activeSuite", script)
         self.assertIn("kindBadge(task.kind)", script)
         self.assertNotIn('id="hideUnknownTasks"', index)
         self.assertNotIn("hideUnknownTasks", script)
@@ -1788,7 +2222,9 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("function selectVisibleTasks", script)
         self.assertIn("job-select", script)
         self.assertIn("job-summary-actions", script)
-        self.assertIn("summaryActions.append(statusBadge(job), checkbox)", script)
+        self.assertIn(
+            "summaryActions.append(suiteBadge(job), statusBadge(job), checkbox)", script
+        )
         self.assertIn('checkbox.addEventListener("click"', script)
         self.assertIn("job-details", script)
         self.assertIn("job-summary", script)

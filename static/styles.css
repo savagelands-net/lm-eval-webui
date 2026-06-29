@@ -102,6 +102,21 @@ main {
 	padding: 7px 10px;
 	font-size: 0.9rem;
 }
+.suite-tabs {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-bottom: 12px;
+}
+.suite-tabs button {
+	padding: 8px 12px;
+	font-size: 0.92rem;
+}
+.suite-tabs button.active {
+	border-color: var(--accent);
+	background: #1f3b61;
+	color: var(--accent-2);
+}
 .task-view-mode {
 	display: flex;
 	align-items: center;
@@ -258,6 +273,9 @@ summary {
 .badge.category {
 	color: var(--accent-2);
 }
+.badge.suite {
+	color: var(--good);
+}
 .selected-panel {
 	margin-top: 16px;
 }
@@ -330,6 +348,10 @@ summary {
 	padding-left: 28px;
 	color: var(--muted);
 }
+.job-meta {
+	color: var(--muted);
+	font-size: 0.86rem;
+}
 .job-task-list li {
 	padding: 2px 0;
 	overflow-wrap: anywhere;
@@ -350,13 +372,17 @@ summary {
 .log {
 	min-height: 120px;
 	max-height: 360px;
+	max-width: 100%;
+	min-width: 0;
 	overflow: auto;
+	overflow-wrap: anywhere;
 	background: #070a10;
 	border: 1px solid var(--border);
 	border-radius: 12px;
 	padding: 12px;
 	margin: 14px 0 0;
 	white-space: pre-wrap;
+	word-break: break-word;
 }
 .leaderboard,
 .table-wrap {

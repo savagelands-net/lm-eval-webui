@@ -1,0 +1,53 @@
+services:
+  docker:
+    image: docker:27-dind
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - workspace:/workspace
+      - docker-graph:/var/lib/docker
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  webui:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    depends_on:
+      docker:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DOCKER_HOST: tcp://docker:2375
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://llm.savagelands.net}
+      PI_BENCH_AUTH_SOURCE: /secrets/pi-auth/auth.json
+      PI_BENCH_REQUIRE_PI_AUTH: ${PI_BENCH_REQUIRE_PI_AUTH:-0}
+    volumes:
+      - data:/data
+      - workspace:/workspace
+      - ${PI_AUTH_JSON:-${HOME}/.pi/agent/auth.json}:/secrets/pi-auth/auth.json:ro
+    command:
+      - bash
+      - -lc
+      - |
+        rm -rf /workspace/lm-eval
+        mkdir -p /workspace/lm-eval
+        cp -a /app/. /workspace/lm-eval/
+        cd /workspace/lm-eval
+        python -m lm_eval_webui \
+          --host 0.0.0.0 \
+          --port 8080 \
+          --data-dir /data \
+          --static-dir static \
+          --openai-base-url "$${OPENAI_BASE_URL}" \
+          --pi-bench-dir /workspace/lm-eval/third_party/pi-bench
+
+volumes:
+  data:
+  workspace:
+  docker-graph:

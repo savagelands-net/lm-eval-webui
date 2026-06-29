@@ -19,6 +19,21 @@ from .results import (
     load_result_file,
 )
 from .runner import EvalRequest, build_eval_command
+from .swe_mini import (  # type: ignore[reportMissingImports]
+    DEFAULT_SWE_MINI_JUDGE_MODEL,
+    DEFAULT_SWE_MINI_PLATFORM,
+    LAUNCH_CWD_ENV,
+    SWE_MINI_SUITE,
+    SweMiniRequest,
+    build_swe_mini_command,
+    cleanup_swe_mini_task_target,
+    extract_swe_mini_leaderboard_entry,
+    extract_swe_mini_result_rows,
+    default_pi_bench_dir,
+    find_swe_mini_result_files,
+    materialize_swe_mini_task_target,
+    swe_mini_output_path,
+)
 from .telemetry import aggregate_telemetry_file
 
 Launcher = Callable[[list[str], dict[str, str], Path], int]
@@ -28,12 +43,15 @@ LLAMACPP_BACKENDS = {"system", "vulkan", "rocm"}
 
 
 def default_launcher(command: list[str], env: dict[str, str], log_path: Path) -> int:
+    launch_cwd = env.get(LAUNCH_CWD_ENV) or None
+    process_env = {key: value for key, value in env.items() if key != LAUNCH_CWD_ENV}
     with log_path.open("a", encoding="utf-8") as log_file:
         process = subprocess.Popen(  # noqa: S603
             command,
             stdout=log_file,
             stderr=subprocess.STDOUT,
-            env=env,
+            env=process_env,
+            cwd=launch_cwd,
             text=True,
         )
         return process.wait()
@@ -52,6 +70,7 @@ class JobManager:
         telemetry_probe: TelemetryProbe | None = None,
         model_metadata_probe: ModelMetadataProbe | None = None,
         max_concurrent_jobs: int = 1,
+        pi_bench_dir: str | Path | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.project_root = Path(project_root) if project_root else Path.cwd()
@@ -62,7 +81,12 @@ class JobManager:
         self.lemonade_base_url = self.openai_base_url
         self.telemetry_probe = telemetry_probe
         self.model_metadata_probe = model_metadata_probe
-        self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
+        self.max_concurrent_jobs = self._int_or_default(max_concurrent_jobs, 1)
+        self.pi_bench_dir = (
+            Path(pi_bench_dir)
+            if pi_bench_dir
+            else default_pi_bench_dir(self.project_root)
+        )
         self._active_jobs = 0
         self._scheduler = threading.Condition(threading.RLock())
         self.jobs_dir = self.data_dir / "jobs"
@@ -124,7 +148,7 @@ class JobManager:
 
     def set_max_concurrent_jobs(self, value: int) -> None:
         with self._scheduler:
-            self.max_concurrent_jobs = max(1, int(value))
+            self.max_concurrent_jobs = self._int_or_default(value, 1)
             self._scheduler.notify_all()
 
     def list_jobs(self) -> list[dict[str, Any]]:
@@ -148,9 +172,11 @@ class JobManager:
         for job in self.list_jobs():
             for result_file in job.get("result_files", []):
                 try:
-                    rows.extend(
-                        extract_result_rows(job["id"], load_result_file(result_file))
-                    )
+                    result_json = load_result_file(result_file)
+                    if self._job_suite(job) == SWE_MINI_SUITE:
+                        rows.extend(extract_swe_mini_result_rows(job, result_json))
+                    else:
+                        rows.extend(extract_result_rows(job["id"], result_json))
                 except (OSError, json.JSONDecodeError):
                     continue
         return rows
@@ -160,9 +186,13 @@ class JobManager:
         for job in self.list_jobs():
             for result_file in job.get("result_files", []):
                 try:
-                    entries.append(
-                        extract_leaderboard_entry(job, load_result_file(result_file))
-                    )
+                    result_json = load_result_file(result_file)
+                    if self._job_suite(job) == SWE_MINI_SUITE:
+                        entries.append(
+                            extract_swe_mini_leaderboard_entry(job, result_json)
+                        )
+                    else:
+                        entries.append(extract_leaderboard_entry(job, result_json))
                 except (OSError, json.JSONDecodeError):
                     continue
         return sorted(
@@ -195,6 +225,8 @@ class JobManager:
     def _create_job(
         self, model_id: str, tasks: list[str], payload: dict[str, Any]
     ) -> dict[str, Any]:
+        if self._payload_suite(payload) == SWE_MINI_SUITE:
+            return self._create_swe_mini_job(model_id, tasks, payload)
         job_id = uuid.uuid4().hex[:12]
         output_path = self.runs_dir / job_id
         log_path = self.logs_dir / f"{job_id}.log"
@@ -216,9 +248,9 @@ class JobManager:
             limit=payload.get("limit"),
             num_fewshot=self._optional_int(payload.get("num_fewshot")),
             batch_size=str(payload.get("batch_size", "1")),
-            max_gen_toks=int(payload.get("max_gen_toks", 256)),
-            num_concurrent=int(payload.get("num_concurrent", 1)),
-            timeout=int(payload.get("timeout", 300)),
+            max_gen_toks=self._int_or_default(payload.get("max_gen_toks"), 256),
+            num_concurrent=self._int_or_default(payload.get("num_concurrent"), 1),
+            timeout=self._int_or_default(payload.get("timeout"), 300),
             apply_chat_template=bool(payload.get("apply_chat_template", True)),
             fewshot_as_multiturn=bool(payload.get("fewshot_as_multiturn", False)),
             log_samples=bool(payload.get("log_samples", False)),
@@ -265,6 +297,102 @@ class JobManager:
         self._write_job(job)
         return self._public_job(job)
 
+    def _create_swe_mini_job(
+        self, model_id: str, tasks: list[str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        job_id = uuid.uuid4().hex[:12]
+        log_path = self.logs_dir / f"{job_id}.log"
+        platform = str(payload.get("platform") or DEFAULT_SWE_MINI_PLATFORM)
+        output_path = swe_mini_output_path(
+            model_id, job_id, platform, pi_bench_dir=self.pi_bench_dir
+        )
+        task_target = materialize_swe_mini_task_target(self.pi_bench_dir, tasks, job_id)
+        judge_model = str(payload.get("judge_model") or DEFAULT_SWE_MINI_JUDGE_MODEL)
+        timeout_minutes = self._int_or_default(
+            payload.get("swe_timeout", payload.get("timeout_minutes")), 30
+        )
+        pass_count = self._int_or_default(payload.get("pass_count"), 1)
+        context_window = self._optional_int(payload.get("context_window"))
+        require_pi_auth = self._optional_bool(payload.get("require_pi_auth"), True)
+        use_pi_auth = self._optional_bool(payload.get("use_pi_auth"), True)
+        provider = str(payload.get("swe_provider") or "lemonade")
+        openai_base_url = payload.get(
+            "openai_base_url", payload.get("lemonade_base_url", self.openai_base_url)
+        )
+        request = SweMiniRequest(
+            model_id=model_id,
+            task_target=task_target,
+            output_path=str(output_path),
+            pi_bench_dir=self.pi_bench_dir,
+            project_root=self.project_root,
+            openai_base_url=str(openai_base_url),
+            provider=provider,
+            judge_model=judge_model,
+            platform=platform,
+            model_tag=job_id,
+            timeout_minutes=timeout_minutes,
+            pass_count=pass_count,
+            context_window=context_window,
+            require_pi_auth=require_pi_auth,
+            use_pi_auth=use_pi_auth,
+        )
+        command, env = build_swe_mini_command(request)
+        now = time.time()
+        llamacpp_backend = self._optional_llamacpp_backend(
+            payload.get("llamacpp_backend")
+        )
+        swe_options = {
+            "provider": provider,
+            "judge_model": judge_model,
+            "platform": platform,
+            "model_tag": job_id,
+            "timeout_minutes": timeout_minutes,
+            "pass_count": pass_count,
+            "context_window": context_window,
+            "require_pi_auth": require_pi_auth,
+            "use_pi_auth": use_pi_auth,
+            "task_target": task_target,
+            "pi_bench_dir": str(self.pi_bench_dir),
+            "openai_base_url": str(openai_base_url),
+        }
+        job: dict[str, Any] = {
+            "id": job_id,
+            "suite": SWE_MINI_SUITE,
+            "model_id": model_id,
+            "tasks": tasks,
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "command": command,
+            "output_path": str(output_path),
+            "log_path": str(log_path),
+            "openai_base_url": str(openai_base_url).rstrip("/"),
+            "lemonade_base_url": str(openai_base_url).rstrip("/"),
+            "backend": SWE_MINI_SUITE,
+            "swe_options": swe_options,
+            "telemetry": {},
+            "result_files": [],
+            "returncode": None,
+            "error": None,
+            "_env": env,
+        }
+        if payload.get("rerun_of"):
+            job["rerun_of"] = str(payload["rerun_of"])
+        if context_window:
+            job["context_window"] = context_window
+        if llamacpp_backend:
+            job.update(
+                {
+                    "requested_llamacpp_backend": llamacpp_backend,
+                    "provider_backend": llamacpp_backend,
+                    "lemonade_backend": llamacpp_backend,
+                    "runtime_backend": llamacpp_backend,
+                    "llamacpp_backend": llamacpp_backend,
+                }
+            )
+        self._write_job(job)
+        return self._public_job(job)
+
     def _run_job_with_limit(self, job_id: str) -> None:
         with self._scheduler:
             while self._active_jobs >= self.max_concurrent_jobs:
@@ -281,27 +409,21 @@ class JobManager:
 
     def _run_job(self, job_id: str) -> None:
         job = self.get_job(job_id)
-        env = (
-            job.pop("_env", None)
-            or build_eval_command(
-                EvalRequest(
-                    job["model_id"],
-                    job["tasks"],
-                    job["output_path"],
-                    self.lm_eval_python,
-                ),
-                self.project_root,
-            )[1]
-        )
+        env = job.pop("_env", None) or self._launch_env_for_job(job)
         job["status"] = "running"
         job["updated_at"] = time.time()
         self._write_job(job)
         try:
             returncode = self.launcher(job["command"], env, Path(job["log_path"]))
             job["returncode"] = returncode
-            job["result_files"] = [
-                str(path) for path in find_result_files(job["output_path"])
-            ]
+            if self._job_suite(job) == SWE_MINI_SUITE:
+                job["result_files"] = [
+                    str(path) for path in find_swe_mini_result_files(job["output_path"])
+                ]
+            else:
+                job["result_files"] = [
+                    str(path) for path in find_result_files(job["output_path"])
+                ]
             job["telemetry"] = self._collect_telemetry(job, returncode)
             job["model_metadata"] = self._collect_model_metadata(job, returncode)
             self._apply_model_metadata(job)
@@ -310,12 +432,72 @@ class JobManager:
             job["status"] = "failed"
             job["error"] = str(exc)
         finally:
+            if self._job_suite(job) == SWE_MINI_SUITE:
+                raw_options = job.get("swe_options")
+                options = raw_options if isinstance(raw_options, dict) else {}
+                cleanup_swe_mini_task_target(
+                    options.get("pi_bench_dir", self.pi_bench_dir),
+                    options.get("task_target"),
+                )
             job["updated_at"] = time.time()
             self._write_job(job)
 
     def _read_job(self, path: Path) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+            try:
+                data = json.load(handle)
+            except json.JSONDecodeError as exc:
+                raise exc
+        return data if isinstance(data, dict) else {}
+
+    def _launch_env_for_job(self, job: dict[str, Any]) -> dict[str, str]:
+        if self._job_suite(job) == SWE_MINI_SUITE:
+            request = self._swe_request_from_job(job)
+            return build_swe_mini_command(request)[1]
+        return build_eval_command(
+            EvalRequest(
+                job["model_id"],
+                job["tasks"],
+                job["output_path"],
+                self.lm_eval_python,
+                openai_base_url=job.get("openai_base_url"),
+                backend=job.get("backend", "openai-compatible-chat-completions"),
+            ),
+            self.project_root,
+        )[1]
+
+    def _swe_request_from_job(self, job: dict[str, Any]) -> SweMiniRequest:
+        raw_options = job.get("swe_options")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        return SweMiniRequest(
+            model_id=str(job.get("model_id") or ""),
+            task_target=str(options.get("task_target") or ""),
+            output_path=str(job.get("output_path") or ""),
+            pi_bench_dir=options.get("pi_bench_dir") or self.pi_bench_dir,
+            project_root=self.project_root,
+            openai_base_url=str(
+                options.get("openai_base_url")
+                or job.get("openai_base_url")
+                or self.openai_base_url
+            ),
+            provider=str(options.get("provider") or "lemonade"),
+            judge_model=str(options.get("judge_model") or DEFAULT_SWE_MINI_JUDGE_MODEL),
+            platform=str(options.get("platform") or DEFAULT_SWE_MINI_PLATFORM),
+            model_tag=str(options.get("model_tag") or job.get("id") or ""),
+            timeout_minutes=self._int_or_default(options.get("timeout_minutes"), 30),
+            pass_count=self._int_or_default(options.get("pass_count"), 1),
+            context_window=self._optional_int(options.get("context_window")),
+            require_pi_auth=self._optional_bool(options.get("require_pi_auth"), True),
+            use_pi_auth=self._optional_bool(options.get("use_pi_auth"), True),
+        )
+
+    @staticmethod
+    def _payload_suite(payload: dict[str, Any]) -> str:
+        return str(payload.get("suite") or "lm_eval")
+
+    @staticmethod
+    def _job_suite(job: dict[str, Any]) -> str:
+        return str(job.get("suite") or "lm_eval")
 
     def _collect_telemetry(
         self, job: dict[str, Any], returncode: int | None
@@ -440,35 +622,56 @@ class JobManager:
 
     @staticmethod
     def _rerun_payload(job: dict[str, Any]) -> dict[str, Any]:
-        options = job.get("eval_options")
-        if not isinstance(options, dict):
-            options = {}
         model_id = str(job.get("model_id") or "").strip()
         payload: dict[str, Any] = {
+            "suite": JobManager._job_suite(job),
             "model_ids": [model_id] if model_id else [],
             "tasks": list(job.get("tasks") or []),
             "openai_base_url": job.get("openai_base_url")
             or job.get("lemonade_base_url"),
-            "backend": job.get("backend", "openai-compatible-chat-completions"),
             "rerun_of": job.get("id"),
         }
-        for key in (
-            "lm_eval_python",
-            "limit",
-            "num_fewshot",
-            "batch_size",
-            "max_gen_toks",
-            "num_concurrent",
-            "timeout",
-            "apply_chat_template",
-            "fewshot_as_multiturn",
-            "log_samples",
-            "predict_only",
-        ):
-            if key in options:
-                payload[key] = options[key]
-            elif key in job:
-                payload[key] = job[key]
+        if JobManager._job_suite(job) == SWE_MINI_SUITE:
+            raw_options = job.get("swe_options")
+            options = raw_options if isinstance(raw_options, dict) else {}
+            option_map = {
+                "judge_model": "judge_model",
+                "platform": "platform",
+                "pass_count": "pass_count",
+                "timeout_minutes": "swe_timeout",
+                "context_window": "context_window",
+                "require_pi_auth": "require_pi_auth",
+                "use_pi_auth": "use_pi_auth",
+                "provider": "swe_provider",
+                "openai_base_url": "openai_base_url",
+            }
+            for source_key, payload_key in option_map.items():
+                if source_key in options:
+                    payload[payload_key] = options[source_key]
+        else:
+            options = job.get("eval_options")
+            if not isinstance(options, dict):
+                options = {}
+            payload["backend"] = job.get(
+                "backend", "openai-compatible-chat-completions"
+            )
+            for key in (
+                "lm_eval_python",
+                "limit",
+                "num_fewshot",
+                "batch_size",
+                "max_gen_toks",
+                "num_concurrent",
+                "timeout",
+                "apply_chat_template",
+                "fewshot_as_multiturn",
+                "log_samples",
+                "predict_only",
+            ):
+                if key in options:
+                    payload[key] = options[key]
+                elif key in job:
+                    payload[key] = job[key]
         llamacpp_backend = job.get("requested_llamacpp_backend") or job.get(
             "llamacpp_backend"
         )
@@ -486,10 +689,13 @@ class JobManager:
                 continue
             if not path.exists():
                 continue
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink()
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except OSError:
+                continue
         job_path = self.jobs_dir / f"{job['id']}.json"
         if job_path.exists():
             job_path.unlink()
@@ -507,7 +713,31 @@ class JobManager:
     def _optional_int(value: Any) -> int | None:
         if value in (None, ""):
             return None
-        return int(value)
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _int_or_default(value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            parsed = default
+        return max(1, parsed)
+
+    @staticmethod
+    def _optional_bool(value: Any, default: bool) -> bool:
+        if value in (None, ""):
+            return default
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
 
     @staticmethod
     def _optional_llamacpp_backend(value: Any) -> str | None:

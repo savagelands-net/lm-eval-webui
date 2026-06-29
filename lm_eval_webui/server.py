@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from .jobs import JobManager
 from .lemonade import DEFAULT_OPENAI_BASE_URL, fetch_loaded_model_metadata, fetch_models
 from .runner import find_lm_eval_python
+from .swe_mini import find_swe_mini_tasks  # type: ignore[reportMissingImports]
 from .telemetry import probe_lemonade_chat_telemetry
 
 COMMON_TASKS = [
@@ -428,7 +429,13 @@ def load_available_tasks(
     lm_eval_python: str | None = None,
     run_command: Callable[..., Any] = subprocess.run,
     config_reader: Callable[[str], str | None] | None = None,
+    suite: str = "lm_eval",
+    pi_bench_dir: str | Path | None = None,
 ) -> list[dict[str, str]]:
+    if suite == "swe_mini":
+        return (
+            find_swe_mini_tasks(pi_bench_dir) if pi_bench_dir else find_swe_mini_tasks()
+        )
     python = find_lm_eval_python(lm_eval_python)
     package_root = find_lm_eval_package_root(python)
     read_config = config_reader or (
@@ -744,7 +751,17 @@ def make_handler(
             elif parsed.path == "/api/models":
                 self._handle_models(parsed.query)
             elif parsed.path == "/api/tasks":
-                self._json({"tasks": load_available_tasks(manager.lm_eval_python)})
+                params = parse_qs(parsed.query)
+                suite = params.get("suite", ["lm_eval"])[0]
+                self._json(
+                    {
+                        "tasks": load_available_tasks(
+                            manager.lm_eval_python,
+                            suite=suite,
+                            pi_bench_dir=manager.pi_bench_dir,
+                        )
+                    }
+                )
             elif parsed.path == "/api/jobs":
                 self._json({"jobs": manager.list_jobs()})
             elif parsed.path.startswith("/api/jobs/"):
@@ -818,10 +835,17 @@ def make_handler(
             self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
         def _read_json(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except (TypeError, ValueError, OverflowError):
+                return {}
             if length <= 0:
                 return {}
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return {}
+            return payload if isinstance(payload, dict) else {}
 
         def _json(
             self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK
@@ -855,6 +879,7 @@ def serve(
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
     lm_eval_python: str | None = None,
     max_concurrent_jobs: int = 1,
+    pi_bench_dir: str | Path | None = None,
 ) -> None:
     manager = JobManager(
         data_dir=data_dir,
@@ -864,6 +889,7 @@ def serve(
         telemetry_probe=probe_lemonade_chat_telemetry,
         model_metadata_probe=fetch_loaded_model_metadata,
         max_concurrent_jobs=max_concurrent_jobs,
+        pi_bench_dir=pi_bench_dir,
     )
     handler = make_handler(manager, static_dir, openai_base_url)
     httpd = ThreadingHTTPServer((host, port), handler)

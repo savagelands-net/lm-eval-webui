@@ -11,8 +11,8 @@
       <div>
         <h1>Lemonade lm-eval Benchmark WebUI</h1>
         <p>
-          Select OpenAI-compatible models, run lm-eval benchmarks, and compare
-          metrics.
+          Select OpenAI-compatible models, run lm-eval or SWE Mini benchmarks,
+          and compare metrics.
         </p>
       </div>
       <button id="refreshAll" type="button">Refresh</button>
@@ -41,8 +41,21 @@
             <div id="modelList" class="list empty">Loading models…</div>
           </div>
           <div class="selector-panel">
+            <div class="suite-tabs" role="tablist" aria-label="Benchmark suite">
+              <button
+                id="suiteLmEval"
+                class="active"
+                type="button"
+                data-suite="lm_eval"
+              >
+                lm-eval tasks
+              </button>
+              <button id="suiteSweMini" type="button" data-suite="swe_mini">
+                SWE Mini tasks
+              </button>
+            </div>
             <div class="row between list-header">
-              <h3>lm-eval tasks</h3>
+              <h3 id="taskPanelTitle">lm-eval tasks</h3>
               <div class="row list-actions">
                 <button id="selectVisibleTasks" type="button" disabled>
                   Select visible
@@ -50,7 +63,7 @@
                 <button id="unselectVisibleTasks" type="button" disabled>
                   Unselect visible
                 </button>
-                <label class="task-view-mode"
+                <label id="taskViewModeControl" class="task-view-mode"
                   >Task view
                   <select id="taskViewMode">
                     <option value="leaves" selected>Leaf tasks</option>
@@ -78,7 +91,7 @@
               <span id="taskPage" class="hint"></span>
               <button id="taskNext" type="button">Next</button>
             </div>
-            <div class="row task-filters">
+            <div id="lmEvalCategoryFilters" class="row task-filters">
               <label class="check compact"
                 ><input id="taskCategoryReasoning" type="checkbox" checked />
                 Reasoning</label
@@ -100,7 +113,7 @@
                 Other</label
               >
             </div>
-            <div class="row task-filters">
+            <div id="lmEvalCompatibilityFilters" class="row task-filters">
               <label class="check compact"
                 ><input id="hideIncompatibleTasks" type="checkbox" checked />
                 hide incompatible</label
@@ -114,7 +127,7 @@
                 non-English</label
               >
             </div>
-            <p class="hint">
+            <p id="taskHint" class="hint">
               OpenAI-compatible chat backends are generation oriented. Use
               generate_until tasks first.
             </p>
@@ -145,7 +158,7 @@
         </details>
         <details>
           <summary>Benchmark options</summary>
-          <div class="grid four">
+          <div id="lmEvalBenchmarkOptions" class="grid four">
             <label>Limit <input id="limit" value="1" /></label>
             <label
               >Few-shot <input id="numFewshot" type="number" value="0"
@@ -177,6 +190,41 @@
               ><input id="logSamples" type="checkbox" /> Log samples</label
             >
           </div>
+          <div id="sweMiniBenchmarkOptions" class="grid four" hidden>
+            <label
+              >Judge model
+              <input id="sweJudgeModel" value="openai-codex/gpt-5.5" />
+            </label>
+            <label
+              >Timeout minutes
+              <input id="sweTimeout" type="number" min="1" value="30" />
+            </label>
+            <label
+              >Pass attempts
+              <input id="swePassCount" type="number" min="1" value="1" />
+            </label>
+            <label
+              >Platform
+              <input id="swePlatform" value="lemonade-swe" />
+            </label>
+            <label
+              >Context window override
+              <input id="sweContextWindow" type="number" min="1" />
+            </label>
+            <label class="check"
+              ><input id="sweUsePiAuth" type="checkbox" checked /> Mount Pi
+              browser-login auth into Docker</label
+            >
+            <label class="check"
+              ><input id="sweRequirePiAuth" type="checkbox" checked /> Require
+              Pi auth for judge</label
+            >
+          </div>
+          <p id="sweMiniAuthHint" class="hint" hidden>
+            For gpt-5.5, run <code>pi</code> and login for
+            <code>openai-codex</code>. The WebUI only passes auth mount flags;
+            tokens stay in Pi's temporary Docker auth copy.
+          </p>
         </details>
         <div class="row actions">
           <button id="startJobs" class="primary" type="button">
@@ -194,6 +242,19 @@
               primary task score.
             </p>
           </div>
+        </div>
+        <div class="suite-tabs" role="tablist" aria-label="Leaderboard suite">
+          <button
+            id="leaderboardLmEval"
+            class="active"
+            type="button"
+            data-suite="lm_eval"
+          >
+            lm-eval leaderboard
+          </button>
+          <button id="leaderboardSweMini" type="button" data-suite="swe_mini">
+            SWE Mini leaderboard
+          </button>
         </div>
         <div id="leaderboard" class="leaderboard empty">
           No leaderboard results yet.

@@ -7,8 +7,9 @@ results.
 ## Run
 
 ```bash
-cd /mpool/iain/repos/lm-eval
-/home/iain/.venv/lm-eval/bin/python -m lm_eval_webui
+cd lm-eval
+git submodule update --init --recursive
+python -m lm_eval_webui
 ```
 
 Then open <http://127.0.0.1:8080>.
@@ -16,6 +17,70 @@ Then open <http://127.0.0.1:8080>.
 The default OpenAI-compatible endpoint is `https://llm.savagelands.net`.
 Ollama can be targeted with an OpenAI-compatible base URL such as
 `http://localhost:11434/v1`.
+
+## SWE Mini / pi-bench
+
+SWE Mini support uses upstream `pi-bench` as a clean git submodule at
+`third_party/pi-bench`. WebUI-specific customizations live in this repo under
+`scripts/` and `lm_eval_webui/`, so the submodule can be updated independently:
+
+```bash
+git submodule update --remote third_party/pi-bench
+```
+
+For gpt-5.5 judging, login with Pi on the machine running the WebUI:
+
+```bash
+pi
+# then login for openai-codex
+```
+
+SWE Mini Docker jobs receive only a temporary copy of
+`~/.pi/agent/auth.json`; the token file is not stored in WebUI job metadata.
+Override the submodule location with:
+
+```bash
+python -m lm_eval_webui --pi-bench-dir /path/to/pi-bench
+```
+
+## Docker Compose
+
+The Compose setup runs the WebUI plus a Docker-in-Docker sidecar. This lets SWE
+Mini containers mount the shared workspace path inside the sidecar daemon.
+
+```bash
+git submodule update --init --recursive
+PI_AUTH_JSON="$HOME/.pi/agent/auth.json" \
+  docker compose -f deploy/docker-compose.yml up --build
+```
+
+Then open <http://127.0.0.1:8080>.
+
+## Kubernetes
+
+Build and push an image that includes initialized submodules:
+
+```bash
+git submodule update --init --recursive
+docker build -f deploy/Dockerfile -t savagemindz/lm-eval-webui:latest .
+docker push savagemindz/lm-eval-webui:latest
+```
+
+Edit `deploy/k8s/deployment.yaml` to use that image, then create the Pi auth
+secret and deploy:
+
+```bash
+kubectl apply -f deploy/k8s/namespace.yaml
+kubectl -n lm-eval-webui create secret generic pi-auth \
+  --from-file=auth.json="$HOME/.pi/agent/auth.json"
+kubectl apply -f deploy/k8s/pvc.yaml
+kubectl apply -f deploy/k8s/deployment.yaml
+kubectl apply -f deploy/k8s/service.yaml
+```
+
+The Kubernetes manifest uses a privileged Docker-in-Docker sidecar. If your
+cluster disallows privileged pods, replace the sidecar with a cluster-native job
+runner before enabling SWE Mini jobs.
 
 ## Notes
 

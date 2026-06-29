@@ -12,6 +12,8 @@ const state = {
 	visibleTaskNames: [],
 	hasAutoSelectedTask: false,
 	taskPage: 0,
+	activeSuite: "lm_eval",
+	resultSuite: "lm_eval",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -35,6 +37,10 @@ const CLIENT_BACKENDS = new Set([
 	"openai-compatible-chat-completions",
 	"lemonade-chat-completions",
 ]);
+const SUITES = {
+	lm_eval: "lm-eval",
+	swe_mini: "SWE Mini",
+};
 
 async function api(path, options = {}) {
 	const response = await fetch(path, {
@@ -63,9 +69,10 @@ async function loadTasks() {
 	setTaskLoading(true);
 	$("selectVisibleTasks").disabled = true;
 	$("unselectVisibleTasks").disabled = true;
-	setText($("taskList"), "Loading lm-eval tasks…");
+	setText($("taskList"), `Loading ${suiteLabel(state.activeSuite)} tasks…`);
 	try {
-		const payload = await api("/api/tasks");
+		const suite = encodeURIComponent(state.activeSuite);
+		const payload = await api(`/api/tasks?suite=${suite}`);
 		state.tasks = payload.tasks || [];
 		renderTasks();
 	} catch (error) {
@@ -131,11 +138,12 @@ function renderTasks() {
 	const list = $("taskList");
 	list.replaceChildren();
 	const filter = $("taskFilter").value.trim().toLowerCase();
-	const hideIncompatible = $("hideIncompatibleTasks").checked;
-	const hideGated = $("hideGatedTasks").checked;
-	const taskViewMode = $("taskViewMode").value;
+	const isLmEval = state.activeSuite === "lm_eval";
+	const hideIncompatible = isLmEval && $("hideIncompatibleTasks").checked;
+	const hideGated = isLmEval && $("hideGatedTasks").checked;
+	const taskViewMode = isLmEval ? $("taskViewMode").value : "leaves";
 	pruneSelectedTasksForViewMode(taskViewMode);
-	const hideNonEnglish = $("hideNonEnglishTasks").checked;
+	const hideNonEnglish = isLmEval && $("hideNonEnglishTasks").checked;
 	const selectedCategories = selectedTaskCategories();
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
@@ -145,8 +153,9 @@ function renderTasks() {
 		if (taskViewMode === "groups" && (task.kind || "task") === "task")
 			return false;
 		if (hideNonEnglish && task.language_scope === "non_english") return false;
-		if (!selectedCategories.has(task.category || "Other")) return false;
-		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""}`
+		if (isLmEval && !selectedCategories.has(task.category || "Other"))
+			return false;
+		return `${task.name} ${task.description || ""} ${task.compatibility || ""} ${task.category || ""} ${task.repo || ""}`
 			.toLowerCase()
 			.includes(filter);
 	});
@@ -288,8 +297,14 @@ function renderJobs() {
 		const summary = document.createElement("summary");
 		summary.className = "job-summary";
 		const summaryActions = div("job-summary-actions");
-		summaryActions.append(statusBadge(job), checkbox);
-		summary.append(summaryBlock(job.model_id, `Job ${job.id}`), summaryActions);
+		summaryActions.append(suiteBadge(job), statusBadge(job), checkbox);
+		summary.append(
+			summaryBlock(
+				job.model_id,
+				`Job ${job.id} · ${suiteLabel(jobSuite(job))}`,
+			),
+			summaryActions,
+		);
 		summary.addEventListener("click", () => selectJob(job.id));
 		const expanded = div("job-expanded");
 		const taskList = document.createElement("ul");
@@ -299,7 +314,7 @@ function renderJobs() {
 			taskItem.textContent = taskName;
 			taskList.append(taskItem);
 		});
-		expanded.append(taskList);
+		expanded.append(jobDetailMeta(job), taskList);
 		details.append(summary, expanded);
 		row.append(details);
 		list.append(row);
@@ -358,8 +373,22 @@ function scrollLogToBottom(log) {
 function renderLeaderboard() {
 	const list = $("leaderboard");
 	list.replaceChildren();
-	if (!state.leaderboard.length)
-		return setText(list, "No leaderboard results yet.");
+	const entries = state.leaderboard.filter(
+		(entry) => recordSuite(entry) === state.resultSuite,
+	);
+	if (!entries.length)
+		return setText(
+			list,
+			`No ${suiteLabel(state.resultSuite)} leaderboard results yet.`,
+		);
+	if (state.resultSuite === "swe_mini") {
+		renderSweMiniLeaderboard(list, entries);
+		return;
+	}
+	renderLmEvalLeaderboard(list, entries);
+}
+
+function renderLmEvalLeaderboard(list, entries) {
 	const table = document.createElement("table");
 	table.className = "leaderboard-table";
 	const thead = document.createElement("thead");
@@ -380,7 +409,7 @@ function renderLeaderboard() {
 	});
 	thead.append(header);
 	const tbody = document.createElement("tbody");
-	state.leaderboard.forEach((entry, index) => {
+	entries.forEach((entry, index) => {
 		const model = modelForEntry(entry);
 		const tr = document.createElement("tr");
 		tr.append(
@@ -416,9 +445,58 @@ function renderLeaderboard() {
 	list.append(table);
 }
 
+function renderSweMiniLeaderboard(list, entries) {
+	const table = document.createElement("table");
+	table.className = "leaderboard-table";
+	const thead = document.createElement("thead");
+	const header = document.createElement("tr");
+	[
+		"#",
+		"Model",
+		"Runtime backend",
+		"Judge",
+		"Platform",
+		"Passed",
+		"Success",
+		"Avg duration",
+	].forEach((name) => {
+		const th = document.createElement("th");
+		th.textContent = name;
+		header.append(th);
+	});
+	thead.append(header);
+	const tbody = document.createElement("tbody");
+	entries.forEach((entry, index) => {
+		const model = modelForEntry(entry);
+		const tr = document.createElement("tr");
+		tr.append(
+			leaderboardCell(`#${index + 1}`, "rank-cell"),
+			leaderboardCell(
+				entry.model || entry.model_id || "unknown model",
+				"model-cell",
+			),
+			leaderboardCell(modelBackendLabel(entry, model)),
+			leaderboardCell(entry.judge_model || "—"),
+			leaderboardCell(entry.platform || "—"),
+			leaderboardCell(`${entry.passed_tasks ?? 0}/${entry.total_tasks ?? 0}`),
+			leaderboardCell(
+				formatScore(entry.overall_score),
+				"score-cell overall-score",
+			),
+			leaderboardCell(formatDurationMs(entry.average_duration_ms)),
+		);
+		tbody.append(tr);
+	});
+	table.append(thead, tbody);
+	list.append(table);
+}
+
 function renderResults() {
 	renderLeaderboard();
-	const metrics = [...new Set(state.rows.map((row) => row.metric))].sort();
+	const suiteRows = state.rows.filter(
+		(row) => recordSuite(row) === state.resultSuite,
+	);
+	const metrics = [...new Set(suiteRows.map((row) => row.metric))].sort();
 	const metricSelect = $("metricSelect");
 	const previous = metricSelect.value;
 	metricSelect.replaceChildren();
@@ -430,7 +508,7 @@ function renderResults() {
 	});
 	if (metrics.includes(previous)) metricSelect.value = previous;
 	const metric = metricSelect.value || metrics[0];
-	const rows = state.rows.filter((row) => row.metric === metric);
+	const rows = suiteRows.filter((row) => row.metric === metric);
 	renderChart(rows, metric);
 	renderTable(rows);
 }
@@ -549,24 +627,39 @@ async function startJobs() {
 		tasks = [...state.selectedTasks];
 	if (!modelIds.length || !tasks.length)
 		return ($("setupMessage").textContent =
-			"Select at least one model and one task.");
+			`Select at least one model and one ${suiteLabel(state.activeSuite)} task.`);
 	const body = {
+		suite: state.activeSuite,
 		model_ids: modelIds,
 		tasks,
 		openai_base_url: $("openaiBaseUrl").value.trim(),
 		llamacpp_backend: $("llamacppBackend").value || null,
-		limit: $("limit").value.trim() || null,
-		num_fewshot:
-			$("numFewshot").value === "" ? null : Number($("numFewshot").value),
-		max_gen_toks: Number($("maxGenToks").value),
-		timeout: Number($("timeout").value),
-		num_concurrent: Number($("numConcurrent").value),
 		max_concurrent_jobs: Number($("maxConcurrentJobs").value || 1),
-		batch_size: $("batchSize").value.trim() || "1",
-		apply_chat_template: $("applyChatTemplate").checked,
-		fewshot_as_multiturn: $("fewshotAsMultiturn").checked,
-		log_samples: $("logSamples").checked,
 	};
+	if (state.activeSuite === "swe_mini") {
+		Object.assign(body, {
+			judge_model: $("sweJudgeModel").value.trim() || "openai-codex/gpt-5.5",
+			swe_timeout: Number($("sweTimeout").value || 30),
+			pass_count: Number($("swePassCount").value || 1),
+			platform: $("swePlatform").value.trim() || "lemonade-swe",
+			context_window: numberOrNull($("sweContextWindow").value),
+			use_pi_auth: $("sweUsePiAuth").checked,
+			require_pi_auth: $("sweRequirePiAuth").checked,
+		});
+	} else {
+		Object.assign(body, {
+			limit: $("limit").value.trim() || null,
+			num_fewshot:
+				$("numFewshot").value === "" ? null : Number($("numFewshot").value),
+			max_gen_toks: Number($("maxGenToks").value),
+			timeout: Number($("timeout").value),
+			num_concurrent: Number($("numConcurrent").value),
+			batch_size: $("batchSize").value.trim() || "1",
+			apply_chat_template: $("applyChatTemplate").checked,
+			fewshot_as_multiturn: $("fewshotAsMultiturn").checked,
+			log_samples: $("logSamples").checked,
+		});
+	}
 	$("setupMessage").textContent = "Starting…";
 	try {
 		const payload = await api("/api/jobs", {
@@ -574,6 +667,8 @@ async function startJobs() {
 			body: JSON.stringify(body),
 		});
 		$("setupMessage").textContent = `Started ${payload.jobs.length} job(s).`;
+		state.resultSuite = state.activeSuite;
+		updateSuiteUi();
 		await loadJobs();
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
@@ -585,6 +680,40 @@ function statusBadge(job) {
 	status.className = `status ${job.status}`;
 	status.textContent = job.status;
 	return status;
+}
+function suiteBadge(job) {
+	const badge = document.createElement("span");
+	badge.className = "badge suite";
+	badge.textContent = suiteLabel(jobSuite(job));
+	return badge;
+}
+function jobDetailMeta(job) {
+	const details = div("job-meta");
+	const options = job.swe_options || {};
+	const values = [
+		`Suite: ${suiteLabel(jobSuite(job))}`,
+		job.rerun_of ? `Rerun of: ${job.rerun_of}` : null,
+		options.judge_model ? `Judge: ${options.judge_model}` : null,
+		options.platform ? `Platform: ${options.platform}` : null,
+		options.pass_count ? `Pass attempts: ${options.pass_count}` : null,
+		job.provider_backend ? `Runtime backend: ${job.provider_backend}` : null,
+	].filter(Boolean);
+	details.textContent = values.join(" · ");
+	return details;
+}
+function jobSuite(job) {
+	return recordSuite(job);
+}
+function recordSuite(record) {
+	return record?.suite || "lm_eval";
+}
+function suiteLabel(suite) {
+	return SUITES[suite] || suite || "lm-eval";
+}
+function numberOrNull(value) {
+	return value === "" || value === null || value === undefined
+		? null
+		: Number(value);
 }
 function summaryBlock(title, meta) {
 	const span = document.createElement("span"),
@@ -743,6 +872,11 @@ function formatSeconds(value) {
 		? "—"
 		: `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })}s`;
 }
+function formatDurationMs(value) {
+	return value === null || value === undefined || Number.isNaN(Number(value))
+		? "—"
+		: formatSeconds(Number(value) / 1000);
+}
 function formatContext(value) {
 	return value === null || value === undefined || Number.isNaN(Number(value))
 		? "—"
@@ -762,6 +896,50 @@ function selectedTaskCategories() {
 			({ category }) => category,
 		),
 	);
+}
+function updateSuiteUi() {
+	const isSweMini = state.activeSuite === "swe_mini";
+	$("taskPanelTitle").textContent = `${suiteLabel(state.activeSuite)} tasks`;
+	$("taskFilter").placeholder = isSweMini
+		? "Type to search SWE Mini tasks or repos"
+		: "Type to search 14k+ tasks";
+	$("taskViewModeControl").hidden = isSweMini;
+	$("lmEvalCategoryFilters").hidden = isSweMini;
+	$("lmEvalCompatibilityFilters").hidden = isSweMini;
+	$("lmEvalBenchmarkOptions").hidden = isSweMini;
+	$("sweMiniBenchmarkOptions").hidden = !isSweMini;
+	$("sweMiniAuthHint").hidden = !isSweMini;
+	$("taskHint").textContent = isSweMini
+		? "SWE Mini tasks run in Docker SWE-bench containers and are judged by the selected judge model."
+		: "OpenAI-compatible chat backends are generation oriented. Use generate_until tasks first.";
+	for (const button of [$("suiteLmEval"), $("suiteSweMini")]) {
+		button.classList.toggle(
+			"active",
+			button.dataset.suite === state.activeSuite,
+		);
+	}
+	for (const button of [$("leaderboardLmEval"), $("leaderboardSweMini")]) {
+		button.classList.toggle(
+			"active",
+			button.dataset.suite === state.resultSuite,
+		);
+	}
+}
+async function selectBenchmarkSuite(suite) {
+	if (state.activeSuite === suite) return;
+	state.activeSuite = suite;
+	state.selectedTasks.clear();
+	state.visibleTaskNames = [];
+	state.taskPage = 0;
+	state.hasAutoSelectedTask = false;
+	updateSuiteUi();
+	renderSelectedTasks();
+	await loadTasks();
+}
+function selectResultSuite(suite) {
+	state.resultSuite = suite;
+	updateSuiteUi();
+	renderResults();
 }
 
 $("refreshModels").addEventListener("click", loadModels);
@@ -796,7 +974,20 @@ TASK_CATEGORY_FILTERS.forEach(({ id }) =>
 $("taskPrev").addEventListener("click", () => changeTaskPage(-1));
 $("taskNext").addEventListener("click", () => changeTaskPage(1));
 $("metricSelect").addEventListener("change", renderResults);
+$("suiteLmEval").addEventListener("click", () =>
+	selectBenchmarkSuite("lm_eval"),
+);
+$("suiteSweMini").addEventListener("click", () =>
+	selectBenchmarkSuite("swe_mini"),
+);
+$("leaderboardLmEval").addEventListener("click", () =>
+	selectResultSuite("lm_eval"),
+);
+$("leaderboardSweMini").addEventListener("click", () =>
+	selectResultSuite("swe_mini"),
+);
 
+updateSuiteUi();
 Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]);
 setInterval(
 	() => Promise.all([loadJobs(), loadResults(), loadSelectedJobLog()]),
