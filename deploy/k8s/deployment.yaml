@@ -24,7 +24,7 @@ spec:
             - name: DOCKER_HOST
               value: tcp://127.0.0.1:2375
             - name: OPENAI_BASE_URL
-              value: https://llm.savagelands.net
+              value: http://localhost:11434/v1
             - name: PI_BENCH_AUTH_SOURCE
               value: /secrets/pi-auth/auth.json
             - name: PI_BENCH_REQUIRE_PI_AUTH

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .lemonade import normalize_openai_base_url
+from .lemonade import DEFAULT_OPENAI_BASE_URL, normalize_openai_base_url
 
 
 def repo_root() -> Path:
@@ -38,7 +38,7 @@ class SweMiniRequest:
     output_path: str
     pi_bench_dir: str | Path = DEFAULT_PI_BENCH_DIR
     project_root: str | Path = repo_root()
-    openai_base_url: str = "https://llm.savagelands.net"
+    openai_base_url: str = DEFAULT_OPENAI_BASE_URL
     provider: str = "lemonade"
     judge_model: str = DEFAULT_SWE_MINI_JUDGE_MODEL
     platform: str = DEFAULT_SWE_MINI_PLATFORM

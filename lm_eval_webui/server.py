@@ -748,6 +748,8 @@ def make_handler(
                         "lm_eval_python": find_lm_eval_python(manager.lm_eval_python),
                     }
                 )
+            elif parsed.path == "/api/config":
+                self._json({"openai_base_url": openai_base_url})
             elif parsed.path == "/api/models":
                 self._handle_models(parsed.query)
             elif parsed.path == "/api/tasks":

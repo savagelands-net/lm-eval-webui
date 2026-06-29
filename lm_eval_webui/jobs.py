@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .lemonade import DEFAULT_OPENAI_BASE_URL
 from .results import (
     extract_leaderboard_entry,
     extract_result_rows,
@@ -27,9 +28,9 @@ from .swe_mini import (  # type: ignore[reportMissingImports]
     SweMiniRequest,
     build_swe_mini_command,
     cleanup_swe_mini_task_target,
+    default_pi_bench_dir,
     extract_swe_mini_leaderboard_entry,
     extract_swe_mini_result_rows,
-    default_pi_bench_dir,
     find_swe_mini_result_files,
     materialize_swe_mini_task_target,
     swe_mini_output_path,
@@ -65,7 +66,7 @@ class JobManager:
         launcher: Launcher = default_launcher,
         run_async: bool = True,
         lm_eval_python: str | None = None,
-        openai_base_url: str = "https://llm.savagelands.net",
+        openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
         lemonade_base_url: str | None = None,
         telemetry_probe: TelemetryProbe | None = None,
         model_metadata_probe: ModelMetadataProbe | None = None,

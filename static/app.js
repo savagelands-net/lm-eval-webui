@@ -52,6 +52,17 @@ async function api(path, options = {}) {
 	return payload;
 }
 
+async function loadConfig() {
+	try {
+		const payload = await api("/api/config");
+		if (payload.openai_base_url) {
+			$("openaiBaseUrl").value = payload.openai_base_url;
+		}
+	} catch (_error) {
+		// Keep the static localhost fallback if config cannot be loaded.
+	}
+}
+
 async function loadModels() {
 	const base = encodeURIComponent($("openaiBaseUrl").value.trim());
 	setText($("modelList"), "Loading models…");
@@ -987,8 +998,13 @@ $("leaderboardSweMini").addEventListener("click", () =>
 	selectResultSuite("swe_mini"),
 );
 
-updateSuiteUi();
-Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]);
+async function bootstrap() {
+	updateSuiteUi();
+	await loadConfig();
+	await Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]);
+}
+
+bootstrap();
 setInterval(
 	() => Promise.all([loadJobs(), loadResults(), loadSelectedJobLog()]),
 	5000,

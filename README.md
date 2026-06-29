@@ -14,9 +14,17 @@ python -m lm_eval_webui
 
 Then open <http://127.0.0.1:8080>.
 
-The default OpenAI-compatible endpoint is `https://llm.savagelands.net`.
-Ollama can be targeted with an OpenAI-compatible base URL such as
-`http://localhost:11434/v1`.
+The default OpenAI-compatible endpoint is `http://localhost:11434/v1`.
+Set a different startup default with either:
+
+```bash
+OPENAI_BASE_URL="https://your-openai-compatible-host" python -m lm_eval_webui
+# or
+python -m lm_eval_webui --openai-base-url "https://your-openai-compatible-host"
+```
+
+The WebUI also lets you edit the OpenAI-compatible base URL before refreshing
+models or starting benchmark jobs.
 
 ## SWE Mini / pi-bench
 
@@ -50,6 +58,7 @@ Mini containers mount the shared workspace path inside the sidecar daemon.
 
 ```bash
 git submodule update --init --recursive
+OPENAI_BASE_URL="http://host.docker.internal:11434/v1" \
 PI_AUTH_JSON="$HOME/.pi/agent/auth.json" \
   docker compose -f deploy/docker-compose.yml up --build
 ```
@@ -78,12 +87,16 @@ kubectl apply -f deploy/k8s/deployment.yaml
 kubectl apply -f deploy/k8s/service.yaml
 ```
 
+Set `OPENAI_BASE_URL` in `deploy/k8s/deployment.yaml` to the OpenAI-compatible
+endpoint reachable from the pod.
+
 The Kubernetes manifest uses a privileged Docker-in-Docker sidecar. If your
 cluster disallows privileged pods, replace the sidecar with a cluster-native job
 runner before enabling SWE Mini jobs.
 
 ## Notes
 
+- This software was created with the help of AI coding assistants.
 - Uses the `openai-compatible-chat-completions` lm-eval plugin, with the legacy
   `lemonade-chat-completions` alias retained for existing jobs.
 - Generation-style (`generate_until`) tasks are the safest fit for chat

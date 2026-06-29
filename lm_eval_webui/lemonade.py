@@ -7,9 +7,10 @@ import os
 import urllib.request
 from typing import Any
 
+DEFAULT_LOCAL_OPENAI_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_OPENAI_BASE_URL = os.environ.get(
     "OPENAI_BASE_URL",
-    os.environ.get("LEMONADE_BASE_URL", "https://llm.savagelands.net"),
+    os.environ.get("LEMONADE_BASE_URL", DEFAULT_LOCAL_OPENAI_BASE_URL),
 ).rstrip("/")
 DEFAULT_LEMONADE_BASE_URL = DEFAULT_OPENAI_BASE_URL
 
@@ -64,6 +65,14 @@ def loaded_model_metadata_from_health(
     return {}
 
 
+def _read_json_response(response: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(response.read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid JSON response from model endpoint") from exc
+    return payload if isinstance(payload, dict) else {}
+
+
 def fetch_loaded_model_metadata(
     base_url: str = DEFAULT_LEMONADE_BASE_URL,
     model_id: str = "",
@@ -73,7 +82,7 @@ def fetch_loaded_model_metadata(
         openai_api_url(base_url, "/health"), headers={"Accept": "application/json"}
     )
     with urllib.request.urlopen(health_request, timeout=timeout) as response:  # noqa: S310
-        health = json.loads(response.read().decode("utf-8"))
+        health = _read_json_response(response)
     return loaded_model_metadata_from_health(health, model_id)
 
 
@@ -83,7 +92,8 @@ def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for item in models:
         if not isinstance(item, dict):
             continue
-        if item.get("downloaded") is False:
+        downloaded = item.get("downloaded")
+        if isinstance(downloaded, bool) and not downloaded:
             continue
         model_id = str(item.get("id") or item.get("name") or "").strip()
         if not model_id:
@@ -142,14 +152,14 @@ def fetch_models(
         openai_api_url(base_url, "/models"), headers={"Accept": "application/json"}
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-        payload = json.loads(response.read().decode("utf-8"))
+        payload = _read_json_response(response)
     models = normalize_models(payload)
     try:
         health_request = urllib.request.Request(
             openai_api_url(base_url, "/health"), headers={"Accept": "application/json"}
         )
         with urllib.request.urlopen(health_request, timeout=timeout) as response:  # noqa: S310
-            health = json.loads(response.read().decode("utf-8"))
+            health = _read_json_response(response)
     except Exception:
         return models
     return enrich_models_from_health(models, health)

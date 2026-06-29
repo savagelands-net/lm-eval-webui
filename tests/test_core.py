@@ -17,6 +17,13 @@ def symbol(module_name, attribute):
 
 
 class OpenAICompatibleEndpointTests(unittest.TestCase):
+    def test_default_openai_base_url_points_to_localhost(self):
+        default_openai_base_url = symbol(
+            "lm_eval_webui.lemonade", "DEFAULT_OPENAI_BASE_URL"
+        )
+
+        self.assertEqual(default_openai_base_url, "http://localhost:11434/v1")
+
     def test_openai_api_url_accepts_root_or_v1_base(self):
         openai_api_url = symbol("lm_eval_webui.lemonade", "openai_api_url")
 
@@ -2215,6 +2222,10 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("Local lm-eval Benchmark WebUI", index)
         self.assertIn("OpenAI-compatible base URL", index)
         self.assertIn('id="openaiBaseUrl"', index)
+        self.assertIn('value="http://localhost:11434/v1"', index)
+        self.assertIn("async function loadConfig", script)
+        self.assertIn('api("/api/config")', script)
+        self.assertIn("await loadConfig()", script)
         self.assertNotIn('id="lemonadeUrl"', index)
         self.assertIn("selectedJobs", script)
         self.assertIn("visibleTaskNames", script)
@@ -2285,6 +2296,8 @@ class SmokeTests(unittest.TestCase):
         server = Path("lm_eval_webui/server.py").read_text(encoding="utf-8")
         self.assertIn("Cache-Control", server)
         self.assertIn("/api/jobs/rerun", server)
+        self.assertIn("/api/config", server)
+        self.assertIn('"openai_base_url": openai_base_url', server)
         self.assertIn("no-store", server)
         self.assertIn("BrokenPipeError", server)
 
