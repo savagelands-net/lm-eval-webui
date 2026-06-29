@@ -25,6 +25,10 @@ spec:
               value: tcp://127.0.0.1:2375
             - name: OPENAI_BASE_URL
               value: http://localhost:11434/v1
+            - name: HF_HOME
+              value: /data/huggingface
+            - name: HF_DATASETS_CACHE
+              value: /data/huggingface/datasets
             - name: PI_BENCH_AUTH_SOURCE
               value: /secrets/pi-auth/auth.json
             - name: PI_BENCH_REQUIRE_PI_AUTH

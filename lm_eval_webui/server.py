@@ -276,6 +276,7 @@ NON_ENGLISH_TASK_PATTERNS = tuple(
         r"^aradice",
         r"^basque",
         r"^bigbench_kanji_ascii_generate_until(?:[^a-z0-9]|$)",
+        r"^bigbench_hinglish",
         r"^catalan",
         r"^ceval",
         r"^cmmlu",

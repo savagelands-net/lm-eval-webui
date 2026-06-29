@@ -1135,6 +1135,7 @@ output_type: generate_until
             "pisa_fr",
             "pisa_it",
             "bigbench_kanji_ascii_generate_until",
+            "bigbench_hinglish_toxicity_generate_until",
             "polemo2_in",
             "polemo2_out",
             "jfinqa_ja",
@@ -2157,6 +2158,14 @@ class BrokenPipeResponseTests(unittest.TestCase):
 
 
 class SmokeTests(unittest.TestCase):
+    def test_kubernetes_manifest_persists_huggingface_cache_on_data_volume(self):
+        deployment = Path("deploy/k8s/deployment.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("name: HF_HOME", deployment)
+        self.assertIn("value: /data/huggingface", deployment)
+        self.assertIn("name: HF_DATASETS_CACHE", deployment)
+        self.assertIn("value: /data/huggingface/datasets", deployment)
+
     def test_job_log_css_cannot_force_page_horizontal_scroll(self):
         styles = Path("static/styles.css").read_text(encoding="utf-8")
         log_rule = styles[

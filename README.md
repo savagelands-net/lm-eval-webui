@@ -88,7 +88,9 @@ kubectl apply -f deploy/k8s/service.yaml
 ```
 
 Set `OPENAI_BASE_URL` in `deploy/k8s/deployment.yaml` to the OpenAI-compatible
-endpoint reachable from the pod.
+endpoint reachable from the pod. The manifest also points Hugging Face caches at
+`/data/huggingface` so downloaded lm-eval datasets persist on the `lm-eval-data`
+PVC across pod restarts.
 
 The Kubernetes manifest uses a privileged Docker-in-Docker sidecar. If your
 cluster disallows privileged pods, replace the sidecar with a cluster-native job
