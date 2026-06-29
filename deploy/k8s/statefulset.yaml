@@ -18,6 +18,11 @@ spec:
         - name: webui
           image: savagemindz/lm-eval-webui:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 8080
               name: http
@@ -85,6 +90,7 @@ spec:
           image: docker:27-dind
           securityContext:
             privileged: true
+            allowPrivilegeEscalation: true
           env:
             - name: DOCKER_TLS_CERTDIR
               value: ""

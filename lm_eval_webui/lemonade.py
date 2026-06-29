@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
+import importlib
 import os
-import urllib.request
 from typing import Any
+from urllib.parse import urlsplit
 
 DEFAULT_LOCAL_OPENAI_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_OPENAI_BASE_URL = os.environ.get(
@@ -17,6 +17,9 @@ DEFAULT_LEMONADE_BASE_URL = DEFAULT_OPENAI_BASE_URL
 
 def normalize_openai_base_url(base_url: str) -> str:
     normalized = str(base_url or DEFAULT_OPENAI_BASE_URL).strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("OpenAI-compatible base URL must start with http:// or https://")
     if normalized.endswith("/v1/chat/completions"):
         return normalized[: -len("/chat/completions")]
     if normalized.endswith("/chat/completions"):
@@ -67,10 +70,21 @@ def loaded_model_metadata_from_health(
 
 def _read_json_response(response: Any) -> dict[str, Any]:
     try:
-        payload = json.loads(response.read().decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = response.json()
+    except ValueError as exc:
         raise ValueError("Invalid JSON response from model endpoint") from exc
     return payload if isinstance(payload, dict) else {}
+
+
+def _get_json(url: str, timeout: int) -> dict[str, Any]:
+    requests_module = importlib.import_module("requests")
+    response = requests_module.get(
+        url,
+        headers={"Accept": "application/json"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return _read_json_response(response)
 
 
 def fetch_loaded_model_metadata(
@@ -78,11 +92,7 @@ def fetch_loaded_model_metadata(
     model_id: str = "",
     timeout: int = 15,
 ) -> dict[str, Any]:
-    health_request = urllib.request.Request(
-        openai_api_url(base_url, "/health"), headers={"Accept": "application/json"}
-    )
-    with urllib.request.urlopen(health_request, timeout=timeout) as response:  # noqa: S310
-        health = _read_json_response(response)
+    health = _get_json(openai_api_url(base_url, "/health"), timeout)
     return loaded_model_metadata_from_health(health, model_id)
 
 
@@ -148,18 +158,10 @@ def enrich_models_from_health(
 def fetch_models(
     base_url: str = DEFAULT_LEMONADE_BASE_URL, timeout: int = 15
 ) -> list[dict[str, Any]]:
-    request = urllib.request.Request(
-        openai_api_url(base_url, "/models"), headers={"Accept": "application/json"}
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-        payload = _read_json_response(response)
+    payload = _get_json(openai_api_url(base_url, "/models"), timeout)
     models = normalize_models(payload)
     try:
-        health_request = urllib.request.Request(
-            openai_api_url(base_url, "/health"), headers={"Accept": "application/json"}
-        )
-        with urllib.request.urlopen(health_request, timeout=timeout) as response:  # noqa: S310
-            health = _read_json_response(response)
-    except Exception:
+        health = _get_json(openai_api_url(base_url, "/health"), timeout)
+    except (OSError, ValueError):
         return models
     return enrich_models_from_health(models, health)

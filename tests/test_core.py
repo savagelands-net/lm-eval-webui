@@ -36,6 +36,15 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
             "http://localhost:11434/v1/models",
         )
 
+    def test_openai_api_url_rejects_non_http_schemes(self):
+        openai_api_url = symbol("lm_eval_webui.lemonade", "openai_api_url")
+
+        for base_url in ("file:///etc/passwd", "ftp://example.test", "localhost:11434"):
+            with self.subTest(base_url=base_url), self.assertRaisesRegex(
+                ValueError, "http:// or https://"
+            ):
+                openai_api_url(base_url, "/models")
+
     def test_eval_command_accepts_openai_v1_base_without_duplicate_path(self):
         EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
         build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
@@ -2272,6 +2281,17 @@ class BrokenPipeResponseTests(unittest.TestCase):
 
 
 class SmokeTests(unittest.TestCase):
+    def test_github_workflow_pins_actions_and_does_not_persist_credentials(self):
+        workflow = Path(".github/workflows/docker-image.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertNotRegex(workflow, r"uses: [^\n]+@v\d")
+        self.assertRegex(workflow, r"uses: actions/checkout@[0-9a-f]{40}")
+        self.assertRegex(workflow, r"uses: docker/login-action@[0-9a-f]{40}")
+        self.assertRegex(workflow, r"uses: docker/build-push-action@[0-9a-f]{40}")
+
     def test_kubernetes_manifest_uses_statefulset_with_data_volume(self):
         statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
             encoding="utf-8"
@@ -2283,6 +2303,23 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("claimName: lm-eval-data", statefulset)
         self.assertIn("mountPath: /data", statefulset)
         self.assertFalse(Path("deploy/k8s/deployment.yaml").exists())
+
+    def test_kubernetes_manifest_limits_webui_privilege_escalation(self):
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
+            encoding="utf-8"
+        )
+        webui_container = statefulset[
+            statefulset.index("        - name: webui") : statefulset.index(
+                "        - name: docker"
+            )
+        ]
+
+        self.assertIn("securityContext:", webui_container)
+        self.assertIn("allowPrivilegeEscalation: false", webui_container)
+        self.assertIn("capabilities:", webui_container)
+        self.assertIn("drop:", webui_container)
+        self.assertIn("- ALL", webui_container)
+        self.assertNotIn("privileged: true", webui_container)
 
     def test_kubernetes_manifest_persists_huggingface_cache_on_data_volume(self):
         statefulset = Path("deploy/k8s/statefulset.yaml").read_text(

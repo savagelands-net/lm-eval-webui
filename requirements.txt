@@ -30,8 +30,9 @@ bert-score
 # BLEURT-backed tasks require TensorFlow, which is not available for Python 3.14;
 # the WebUI marks those tasks incompatible instead of installing BLEURT here.
 
-# Additional helper imports used by selected task modules.
+# Additional helper imports used by selected task modules and the WebUI.
 transformers>=4.45,<5
 jsonschema
+requests
 radgraph
 git+https://github.com/felipemaiapolo/tinyBenchmarks
