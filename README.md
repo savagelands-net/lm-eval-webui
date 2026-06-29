@@ -100,9 +100,9 @@ caches at `/data/huggingface` so downloaded lm-eval datasets persist across pod
 restarts. Authenticated Hugging Face downloads are optional: if the
 `huggingface-token` Secret exists, Kubernetes exposes it as `HF_TOKEN` and
 `HUGGING_FACE_HUB_TOKEN` inside the WebUI container. Transient Hugging Face
-dataset API failures are retried by default; tune this with
-`LMEVAL_WEBUI_HF_RETRIES`, `LMEVAL_WEBUI_HF_RETRY_DELAY`, and
-`LMEVAL_WEBUI_HF_RETRY_MAX_DELAY`.
+dataset API failures are retried by default, and corrupt cached dataset metadata
+is removed before retrying. Tune retries with `LMEVAL_WEBUI_HF_RETRIES`,
+`LMEVAL_WEBUI_HF_RETRY_DELAY`, and `LMEVAL_WEBUI_HF_RETRY_MAX_DELAY`.
 
 The Kubernetes manifest uses a privileged Docker-in-Docker sidecar. If your
 cluster disallows privileged pods, replace the sidecar with a cluster-native job

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
+import shutil
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any, cast
 
 TRANSIENT_HF_STATUS_CODES = {429, 500, 502, 503, 504}
 DEFAULT_HF_RETRIES = 5
 DEFAULT_HF_RETRY_DELAY = 10.0
 DEFAULT_HF_RETRY_MAX_DELAY = 120.0
+DATASET_INFO_FILENAME = "dataset_info.json"
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -80,6 +84,91 @@ def _should_retry_hf_error(
     return is_transient_huggingface_error(exc)
 
 
+def _retry_delay(attempt: int, base_delay: float, delay_cap: float) -> float:
+    return min(delay_cap, base_delay * (2 ** (attempt - 1)))
+
+
+def _default_hf_dataset_cache_roots() -> list[Path]:
+    roots: list[Path] = []
+    if hf_datasets_cache := os.environ.get("HF_DATASETS_CACHE"):
+        roots.append(Path(hf_datasets_cache))
+    if hf_home := os.environ.get("HF_HOME"):
+        roots.append(Path(hf_home) / "datasets")
+    roots.append(Path.home() / ".cache" / "huggingface" / "datasets")
+    return _deduplicate_paths(roots)
+
+
+def _deduplicate_paths(paths: Iterable[Path]) -> list[Path]:
+    deduplicated: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.expanduser())
+        if key in seen:
+            continue
+        deduplicated.append(path.expanduser())
+        seen.add(key)
+    return deduplicated
+
+
+def _hf_dataset_cache_roots(
+    cache_roots: Iterable[str | Path] | None = None,
+) -> list[Path]:
+    if cache_roots is None:
+        return _default_hf_dataset_cache_roots()
+    return _deduplicate_paths(Path(root) for root in cache_roots)
+
+
+def find_corrupt_hf_dataset_cache_dirs(
+    cache_roots: Iterable[str | Path] | None = None,
+) -> list[Path]:
+    corrupt_dirs: list[Path] = []
+    seen: set[str] = set()
+    for root in _hf_dataset_cache_roots(cache_roots):
+        if not root.exists():
+            continue
+        try:
+            info_paths = root.rglob(DATASET_INFO_FILENAME)
+            for info_path in info_paths:
+                try:
+                    json.loads(info_path.read_text(encoding="utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    cache_dir = info_path.parent
+                    key = str(cache_dir)
+                    if key not in seen:
+                        corrupt_dirs.append(cache_dir)
+                        seen.add(key)
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return corrupt_dirs
+
+
+def repair_corrupt_hf_dataset_cache(
+    cache_roots: Iterable[str | Path] | None = None,
+    stderr: Any | None = None,
+) -> int:
+    output = stderr or sys.stderr
+    repaired = 0
+    for cache_dir in find_corrupt_hf_dataset_cache_dirs(cache_roots):
+        print(
+            f"Removing corrupt Hugging Face dataset cache directory: {cache_dir}",
+            file=output,
+            flush=True,
+        )
+        try:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+        except OSError as exc:
+            print(
+                f"Could not remove corrupt Hugging Face cache {cache_dir}: {exc}",
+                file=output,
+                flush=True,
+            )
+            continue
+        repaired += 1
+    return repaired
+
+
 def run_cli_with_hf_retries(
     cli_evaluate: Callable[[], Any],
     retries: int | None = None,
@@ -87,6 +176,7 @@ def run_cli_with_hf_retries(
     max_delay: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
     stderr: Any | None = None,
+    cache_roots: Iterable[str | Path] | None = None,
 ) -> int:
     retry_count = (
         _env_int("LMEVAL_WEBUI_HF_RETRIES", DEFAULT_HF_RETRIES)
@@ -108,10 +198,29 @@ def run_cli_with_hf_retries(
     while True:
         try:
             return int(cli_evaluate() or 0)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            repaired = (
+                repair_corrupt_hf_dataset_cache(cache_roots, output)
+                if attempt < retry_count
+                else 0
+            )
+            if repaired <= 0:
+                raise
+            attempt += 1
+            delay = _retry_delay(attempt, base_delay, delay_cap)
+            print(
+                "Repaired corrupt Hugging Face dataset cache; "
+                f"retrying lm-eval in {delay:g}s "
+                f"({attempt}/{retry_count}): {exc}",
+                file=output,
+                flush=True,
+            )
+            sleep(delay)
+            continue
         except OSError as exc:
             if _should_retry_hf_error(exc, attempt, retry_count):
                 attempt += 1
-                delay = min(delay_cap, base_delay * (2 ** (attempt - 1)))
+                delay = _retry_delay(attempt, base_delay, delay_cap)
                 print(
                     "Transient Hugging Face dataset error; "
                     f"retrying lm-eval in {delay:g}s "

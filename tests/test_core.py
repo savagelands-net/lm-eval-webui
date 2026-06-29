@@ -426,6 +426,66 @@ class LmEvalRunnerTests(unittest.TestCase):
 
         self.assertEqual(len(attempts), 1)
 
+    def test_corrupt_huggingface_dataset_info_cache_is_removed_and_retried(self):
+        run_cli_with_hf_retries = symbol(
+            "lm_eval_webui.lm_eval_runner", "run_cli_with_hf_retries"
+        )
+        attempts = []
+        sleeps = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_root = Path(tmp) / "datasets"
+            corrupt_dir = cache_root / "SaylorTwift___bbh" / "tracking" / "1.0.0"
+            corrupt_dir.mkdir(parents=True)
+            (corrupt_dir / "dataset_info.json").write_text("", encoding="utf-8")
+
+            def cli_evaluate():
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise json.JSONDecodeError("Expecting value", "", 0)
+                return 0
+
+            result = run_cli_with_hf_retries(
+                cli_evaluate,
+                retries=2,
+                initial_delay=0,
+                sleep=sleeps.append,
+                cache_roots=[cache_root],
+                stderr=types.SimpleNamespace(
+                    write=lambda _message: None, flush=lambda: None
+                ),
+            )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(sleeps, [0])
+            self.assertFalse(corrupt_dir.exists())
+
+    def test_json_decode_errors_without_corrupt_hf_cache_are_not_retried(self):
+        run_cli_with_hf_retries = symbol(
+            "lm_eval_webui.lm_eval_runner", "run_cli_with_hf_retries"
+        )
+        attempts = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_root = Path(tmp) / "datasets"
+            cache_root.mkdir()
+
+            def cli_evaluate():
+                attempts.append(1)
+                raise json.JSONDecodeError("Expecting value", "", 0)
+
+            with self.assertRaises(json.JSONDecodeError):
+                run_cli_with_hf_retries(
+                    cli_evaluate,
+                    retries=2,
+                    initial_delay=0,
+                    sleep=lambda _delay: None,
+                    cache_roots=[cache_root],
+                )
+
+        self.assertEqual(len(attempts), 1)
+
 
 class LemonadeModelTests(unittest.TestCase):
     def test_add_runtime_options_adds_selected_llamacpp_backend(self):
