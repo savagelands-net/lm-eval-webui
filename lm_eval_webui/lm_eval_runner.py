@@ -76,9 +76,7 @@ def is_transient_huggingface_error(exc: BaseException) -> bool:
     return False
 
 
-def _should_retry_hf_error(
-    exc: OSError, attempt: int, retry_count: int
-) -> bool:
+def _should_retry_hf_error(exc: OSError, attempt: int, retry_count: int) -> bool:
     if attempt >= retry_count:
         return False
     return is_transient_huggingface_error(exc)

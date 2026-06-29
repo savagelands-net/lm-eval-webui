@@ -40,8 +40,9 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
         openai_api_url = symbol("lm_eval_webui.lemonade", "openai_api_url")
 
         for base_url in ("file:///etc/passwd", "ftp://example.test", "localhost:11434"):
-            with self.subTest(base_url=base_url), self.assertRaisesRegex(
-                ValueError, "http:// or https://"
+            with (
+                self.subTest(base_url=base_url),
+                self.assertRaisesRegex(ValueError, "http:// or https://"),
             ):
                 openai_api_url(base_url, "/models")
 
@@ -2293,9 +2294,7 @@ class SmokeTests(unittest.TestCase):
         self.assertRegex(workflow, r"uses: docker/build-push-action@[0-9a-f]{40}")
 
     def test_kubernetes_manifest_uses_statefulset_with_data_volume(self):
-        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
-            encoding="utf-8"
-        )
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(encoding="utf-8")
 
         self.assertIn("kind: StatefulSet", statefulset)
         self.assertIn("serviceName: lm-eval-webui", statefulset)
@@ -2305,9 +2304,7 @@ class SmokeTests(unittest.TestCase):
         self.assertFalse(Path("deploy/k8s/deployment.yaml").exists())
 
     def test_kubernetes_manifest_limits_webui_privilege_escalation(self):
-        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
-            encoding="utf-8"
-        )
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(encoding="utf-8")
         webui_container = statefulset[
             statefulset.index("        - name: webui") : statefulset.index(
                 "        - name: docker"
@@ -2322,9 +2319,7 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("privileged: true", webui_container)
 
     def test_kubernetes_manifest_persists_huggingface_cache_on_data_volume(self):
-        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
-            encoding="utf-8"
-        )
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(encoding="utf-8")
 
         self.assertIn("name: HF_HOME", statefulset)
         self.assertIn("value: /data/huggingface", statefulset)
@@ -2338,9 +2333,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('value: "120"', statefulset)
 
     def test_kubernetes_manifest_supports_optional_huggingface_token(self):
-        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(
-            encoding="utf-8"
-        )
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(encoding="utf-8")
         secret_example = Path("deploy/k8s/huggingface-secret.example.yaml").read_text(
             encoding="utf-8"
         )

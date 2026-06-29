@@ -19,7 +19,9 @@ def normalize_openai_base_url(base_url: str) -> str:
     normalized = str(base_url or DEFAULT_OPENAI_BASE_URL).strip().rstrip("/")
     parsed = urlsplit(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("OpenAI-compatible base URL must start with http:// or https://")
+        raise ValueError(
+            "OpenAI-compatible base URL must start with http:// or https://"
+        )
     if normalized.endswith("/v1/chat/completions"):
         return normalized[: -len("/chat/completions")]
     if normalized.endswith("/chat/completions"):
