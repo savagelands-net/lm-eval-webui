@@ -1602,6 +1602,112 @@ class JobManagerTelemetryTests(unittest.TestCase):
         self.assertEqual(telemetry["probe_time_to_headers_s"], 9.0)
 
 
+class JobManagerBatchTests(unittest.TestCase):
+    @staticmethod
+    def _command_tasks(command: list[str]) -> list[str]:
+        return command[command.index("--tasks") + 1 : command.index("--output_path")]
+
+    @staticmethod
+    def _write_result(command: list[str], score: float = 1.0) -> None:
+        tasks = JobManagerBatchTests._command_tasks(command)
+        output_path = Path(command[command.index("--output_path") + 1])
+        result_dir = output_path / "Model-A"
+        result_dir.mkdir(parents=True)
+        (result_dir / "results_2026-06-30T00-00-00.json").write_text(
+            json.dumps(
+                {
+                    "model_name": "Model-A",
+                    "config": {
+                        "model": "openai-compatible-chat-completions",
+                        "model_args": {"model": "Model-A"},
+                        "limit": 1,
+                    },
+                    "results": {
+                        task: {"acc,none": score, "sample_len": 1}
+                        for task in tasks
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_lm_eval_job_runs_task_batches_sequentially(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+
+        def launcher(command, _env, _log_path):
+            commands.append(command)
+            self._write_result(command)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=launcher,
+                run_async=False,
+                lm_eval_python="/venv/bin/python",
+            )
+
+            created = manager.create_jobs(
+                {
+                    "model_ids": ["Model-A"],
+                    "tasks": ["task_a", "task_b", "task_c", "task_d", "task_e"],
+                    "task_batch_size": 2,
+                }
+            )
+            job = manager.get_job(created[0]["id"])
+            leaderboard = manager.leaderboard_entries()
+
+        self.assertEqual(
+            [self._command_tasks(command) for command in commands],
+            [["task_a", "task_b"], ["task_c", "task_d"], ["task_e"]],
+        )
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["returncode"], 0)
+        self.assertEqual(job["task_batch_size"], 2)
+        self.assertEqual(job["eval_options"]["task_batch_size"], 2)
+        self.assertEqual(job["batch_progress"]["total"], 3)
+        self.assertEqual(job["batch_progress"]["completed"], 3)
+        self.assertEqual(len(job["result_files"]), 3)
+        self.assertEqual(len(leaderboard), 1)
+        self.assertEqual(
+            sorted(score["task"] for score in leaderboard[0]["task_scores"]),
+            ["task_a", "task_b", "task_c", "task_d", "task_e"],
+        )
+
+    def test_lm_eval_job_stops_after_failed_task_batch(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+
+        def launcher(command, _env, _log_path):
+            commands.append(command)
+            return 7 if len(commands) == 2 else 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=launcher,
+                run_async=False,
+            )
+
+            created = manager.create_jobs(
+                {
+                    "model_ids": ["Model-A"],
+                    "tasks": ["task_a", "task_b", "task_c", "task_d", "task_e"],
+                    "task_batch_size": 2,
+                }
+            )
+            job = manager.get_job(created[0]["id"])
+
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["returncode"], 7)
+        self.assertEqual(job["batch_progress"]["completed"], 1)
+        self.assertEqual(job["batch_progress"]["failed"], 2)
+
+
 class JobManagerSweMiniTests(unittest.TestCase):
     def _write_swe_task(self, pi_bench_dir: Path, task_id: str) -> None:
         task_dir = pi_bench_dir / "tasks" / "verified-mini"
@@ -1809,6 +1915,7 @@ class JobManagerRerunTests(unittest.TestCase):
                     "fewshot_as_multiturn": True,
                     "log_samples": True,
                     "predict_only": True,
+                    "task_batch_size": 25,
                 }
             )[0]
 
@@ -1832,6 +1939,8 @@ class JobManagerRerunTests(unittest.TestCase):
         self.assertTrue(rerun_job["eval_options"]["fewshot_as_multiturn"])
         self.assertTrue(rerun_job["eval_options"]["log_samples"])
         self.assertTrue(rerun_job["eval_options"]["predict_only"])
+        self.assertEqual(rerun_job["eval_options"]["task_batch_size"], 25)
+        self.assertEqual(rerun_job["task_batch_size"], 25)
         self.assertEqual(len(commands), 2)
         self.assertIn("--limit", commands[1])
         self.assertIn("2", commands[1])
@@ -2408,6 +2517,12 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn('id="hideUnknownTasks"', index)
         self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)
+        self.assertIn('id="taskBatchSize"', index)
+        self.assertIn('value="50"', index)
+        self.assertIn("task_batch_size", script)
+        self.assertIn("taskBatchSize", script)
+        self.assertIn("Task batch size", script)
+        self.assertIn("batch_progress", script)
         self.assertIn("Lemonade lm-eval Benchmark WebUI", index)
         self.assertNotIn("Local lm-eval Benchmark WebUI", index)
         self.assertIn("OpenAI-compatible base URL", index)

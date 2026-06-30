@@ -666,6 +666,7 @@ async function startJobs() {
 			timeout: Number($("timeout").value),
 			num_concurrent: Number($("numConcurrent").value),
 			batch_size: $("batchSize").value.trim() || "1",
+			task_batch_size: numberOrNull($("taskBatchSize").value),
 			apply_chat_template: $("applyChatTemplate").checked,
 			fewshot_as_multiturn: $("fewshotAsMultiturn").checked,
 			log_samples: $("logSamples").checked,
@@ -701,9 +702,17 @@ function suiteBadge(job) {
 function jobDetailMeta(job) {
 	const details = div("job-meta");
 	const options = job.swe_options || {};
+	const evalOptions = job.eval_options || {};
+	const batchProgress = job.batch_progress || {};
 	const values = [
 		`Suite: ${suiteLabel(jobSuite(job))}`,
 		job.rerun_of ? `Rerun of: ${job.rerun_of}` : null,
+		evalOptions.task_batch_size
+			? `Task batch size: ${evalOptions.task_batch_size}`
+			: null,
+		batchProgress.total
+			? `Batches: ${batchProgress.completed || 0}/${batchProgress.total}`
+			: null,
 		options.judge_model ? `Judge: ${options.judge_model}` : null,
 		options.platform ? `Platform: ${options.platform}` : null,
 		options.pass_count ? `Pass attempts: ${options.pass_count}` : null,

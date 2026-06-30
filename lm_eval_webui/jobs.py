@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import subprocess
 import threading
@@ -18,6 +19,7 @@ from .results import (
     extract_result_rows,
     find_result_files,
     load_result_file,
+    merge_result_jsons,
 )
 from .runner import EvalRequest, build_eval_command
 from .swe_mini import (  # type: ignore[reportMissingImports]
@@ -178,24 +180,36 @@ class JobManager:
                         rows.extend(extract_swe_mini_result_rows(job, result_json))
                     else:
                         rows.extend(extract_result_rows(job["id"], result_json))
-                except (OSError, json.JSONDecodeError):
+                except (OSError, ValueError, json.JSONDecodeError):
                     continue
         return rows
 
     def leaderboard_entries(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         for job in self.list_jobs():
-            for result_file in job.get("result_files", []):
-                try:
-                    result_json = load_result_file(result_file)
-                    if self._job_suite(job) == SWE_MINI_SUITE:
+            if self._job_suite(job) == SWE_MINI_SUITE:
+                for result_file in job.get("result_files", []):
+                    try:
+                        result_json = load_result_file(result_file)
                         entries.append(
                             extract_swe_mini_leaderboard_entry(job, result_json)
                         )
-                    else:
-                        entries.append(extract_leaderboard_entry(job, result_json))
-                except (OSError, json.JSONDecodeError):
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        continue
+                continue
+            result_jsons = []
+            for result_file in job.get("result_files", []):
+                try:
+                    result_jsons.append(load_result_file(result_file))
+                except (OSError, ValueError, json.JSONDecodeError):
                     continue
+            if result_jsons:
+                merged = (
+                    merge_result_jsons(result_jsons)
+                    if len(result_jsons) > 1
+                    else result_jsons[0]
+                )
+                entries.append(extract_leaderboard_entry(job, merged))
         return sorted(
             entries,
             key=lambda entry: (
@@ -239,6 +253,7 @@ class JobManager:
         llamacpp_backend = self._optional_llamacpp_backend(
             payload.get("llamacpp_backend")
         )
+        task_batch_size = self._positive_optional_int(payload.get("task_batch_size"))
         request = EvalRequest(
             model_id=model_id,
             tasks=tasks,
@@ -261,7 +276,7 @@ class JobManager:
         )
         command, env = build_eval_command(request, self.project_root)
         now = time.time()
-        eval_options = self._eval_options(request)
+        eval_options = self._eval_options(request, task_batch_size=task_batch_size)
         job = {
             "id": job_id,
             "model_id": model_id,
@@ -283,6 +298,8 @@ class JobManager:
             "error": None,
             "_env": env,
         }
+        if task_batch_size:
+            job["task_batch_size"] = task_batch_size
         if payload.get("rerun_of"):
             job["rerun_of"] = str(payload["rerun_of"])
         if llamacpp_backend:
@@ -415,7 +432,10 @@ class JobManager:
         job["updated_at"] = time.time()
         self._write_job(job)
         try:
-            returncode = self.launcher(job["command"], env, Path(job["log_path"]))
+            if self._job_suite(job) == SWE_MINI_SUITE:
+                returncode = self.launcher(job["command"], env, Path(job["log_path"]))
+            else:
+                returncode = self._run_lm_eval_job(job, env)
             job["returncode"] = returncode
             if self._job_suite(job) == SWE_MINI_SUITE:
                 job["result_files"] = [
@@ -443,6 +463,79 @@ class JobManager:
             job["updated_at"] = time.time()
             self._write_job(job)
 
+    def _run_lm_eval_job(self, job: dict[str, Any], env: dict[str, str]) -> int:
+        batch_size = self._task_batch_size_for_job(job)
+        tasks = [str(task) for task in job.get("tasks") or []]
+        if batch_size is None or len(tasks) <= batch_size:
+            return self.launcher(job["command"], env, Path(job["log_path"]))
+        return self._run_lm_eval_task_batches(job, tasks, batch_size)
+
+    def _run_lm_eval_task_batches(
+        self, job: dict[str, Any], tasks: list[str], batch_size: int
+    ) -> int:
+        batches = [
+            tasks[index : index + batch_size]
+            for index in range(0, len(tasks), batch_size)
+        ]
+        total = len(batches)
+        log_path = Path(job["log_path"])
+        job["batch_progress"] = {
+            "task_batch_size": batch_size,
+            "total": total,
+            "completed": 0,
+            "current": None,
+            "failed": None,
+        }
+        self._write_job(job)
+        for index, batch in enumerate(batches, start=1):
+            batch_output_path = (
+                Path(job["output_path"]) / f"batch_{index:03d}_of_{total:03d}"
+            )
+            request = self._eval_request_from_job(
+                job, tasks=batch, output_path=str(batch_output_path)
+            )
+            command, batch_env = build_eval_command(request, self.project_root)
+            job["batch_progress"] = {
+                "task_batch_size": batch_size,
+                "total": total,
+                "completed": index - 1,
+                "current": index,
+                "failed": None,
+            }
+            self._write_job(job)
+            self._append_log(
+                log_path,
+                "\n"
+                f"=== lm-eval task batch {index}/{total} "
+                f"({len(batch)} task{'s' if len(batch) != 1 else ''}) ===\n"
+                f"$ {shlex.join(command)}\n",
+            )
+            returncode = self.launcher(command, batch_env, log_path)
+            if returncode != 0:
+                job["batch_progress"] = {
+                    "task_batch_size": batch_size,
+                    "total": total,
+                    "completed": index - 1,
+                    "current": None,
+                    "failed": index,
+                }
+                self._write_job(job)
+                return returncode
+            job["batch_progress"] = {
+                "task_batch_size": batch_size,
+                "total": total,
+                "completed": index,
+                "current": None,
+                "failed": None,
+            }
+            self._write_job(job)
+        return 0
+
+    @staticmethod
+    def _append_log(log_path: Path, message: str) -> None:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(message)
+
     def _read_job(self, path: Path) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as handle:
             try:
@@ -456,16 +549,42 @@ class JobManager:
             request = self._swe_request_from_job(job)
             return build_swe_mini_command(request)[1]
         return build_eval_command(
-            EvalRequest(
-                job["model_id"],
-                job["tasks"],
-                job["output_path"],
-                self.lm_eval_python,
-                openai_base_url=job.get("openai_base_url"),
-                backend=job.get("backend", "openai-compatible-chat-completions"),
-            ),
-            self.project_root,
+            self._eval_request_from_job(job), self.project_root
         )[1]
+
+    def _eval_request_from_job(
+        self,
+        job: dict[str, Any],
+        tasks: list[str] | None = None,
+        output_path: str | None = None,
+    ) -> EvalRequest:
+        raw_options = job.get("eval_options")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        return EvalRequest(
+            model_id=str(job.get("model_id") or ""),
+            tasks=list(tasks if tasks is not None else job.get("tasks") or []),
+            output_path=str(output_path or job.get("output_path") or ""),
+            lm_eval_python=options.get("lm_eval_python") or self.lm_eval_python,
+            openai_base_url=job.get("openai_base_url") or job.get("lemonade_base_url"),
+            backend=job.get("backend", "openai-compatible-chat-completions"),
+            limit=options.get("limit"),
+            num_fewshot=self._optional_int(options.get("num_fewshot")),
+            batch_size=str(options.get("batch_size", "1")),
+            max_gen_toks=self._int_or_default(options.get("max_gen_toks"), 256),
+            num_concurrent=self._int_or_default(options.get("num_concurrent"), 1),
+            timeout=self._int_or_default(options.get("timeout"), 300),
+            apply_chat_template=self._optional_bool(
+                options.get("apply_chat_template"), True
+            ),
+            fewshot_as_multiturn=self._optional_bool(
+                options.get("fewshot_as_multiturn"), False
+            ),
+            log_samples=self._optional_bool(options.get("log_samples"), False),
+            predict_only=self._optional_bool(options.get("predict_only"), False),
+            telemetry_path=job.get("telemetry_path"),
+            llamacpp_backend=job.get("requested_llamacpp_backend")
+            or job.get("llamacpp_backend"),
+        )
 
     def _swe_request_from_job(self, job: dict[str, Any]) -> SweMiniRequest:
         raw_options = job.get("swe_options")
@@ -606,7 +725,9 @@ class JobManager:
         return "system" if backend == "llamacpp" else backend
 
     @staticmethod
-    def _eval_options(request: EvalRequest) -> dict[str, Any]:
+    def _eval_options(
+        request: EvalRequest, task_batch_size: int | None = None
+    ) -> dict[str, Any]:
         return {
             "lm_eval_python": request.lm_eval_python,
             "limit": request.limit,
@@ -619,6 +740,7 @@ class JobManager:
             "fewshot_as_multiturn": request.fewshot_as_multiturn,
             "log_samples": request.log_samples,
             "predict_only": request.predict_only,
+            "task_batch_size": task_batch_size,
         }
 
     @staticmethod
@@ -668,6 +790,7 @@ class JobManager:
                 "fewshot_as_multiturn",
                 "log_samples",
                 "predict_only",
+                "task_batch_size",
             ):
                 if key in options:
                     payload[key] = options[key]
@@ -709,6 +832,18 @@ class JobManager:
     @staticmethod
     def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         return {key: value for key, value in job.items() if not key.startswith("_")}
+
+    def _task_batch_size_for_job(self, job: dict[str, Any]) -> int | None:
+        raw_options = job.get("eval_options")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        return self._positive_optional_int(
+            options.get("task_batch_size", job.get("task_batch_size"))
+        )
+
+    @staticmethod
+    def _positive_optional_int(value: Any) -> int | None:
+        parsed = JobManager._optional_int(value)
+        return parsed if parsed is not None and parsed > 0 else None
 
     @staticmethod
     def _optional_int(value: Any) -> int | None:

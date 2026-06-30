@@ -108,6 +108,16 @@ def _provider_backend(job: dict[str, Any], metadata: dict[str, Any]) -> str | No
     return _concrete_backend(job.get("backend"))
 
 
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def extract_result_rows(
     job_id: str, result_json: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -119,7 +129,8 @@ def extract_result_rows(
             continue
         samples = _samples_for_task(str(task), result_json, metrics)
         for metric, value in metrics.items():
-            if not _is_numeric_metric(metric, value):
+            numeric_value = _finite_float(value)
+            if not _is_numeric_metric(metric, value) or numeric_value is None:
                 continue
             rows.append(
                 {
@@ -127,12 +138,46 @@ def extract_result_rows(
                     "model": model,
                     "task": str(task),
                     "metric": str(metric),
-                    "value": float(value),
+                    "value": numeric_value,
                     "samples": samples,
                     "limit": limit,
                 }
             )
     return rows
+
+
+def merge_result_jsons(result_jsons: list[dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    total_time = 0.0
+    has_total_time = False
+    for result_json in result_jsons:
+        if not isinstance(result_json, dict):
+            continue
+        if not merged:
+            merged = {
+                key: value
+                for key, value in result_json.items()
+                if key
+                not in {
+                    "results",
+                    "n-samples",
+                    "versions",
+                    "configs",
+                    "total_evaluation_time_seconds",
+                }
+            }
+            merged["results"] = {}
+        for key in ("results", "n-samples", "versions", "configs"):
+            value = result_json.get(key)
+            if isinstance(value, dict):
+                merged.setdefault(key, {}).update(value)
+        elapsed = _finite_float(result_json.get("total_evaluation_time_seconds"))
+        if elapsed is not None:
+            total_time += elapsed
+            has_total_time = True
+    if has_total_time:
+        merged["total_evaluation_time_seconds"] = total_time
+    return merged
 
 
 def extract_leaderboard_entry(
@@ -210,7 +255,13 @@ def _category_scores(task_scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
         tasks = by_category.get(category, [])
         if not tasks:
             continue
-        values = [float(task["score"]) for task in tasks]
+        values = [
+            score
+            for score in (_finite_float(task.get("score")) for task in tasks)
+            if score is not None
+        ]
+        if not values:
+            continue
         scores.append(
             {
                 "category": category,
@@ -232,11 +283,11 @@ def _task_category(task: str) -> str:
 
 
 def _scored_metrics(task: str, metrics: dict[str, Any]) -> list[tuple[str, float]]:
-    numeric = {
-        metric: float(value)
-        for metric, value in metrics.items()
-        if _is_numeric_metric(metric, value)
-    }
+    numeric: dict[str, float] = {}
+    for metric, value in metrics.items():
+        numeric_value = _finite_float(value)
+        if _is_numeric_metric(metric, value) and numeric_value is not None:
+            numeric[metric] = numeric_value
     configured = _TASK_SCORE_METRICS.get(task, [])
     scored: list[tuple[str, float]] = []
     for metric in configured:
@@ -268,9 +319,7 @@ def _scored_metrics(task: str, metrics: dict[str, Any]) -> list[tuple[str, float
 def _is_numeric_metric(metric: str, value: Any) -> bool:
     if metric in _META_KEYS or metric.endswith("_stderr") or "_stderr," in metric:
         return False
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
-    return math.isfinite(value)
+    return _finite_float(value) is not None
 
 
 def _metric_base(metric: str) -> str:
@@ -294,7 +343,11 @@ def _score_value(metric: str, value: float) -> float:
 
 def load_result_file(path: str | Path) -> dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+        try:
+            payload = json.load(handle)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid result JSON: {path}") from exc
+    return payload if isinstance(payload, dict) else {}
 
 
 def find_result_files(run_dir: str | Path) -> list[Path]:
