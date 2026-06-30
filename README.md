@@ -115,9 +115,9 @@ runner before enabling SWE Mini jobs.
   `lemonade-chat-completions` alias retained for existing jobs.
 - Generation-style (`generate_until`) tasks are the safest fit for chat
   completion backends.
-- For broad/full lm-eval sweeps, set **Task batch size** to split the selected
-  tasks into sequential subprocesses. A value like `25`-`50` keeps memory lower
-  because each subprocess exits and releases loaded dataset/task state.
+- For broad/full lm-eval sweeps, **Task batch size** splits selected tasks into
+  sequential subprocesses. The default `25` keeps memory lower because each
+  subprocess exits and releases loaded dataset/task state.
 - Leaderboard scores use curated primary metrics and category rollups.
 - Job cleanup removes selected job metadata, logs, telemetry, and run outputs.
   Legacy jobs with missing artifact paths are safely ignored instead of treating

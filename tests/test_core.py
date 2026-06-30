@@ -2518,7 +2518,7 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)
         self.assertIn('id="taskBatchSize"', index)
-        self.assertIn('value="50"', index)
+        self.assertIn('value="25"', index)
         self.assertIn("task_batch_size", script)
         self.assertIn("taskBatchSize", script)
         self.assertIn("Task batch size", script)
