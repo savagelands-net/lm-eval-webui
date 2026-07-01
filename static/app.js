@@ -407,6 +407,8 @@ function renderLmEvalLeaderboard(list, entries) {
 	[
 		"#",
 		"Model",
+		"Status",
+		"Tasks",
 		"Runtime backend",
 		"Context",
 		"Tok/s",
@@ -429,6 +431,8 @@ function renderLmEvalLeaderboard(list, entries) {
 				entry.model || entry.model_id || "unknown model",
 				"model-cell",
 			),
+			leaderboardCell(entry.status || (entry.partial ? "partial" : "—")),
+			leaderboardCell(formatTaskCoverage(entry)),
 			leaderboardCell(modelBackendLabel(entry, model)),
 			leaderboardCell(
 				formatContext(entry.context_window || model?.context_window),
@@ -454,6 +458,15 @@ function renderLmEvalLeaderboard(list, entries) {
 	});
 	table.append(thead, tbody);
 	list.append(table);
+}
+
+function formatTaskCoverage(entry) {
+	const completed = Number(entry.result_task_count);
+	const requested = Number(entry.requested_task_count);
+	if (Number.isFinite(completed) && Number.isFinite(requested) && requested > 0)
+		return `${completed}/${requested}`;
+	if (Number.isFinite(completed)) return String(completed);
+	return "—";
 }
 
 function renderSweMiniLeaderboard(list, entries) {

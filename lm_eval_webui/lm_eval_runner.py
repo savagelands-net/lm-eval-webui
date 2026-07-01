@@ -76,10 +76,21 @@ def is_transient_huggingface_error(exc: BaseException) -> bool:
     return False
 
 
-def _should_retry_hf_error(exc: OSError, attempt: int, retry_count: int) -> bool:
+def is_huggingface_dataset_cache_miss(exc: BaseException) -> bool:
+    for item in _exception_chain(exc):
+        message = str(item).lower()
+        if (
+            "couldn't find cache for" in message
+            and "available configs in the cache" in message
+        ):
+            return True
+    return False
+
+
+def _should_retry_hf_error(exc: BaseException, attempt: int, retry_count: int) -> bool:
     if attempt >= retry_count:
         return False
-    return is_transient_huggingface_error(exc)
+    return is_transient_huggingface_error(exc) or is_huggingface_dataset_cache_miss(exc)
 
 
 def _retry_delay(attempt: int, base_delay: float, delay_cap: float) -> float:
@@ -215,7 +226,7 @@ def run_cli_with_hf_retries(
             )
             sleep(delay)
             continue
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             if _should_retry_hf_error(exc, attempt, retry_count):
                 attempt += 1
                 delay = _retry_delay(attempt, base_delay, delay_cap)

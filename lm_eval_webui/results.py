@@ -191,8 +191,10 @@ def extract_leaderboard_entry(
     config = raw_config if isinstance(raw_config, dict) else {}
     raw_telemetry = job.get("telemetry") or {}
     telemetry = raw_telemetry if isinstance(raw_telemetry, dict) else {}
+    raw_results = result_json.get("results") or {}
+    results = raw_results if isinstance(raw_results, dict) else {}
     task_scores: list[dict[str, Any]] = []
-    for task, metrics in (result_json.get("results") or {}).items():
+    for task, metrics in results.items():
         if not isinstance(metrics, dict):
             continue
         scored_metrics = _scored_metrics(str(task), metrics)
@@ -214,6 +216,13 @@ def extract_leaderboard_entry(
         )
     score_values = [task["score"] for task in task_scores]
     provider_backend = _provider_backend(job, model_metadata)
+    raw_tasks = job.get("tasks")
+    requested_task_count = len(raw_tasks) if isinstance(raw_tasks, list) else None
+    result_task_count = len(results)
+    status = job.get("status")
+    partial = status != "succeeded" or (
+        requested_task_count is not None and result_task_count < requested_task_count
+    )
     return {
         "job_id": job.get("id"),
         "model": _model_name(result_json),
@@ -223,7 +232,10 @@ def extract_leaderboard_entry(
         "lemonade_backend": provider_backend,
         "context_window": model_metadata.get("context_window")
         or job.get("context_window"),
-        "status": job.get("status"),
+        "status": status,
+        "partial": partial,
+        "result_task_count": result_task_count,
+        "requested_task_count": requested_task_count,
         "limit": config.get("limit"),
         "total_evaluation_time_seconds": result_json.get(
             "total_evaluation_time_seconds"

@@ -416,6 +416,37 @@ class LmEvalRunnerTests(unittest.TestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(sleeps, [0])
 
+    def test_huggingface_dataset_cache_config_miss_is_retried(self):
+        run_cli_with_hf_retries = symbol(
+            "lm_eval_webui.lm_eval_runner", "run_cli_with_hf_retries"
+        )
+        attempts = []
+        sleeps = []
+
+        def cli_evaluate():
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise ValueError(
+                    "Couldn't find cache for fxmarty/mmlu-redux-2.0-ok "
+                    "for config 'high_school_microeconomics'\n"
+                    "Available configs in the cache: ['high_school_mathematics']"
+                )
+            return 0
+
+        result = run_cli_with_hf_retries(
+            cli_evaluate,
+            retries=2,
+            initial_delay=0,
+            sleep=sleeps.append,
+            stderr=types.SimpleNamespace(
+                write=lambda _message: None, flush=lambda: None
+            ),
+        )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(sleeps, [0])
+
     def test_non_huggingface_errors_are_not_retried(self):
         run_cli_with_hf_retries = symbol(
             "lm_eval_webui.lm_eval_runner", "run_cli_with_hf_retries"
@@ -2196,6 +2227,29 @@ class LeaderboardScoringTests(unittest.TestCase):
         self.assertEqual(entry["category_scores"][0]["category"], "Math")
         self.assertEqual(entry["category_scores"][0]["score"], 50.0)
 
+    def test_failed_leaderboard_score_reports_partial_task_coverage(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+        result_json = {
+            "model_name": "Model-A",
+            "results": {"gsm8k": {"exact_match,strict-match": 1.0}},
+        }
+        job = {
+            "id": "job-1",
+            "model_id": "Model-A",
+            "status": "failed",
+            "tasks": ["gsm8k", "ifeval"],
+        }
+
+        entry = extract_leaderboard_entry(job, result_json)
+
+        self.assertEqual(entry["status"], "failed")
+        self.assertTrue(entry["partial"])
+        self.assertEqual(entry["result_task_count"], 1)
+        self.assertEqual(entry["requested_task_count"], 2)
+        self.assertEqual(entry["overall_score"], 100.0)
+
     def test_leaderboard_falls_back_to_job_backend_when_runtime_metadata_missing(self):
         extract_leaderboard_entry = symbol(
             "lm_eval_webui.results", "extract_leaderboard_entry"
@@ -2530,6 +2584,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="sweUsePiAuth"', index)
         self.assertIn("suite: state.activeSuite", script)
         self.assertIn("kindBadge(task.kind)", script)
+        self.assertIn('"Status"', script)
+        self.assertIn('"Tasks"', script)
+        self.assertIn("formatTaskCoverage", script)
+        self.assertIn("entry.status", script)
         self.assertNotIn('id="hideUnknownTasks"', index)
         self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)
