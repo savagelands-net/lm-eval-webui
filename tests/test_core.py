@@ -1269,6 +1269,8 @@ output_type: generate_until
             "xquad_de",
             "xquad_es",
             "xquad_zh",
+            "librusec_history",
+            "librusec_mhqa",
         ):
             with self.subTest(task_name=task_name):
                 config_text = f"task: {task_name}\n"
@@ -2427,6 +2429,20 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("- ALL", webui_container)
         self.assertNotIn("privileged: true", webui_container)
 
+    def test_kubernetes_manifest_sets_webui_memory_limit(self):
+        statefulset = Path("deploy/k8s/statefulset.yaml").read_text(encoding="utf-8")
+        webui_container = statefulset[
+            statefulset.index("        - name: webui") : statefulset.index(
+                "        - name: docker"
+            )
+        ]
+
+        self.assertIn("resources:", webui_container)
+        self.assertIn("requests:", webui_container)
+        self.assertIn("memory: 2Gi", webui_container)
+        self.assertIn("limits:", webui_container)
+        self.assertIn("memory: 12Gi", webui_container)
+
     def test_kubernetes_manifest_persists_huggingface_cache_on_data_volume(self):
         statefulset = Path("deploy/k8s/statefulset.yaml").read_text(encoding="utf-8")
 
@@ -2517,8 +2533,12 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn('id="hideUnknownTasks"', index)
         self.assertNotIn("hideUnknownTasks", script)
         self.assertIn('value="1"', index)
-        self.assertIn('id="taskBatchSize"', index)
-        self.assertIn('value="25"', index)
+        task_batch_control = index[
+            index.index('id="taskBatchSize"') - 80 : index.index('id="taskBatchSize"')
+            + 80
+        ]
+        self.assertIn('id="taskBatchSize"', task_batch_control)
+        self.assertIn('value="1"', task_batch_control)
         self.assertIn("task_batch_size", script)
         self.assertIn("taskBatchSize", script)
         self.assertIn("Task batch size", script)
@@ -2605,6 +2625,11 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('"openai_base_url": openai_base_url', server)
         self.assertIn("no-store", server)
         self.assertIn("BrokenPipeError", server)
+
+    def test_requirements_include_libra_scoring_dependency(self):
+        requirements = Path("requirements.txt").read_text(encoding="utf-8")
+
+        self.assertIn("pymorphy3", requirements)
 
     def test_static_ui_exposes_task_category_filters(self):
         index = Path("static/index.html").read_text(encoding="utf-8")

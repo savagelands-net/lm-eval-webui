@@ -35,4 +35,5 @@ transformers>=4.45,<5
 jsonschema
 requests
 radgraph
+pymorphy3
 git+https://github.com/felipemaiapolo/tinyBenchmarks

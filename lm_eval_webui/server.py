@@ -293,6 +293,7 @@ NON_ENGLISH_TASK_PATTERNS = tuple(
         r"^include_base_44_",
         r"^jfinqa_",
         r"^japanese",
+        r"^librusec_",
         r"^kbl",
         r"^kmmlu",
         r"^kobest",
