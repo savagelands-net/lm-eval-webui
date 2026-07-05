@@ -548,9 +548,9 @@ class JobManager:
         if self._job_suite(job) == SWE_MINI_SUITE:
             request = self._swe_request_from_job(job)
             return build_swe_mini_command(request)[1]
-        return build_eval_command(
-            self._eval_request_from_job(job), self.project_root
-        )[1]
+        return build_eval_command(self._eval_request_from_job(job), self.project_root)[
+            1
+        ]
 
     def _eval_request_from_job(
         self,

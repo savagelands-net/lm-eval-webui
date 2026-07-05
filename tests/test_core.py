@@ -1656,8 +1656,7 @@ class JobManagerBatchTests(unittest.TestCase):
                         "limit": 1,
                     },
                     "results": {
-                        task: {"acc,none": score, "sample_len": 1}
-                        for task in tasks
+                        task: {"acc,none": score, "sample_len": 1} for task in tasks
                     },
                 }
             ),
