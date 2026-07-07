@@ -179,7 +179,7 @@ button:disabled {
 	cursor: not-allowed;
 	opacity: 0.5;
 }
-input,
+input:not([type="checkbox"]),
 select {
 	width: 100%;
 	min-width: 0;

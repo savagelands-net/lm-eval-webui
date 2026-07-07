@@ -701,7 +701,6 @@ async function startJobs() {
 			judge_model: $("sweJudgeModel").value.trim() || DEFAULT_SWE_JUDGE_MODEL,
 			swe_timeout: Number($("sweTimeout").value || 30),
 			pass_count: Number($("swePassCount").value || 1),
-			platform: $("swePlatform").value.trim() || "lemonade-swe",
 			context_window: numberOrNull($("sweContextWindow").value),
 		});
 	} else {
