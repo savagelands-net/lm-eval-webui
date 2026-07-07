@@ -60,10 +60,6 @@ spec:
                   name: huggingface-token
                   key: token
                   optional: true
-            - name: PI_BENCH_AUTH_SOURCE
-              value: /secrets/pi-auth/auth.json
-            - name: PI_BENCH_REQUIRE_PI_AUTH
-              value: "0"
           command:
             - bash
             - -lc
@@ -84,9 +80,6 @@ spec:
               mountPath: /data
             - name: workspace
               mountPath: /workspace
-            - name: pi-auth
-              mountPath: /secrets/pi-auth
-              readOnly: true
           readinessProbe:
             httpGet:
               path: /api/health
@@ -114,7 +107,3 @@ spec:
           emptyDir: {}
         - name: docker-graph
           emptyDir: {}
-        - name: pi-auth
-          secret:
-            secretName: pi-auth
-            optional: true

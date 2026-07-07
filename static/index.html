@@ -197,7 +197,11 @@
           <div id="sweMiniBenchmarkOptions" class="grid four" hidden>
             <label
               >Judge model
-              <input id="sweJudgeModel" value="openai-codex/gpt-5.5" />
+              <select id="sweJudgeModel">
+                <option value="gpt-oss-120b-mxfp-GGUF" selected>
+                  gpt-oss-120b-mxfp-GGUF
+                </option>
+              </select>
             </label>
             <label
               >Timeout minutes
@@ -215,19 +219,10 @@
               >Context window override
               <input id="sweContextWindow" type="number" min="1" />
             </label>
-            <label class="check"
-              ><input id="sweUsePiAuth" type="checkbox" checked /> Mount Pi
-              browser-login auth into Docker</label
-            >
-            <label class="check"
-              ><input id="sweRequirePiAuth" type="checkbox" checked /> Require
-              Pi auth for judge</label
-            >
           </div>
-          <p id="sweMiniAuthHint" class="hint" hidden>
-            For gpt-5.5, run <code>pi</code> and login for
-            <code>openai-codex</code>. The WebUI only passes auth mount flags;
-            tokens stay in Pi's temporary Docker auth copy.
+          <p id="sweMiniJudgeHint" class="hint" hidden>
+            SWE Mini judging uses the selected Lemonade model from the
+            configured OpenAI-compatible endpoint.
           </p>
         </details>
         <div class="row actions">

@@ -36,15 +36,11 @@ SWE Mini support uses upstream `pi-bench` as a clean git submodule at
 git submodule update --remote third_party/pi-bench
 ```
 
-For gpt-5.5 judging, login with Pi on the machine running the WebUI:
+SWE Mini judging uses a Lemonade model from the configured
+OpenAI-compatible endpoint. The WebUI lets you choose the judge from the
+available model list and defaults to `gpt-oss-120b-mxfp-GGUF` when it is
+available.
 
-```bash
-pi
-# then login for openai-codex
-```
-
-SWE Mini Docker jobs receive only a temporary copy of
-`~/.pi/agent/auth.json`; the token file is not stored in WebUI job metadata.
 Override the submodule location with:
 
 ```bash
@@ -59,7 +55,6 @@ Mini containers mount the shared workspace path inside the sidecar daemon.
 ```bash
 git submodule update --init --recursive
 OPENAI_BASE_URL="http://host.docker.internal:11434/v1" \
-PI_AUTH_JSON="$HOME/.pi/agent/auth.json" \
   docker compose -f deploy/docker-compose.yml up --build
 ```
 
@@ -75,13 +70,10 @@ docker build -f deploy/Dockerfile -t savagemindz/lm-eval-webui:latest .
 docker push savagemindz/lm-eval-webui:latest
 ```
 
-Edit `deploy/k8s/statefulset.yaml` to use that image, then create the Pi auth
-secret and deploy:
+Edit `deploy/k8s/statefulset.yaml` to use that image, then deploy:
 
 ```bash
 kubectl apply -f deploy/k8s/namespace.yaml
-kubectl -n lm-eval-webui create secret generic pi-auth \
-  --from-file=auth.json="$HOME/.pi/agent/auth.json"
 # Optional, improves Hugging Face dataset download bandwidth/rate limits:
 kubectl -n lm-eval-webui create secret generic huggingface-token \
   --from-literal=token="$HF_TOKEN"

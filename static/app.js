@@ -41,6 +41,7 @@ const SUITES = {
 	lm_eval: "lm-eval",
 	swe_mini: "SWE Mini",
 };
+const DEFAULT_SWE_JUDGE_MODEL = "gpt-oss-120b-mxfp-GGUF";
 
 async function api(path, options = {}) {
 	const response = await fetch(path, {
@@ -70,6 +71,7 @@ async function loadModels() {
 		const payload = await api(`/api/models?base_url=${base}`);
 		state.models = payload.models || [];
 		renderModels();
+		renderSweJudgeModels();
 		renderResults();
 	} catch (error) {
 		setText($("modelList"), `Could not load models: ${error.message}`);
@@ -143,6 +145,30 @@ function renderModels() {
 		item.append(label, badgeRow(model.labels || []));
 		list.append(item);
 	});
+}
+
+function renderSweJudgeModels() {
+	const select = $("sweJudgeModel");
+	const previousValue = select.value || DEFAULT_SWE_JUDGE_MODEL;
+	const modelIds = state.models.map((model) => model.id).filter(Boolean);
+	select.replaceChildren();
+	if (!modelIds.length) {
+		select.append(new Option(DEFAULT_SWE_JUDGE_MODEL, DEFAULT_SWE_JUDGE_MODEL));
+		select.value = DEFAULT_SWE_JUDGE_MODEL;
+		select.disabled = true;
+		return;
+	}
+	select.disabled = false;
+	modelIds.forEach((modelId) =>
+		select.append(new Option(modelId, modelId, false, false)),
+	);
+	if (modelIds.includes(previousValue)) {
+		select.value = previousValue;
+	} else if (modelIds.includes(DEFAULT_SWE_JUDGE_MODEL)) {
+		select.value = DEFAULT_SWE_JUDGE_MODEL;
+	} else {
+		select.value = modelIds[0];
+	}
 }
 
 function renderTasks() {
@@ -662,13 +688,11 @@ async function startJobs() {
 	};
 	if (state.activeSuite === "swe_mini") {
 		Object.assign(body, {
-			judge_model: $("sweJudgeModel").value.trim() || "openai-codex/gpt-5.5",
+			judge_model: $("sweJudgeModel").value.trim() || DEFAULT_SWE_JUDGE_MODEL,
 			swe_timeout: Number($("sweTimeout").value || 30),
 			pass_count: Number($("swePassCount").value || 1),
 			platform: $("swePlatform").value.trim() || "lemonade-swe",
 			context_window: numberOrNull($("sweContextWindow").value),
-			use_pi_auth: $("sweUsePiAuth").checked,
-			require_pi_auth: $("sweRequirePiAuth").checked,
 		});
 	} else {
 		Object.assign(body, {
@@ -941,7 +965,7 @@ function updateSuiteUi() {
 	$("lmEvalCompatibilityFilters").hidden = isSweMini;
 	$("lmEvalBenchmarkOptions").hidden = isSweMini;
 	$("sweMiniBenchmarkOptions").hidden = !isSweMini;
-	$("sweMiniAuthHint").hidden = !isSweMini;
+	$("sweMiniJudgeHint").hidden = !isSweMini;
 	$("taskHint").textContent = isSweMini
 		? "SWE Mini tasks run in Docker SWE-bench containers and are judged by the selected judge model."
 		: "OpenAI-compatible chat backends are generation oriented. Use generate_until tasks first.";

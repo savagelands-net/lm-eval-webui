@@ -25,12 +25,9 @@ services:
     environment:
       DOCKER_HOST: tcp://docker:2375
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://localhost:11434/v1}
-      PI_BENCH_AUTH_SOURCE: /secrets/pi-auth/auth.json
-      PI_BENCH_REQUIRE_PI_AUTH: ${PI_BENCH_REQUIRE_PI_AUTH:-0}
     volumes:
       - data:/data
       - workspace:/workspace
-      - ${PI_AUTH_JSON:-${HOME}/.pi/agent/auth.json}:/secrets/pi-auth/auth.json:ro
     command:
       - bash
       - -lc

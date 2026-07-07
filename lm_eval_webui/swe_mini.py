@@ -24,11 +24,41 @@ def default_pi_bench_dir(project_root: str | Path | None = None) -> Path:
 
 DEFAULT_PI_BENCH_DIR = default_pi_bench_dir()
 DEFAULT_SWE_MINI_PLATFORM = "lemonade-swe"
-DEFAULT_SWE_MINI_JUDGE_MODEL = "openai-codex/gpt-5.5"
+DEFAULT_SWE_MINI_JUDGE_PROVIDER = "lemonade"
+DEFAULT_SWE_MINI_JUDGE_MODEL_ID = "gpt-oss-120b-mxfp-GGUF"
+DEFAULT_SWE_MINI_JUDGE_MODEL = (
+    f"{DEFAULT_SWE_MINI_JUDGE_PROVIDER}/{DEFAULT_SWE_MINI_JUDGE_MODEL_ID}"
+)
 SWE_MINI_SUITE = "swe_mini"
 WEBUI_TASKSET_DIR = ".webui-tasksets"
 LAUNCH_CWD_ENV = "LMEVAL_WEBUI_LAUNCH_CWD"
 SWE_OUTPUT_ENV = "SWE_MINI_OUTPUT_PATH"
+
+
+def normalize_swe_mini_judge_model(
+    judge_model: str | None,
+    provider: str = DEFAULT_SWE_MINI_JUDGE_PROVIDER,
+) -> str:
+    """Return a provider-qualified Lemonade judge model name for pi-bench."""
+
+    raw_model = str(judge_model or DEFAULT_SWE_MINI_JUDGE_MODEL_ID).strip()
+    if not raw_model:
+        raw_model = DEFAULT_SWE_MINI_JUDGE_MODEL_ID
+    prefix = f"{provider}/"
+    if raw_model.startswith(prefix):
+        return raw_model
+    return f"{prefix}{raw_model}"
+
+
+def swe_mini_judge_model_id(
+    judge_model: str | None,
+    provider: str = DEFAULT_SWE_MINI_JUDGE_PROVIDER,
+) -> str:
+    """Return the Lemonade model id portion of a provider-qualified judge."""
+
+    qualified = normalize_swe_mini_judge_model(judge_model, provider)
+    prefix = f"{provider}/"
+    return qualified[len(prefix) :] if qualified.startswith(prefix) else qualified
 
 
 @dataclass(slots=True)
@@ -46,8 +76,6 @@ class SweMiniRequest:
     timeout_minutes: int = 30
     pass_count: int = 1
     context_window: int | None = None
-    require_pi_auth: bool = True
-    use_pi_auth: bool = True
     extra_args: list[str] | None = None
     models_json_path: str | Path | None = None
 
@@ -57,10 +85,16 @@ def write_swe_mini_models_json(
     base_url: str,
     model_id: str,
     context_window: int | None = None,
+    judge_model_id: str | None = None,
 ) -> Path:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     models_path = output / "models.json"
+    model_ids: list[str] = []
+    for candidate in (model_id, judge_model_id):
+        candidate_id = str(candidate or "").strip()
+        if candidate_id and candidate_id not in model_ids:
+            model_ids.append(candidate_id)
     payload = {
         "providers": {
             "lemonade": {
@@ -77,20 +111,7 @@ def write_swe_mini_models_json(
                     "supportsStrictMode": False,
                 },
                 "models": [
-                    {
-                        "id": model_id,
-                        "name": f"{model_id} (Lemonade)",
-                        "reasoning": False,
-                        "input": ["text"],
-                        "contextWindow": context_window or 131072,
-                        "maxTokens": 65536,
-                        "cost": {
-                            "input": 0,
-                            "output": 0,
-                            "cacheRead": 0,
-                            "cacheWrite": 0,
-                        },
-                    }
+                    _lemonade_model_entry(model, context_window) for model in model_ids
                 ],
             }
         }
@@ -99,6 +120,25 @@ def write_swe_mini_models_json(
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
     )
     return models_path
+
+
+def _lemonade_model_entry(
+    model_id: str, context_window: int | None = None
+) -> dict[str, Any]:
+    return {
+        "id": model_id,
+        "name": f"{model_id} (Lemonade)",
+        "reasoning": False,
+        "input": ["text"],
+        "contextWindow": context_window or 131072,
+        "maxTokens": 65536,
+        "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+        },
+    }
 
 
 def swe_mini_output_path(
@@ -124,6 +164,7 @@ def build_swe_mini_command(request: SweMiniRequest) -> tuple[list[str], dict[str
     pi_bench_dir = Path(request.pi_bench_dir)
     project_root = Path(request.project_root)
     wrapper = project_root / "scripts" / "run-swe-mini.sh"
+    judge_model = normalize_swe_mini_judge_model(request.judge_model)
     models_path = (
         Path(request.models_json_path)
         if request.models_json_path
@@ -134,14 +175,15 @@ def build_swe_mini_command(request: SweMiniRequest) -> tuple[list[str], dict[str
             base_url=request.openai_base_url,
             model_id=request.model_id,
             context_window=request.context_window,
+            judge_model_id=swe_mini_judge_model_id(judge_model),
         )
     )
     command = [str(wrapper), request.task_target]
 
     command.extend(["--provider", request.provider])
     command.extend(["--model", request.model_id])
-    if request.judge_model:
-        command.extend(["--judge-model", request.judge_model])
+    if judge_model:
+        command.extend(["--judge-model", judge_model])
     if request.platform:
         command.extend(["--platform", request.platform])
     if request.model_tag:
@@ -158,9 +200,6 @@ def build_swe_mini_command(request: SweMiniRequest) -> tuple[list[str], dict[str
     env[SWE_OUTPUT_ENV] = str(request.output_path)
     env["PI_BENCH_DIR"] = str(pi_bench_dir)
     env["PI_BENCH_MODELS_JSON"] = str(models_path)
-    env["PI_BENCH_REQUIRE_PI_AUTH"] = "1" if request.require_pi_auth else "0"
-    if not request.use_pi_auth:
-        env["PI_BENCH_DISABLE_PI_AUTH"] = "1"
     return command, env
 
 

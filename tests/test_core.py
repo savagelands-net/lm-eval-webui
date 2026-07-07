@@ -105,7 +105,7 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
 
 
 class SweMiniRunnerTests(unittest.TestCase):
-    def test_swe_mini_command_uses_repo_owned_wrapper_for_codex_judge(self):
+    def test_swe_mini_command_uses_repo_owned_wrapper_for_lemonade_judge(self):
         SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
         build_swe_mini_command = symbol(
             "lm_eval_webui.swe_mini", "build_swe_mini_command"
@@ -135,16 +135,24 @@ class SweMiniRunnerTests(unittest.TestCase):
                     pi_bench_dir=str(pi_bench_dir),
                     project_root=str(project_root),
                     openai_base_url="https://llm.savagelands.net",
-                    judge_model="openai-codex/gpt-5.5",
+                    judge_model="lemonade/gpt-oss-120b-mxfp-GGUF",
                     model_tag="job123",
                     platform="lemonade-swe",
                     timeout_minutes=45,
                     pass_count=2,
                     context_window=131072,
-                    require_pi_auth=True,
                 )
             )
-            models_path_exists = Path(env["PI_BENCH_MODELS_JSON"]).is_file()
+            models_path = Path(env["PI_BENCH_MODELS_JSON"])
+            models_path_exists = models_path.is_file()
+            try:
+                models_payload = json.loads(models_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                self.fail(f"invalid generated models.json: {exc}")
+            model_ids = [
+                model["id"]
+                for model in models_payload["providers"]["lemonade"]["models"]
+            ]
 
         self.assertEqual(
             command[:2],
@@ -158,7 +166,7 @@ class SweMiniRunnerTests(unittest.TestCase):
         self.assertIn("--model", command)
         self.assertIn("Gemma-4-26B-A4B-it-GGUF", command)
         self.assertIn("--judge-model", command)
-        self.assertIn("openai-codex/gpt-5.5", command)
+        self.assertIn("lemonade/gpt-oss-120b-mxfp-GGUF", command)
         self.assertIn("--model-tag", command)
         self.assertIn("job123", command)
         self.assertIn("--platform", command)
@@ -169,11 +177,14 @@ class SweMiniRunnerTests(unittest.TestCase):
         self.assertIn("2", command)
         self.assertIn("--context", command)
         self.assertIn("131072", command)
-        self.assertEqual(env["PI_BENCH_REQUIRE_PI_AUTH"], "1")
         self.assertEqual(env["SWE_MINI_OUTPUT_PATH"], str(output_path))
         self.assertEqual(env["LMEVAL_WEBUI_LAUNCH_CWD"], str(project_root))
         self.assertEqual(env["PI_BENCH_DIR"], str(pi_bench_dir))
         self.assertTrue(models_path_exists)
+        self.assertEqual(
+            model_ids,
+            ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
+        )
 
     def test_default_pi_bench_dir_is_repo_submodule(self):
         default_pi_bench_dir = symbol("lm_eval_webui.swe_mini", "default_pi_bench_dir")
@@ -195,6 +206,7 @@ class SweMiniRunnerTests(unittest.TestCase):
                 base_url="https://llm.savagelands.net",
                 model_id="Gemma-4-26B-A4B-it-GGUF",
                 context_window=131072,
+                judge_model_id="gpt-oss-120b-mxfp-GGUF",
             )
             try:
                 payload = json.loads(Path(models_path).read_text(encoding="utf-8"))
@@ -205,7 +217,10 @@ class SweMiniRunnerTests(unittest.TestCase):
         self.assertEqual(lemonade["baseUrl"], "https://llm.savagelands.net/v1")
         self.assertEqual(lemonade["api"], "openai-completions")
         self.assertEqual(lemonade["apiKey"], "lemonade")
-        self.assertEqual(lemonade["models"][0]["id"], "Gemma-4-26B-A4B-it-GGUF")
+        self.assertEqual(
+            [model["id"] for model in lemonade["models"]],
+            ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
+        )
         self.assertEqual(lemonade["models"][0]["contextWindow"], 131072)
 
     def test_find_swe_mini_tasks_reads_verified_mini_task_files(self):
@@ -293,7 +308,7 @@ class SweMiniRunnerTests(unittest.TestCase):
             "status": "succeeded",
             "provider_backend": "rocm",
             "swe_options": {
-                "judge_model": "openai-codex/gpt-5.5",
+                "judge_model": "lemonade/gpt-oss-120b-mxfp-GGUF",
                 "platform": "lemonade-swe",
                 "pass_count": 2,
             },
@@ -316,7 +331,7 @@ class SweMiniRunnerTests(unittest.TestCase):
         self.assertEqual(entry["overall_score"], 50.0)
         self.assertEqual(entry["total_tasks"], 2)
         self.assertEqual(entry["passed_tasks"], 1)
-        self.assertEqual(entry["judge_model"], "openai-codex/gpt-5.5")
+        self.assertEqual(entry["judge_model"], "lemonade/gpt-oss-120b-mxfp-GGUF")
         self.assertEqual(entry["task_scores"][0]["attempts"], 2)
 
 
@@ -1809,7 +1824,7 @@ class JobManagerSweMiniTests(unittest.TestCase):
                     "suite": "swe_mini",
                     "model_ids": ["Gemma-4-26B-A4B-it-GGUF"],
                     "tasks": ["django__django-12209"],
-                    "judge_model": "openai-codex/gpt-5.5",
+                    "judge_model": "lemonade/gpt-oss-120b-mxfp-GGUF",
                     "openai_base_url": "https://llm.savagelands.net",
                     "swe_timeout": 45,
                     "pass_count": 2,
@@ -1828,7 +1843,10 @@ class JobManagerSweMiniTests(unittest.TestCase):
                 self.fail(f"invalid generated models.json: {exc}")
 
         self.assertEqual(job["suite"], "swe_mini")
-        self.assertEqual(job["swe_options"]["judge_model"], "openai-codex/gpt-5.5")
+        self.assertEqual(
+            job["swe_options"]["judge_model"],
+            "lemonade/gpt-oss-120b-mxfp-GGUF",
+        )
         self.assertEqual(job["swe_options"]["pass_count"], 2)
         self.assertEqual(job["swe_options"]["timeout_minutes"], 45)
         self.assertEqual(
@@ -1838,15 +1856,18 @@ class JobManagerSweMiniTests(unittest.TestCase):
             commands[0][0], str(project_root / "scripts" / "run-swe-mini.sh")
         )
         self.assertIn("--judge-model", commands[0])
-        self.assertIn("openai-codex/gpt-5.5", commands[0])
+        self.assertIn("lemonade/gpt-oss-120b-mxfp-GGUF", commands[0])
         self.assertIn("--pass", commands[0])
         self.assertIn("2", commands[0])
-        self.assertEqual(envs[0]["PI_BENCH_REQUIRE_PI_AUTH"], "1")
         self.assertEqual(envs[0]["PI_BENCH_DIR"], str(pi_bench_dir))
         self.assertEqual(envs[0]["LMEVAL_WEBUI_LAUNCH_CWD"], str(project_root))
         self.assertEqual(
             models_json["providers"]["lemonade"]["baseUrl"],
             "https://llm.savagelands.net/v1",
+        )
+        self.assertEqual(
+            [model["id"] for model in models_json["providers"]["lemonade"]["models"]],
+            ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
         )
         self.assertEqual(rows[0]["suite"], "swe_mini")
         self.assertEqual(leaderboard[0]["suite"], "swe_mini")
@@ -1888,11 +1909,10 @@ class JobManagerSweMiniTests(unittest.TestCase):
                     "suite": "swe_mini",
                     "model_ids": ["Model-A"],
                     "tasks": ["django__django-12209"],
-                    "judge_model": "openai-codex/gpt-5.5",
+                    "judge_model": "lemonade/gpt-oss-120b-mxfp-GGUF",
                     "pass_count": 3,
                     "swe_timeout": 60,
                     "platform": "lemonade-swe",
-                    "require_pi_auth": True,
                 }
             )[0]
 
@@ -1903,7 +1923,7 @@ class JobManagerSweMiniTests(unittest.TestCase):
         self.assertEqual(rerun_job["suite"], "swe_mini")
         self.assertEqual(rerun_job["rerun_of"], original_job["id"])
         self.assertEqual(
-            rerun_job["swe_options"]["judge_model"], "openai-codex/gpt-5.5"
+            rerun_job["swe_options"]["judge_model"], "lemonade/gpt-oss-120b-mxfp-GGUF"
         )
         self.assertEqual(rerun_job["swe_options"]["pass_count"], 3)
         self.assertEqual(rerun_job["swe_options"]["timeout_minutes"], 60)
@@ -2579,8 +2599,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("state.selectedTasks = new Set", script)
         self.assertIn('id="suiteSweMini"', index)
         self.assertIn('id="sweJudgeModel"', index)
-        self.assertIn("openai-codex/gpt-5.5", index)
-        self.assertIn('id="sweUsePiAuth"', index)
+        self.assertIn("gpt-oss-120b-mxfp-GGUF", index)
+        self.assertIn('id="sweMiniJudgeHint"', index)
+        self.assertIn("DEFAULT_SWE_JUDGE_MODEL", script)
+        self.assertIn("function renderSweJudgeModels", script)
         self.assertIn("suite: state.activeSuite", script)
         self.assertIn("kindBadge(task.kind)", script)
         self.assertIn('"Status"', script)

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run pi-bench SWE Mini tasks using the pristine upstream pi-bench submodule plus
-# WebUI-owned customizations: generated models.json, Pi browser-login auth, and
-# result ownership repair. Do not edit files inside third_party/pi-bench.
+# Run pi-bench SWE Mini tasks using the upstream pi-bench submodule plus
+# WebUI-owned customizations: generated models.json, Lemonade judge model
+# resolution, and result ownership repair.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -20,9 +20,6 @@ Environment:
   PI_BENCH_DIR=/path/to/pi-bench-submodule
   PI_BENCH_RUN_DIR=/path/to/writable/pi-bench-runtime  # optional
   PI_BENCH_MODELS_JSON=/path/to/generated/models.json
-  PI_BENCH_AUTH_SOURCE=/path/to/auth.json
-  PI_BENCH_REQUIRE_PI_AUTH=1
-  PI_BENCH_DISABLE_PI_AUTH=1
 USAGE
 }
 
@@ -49,12 +46,8 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# shellcheck source=scripts/pi-auth-docker-env.sh
-source "$SCRIPT_DIR/pi-auth-docker-env.sh"
 # shellcheck source=scripts/docker-ownership.sh
 source "$SCRIPT_DIR/docker-ownership.sh"
-prepare_pi_auth_for_docker
-trap cleanup_pi_auth_for_docker EXIT
 
 if [ ! -d "$PI_BENCH_DIR" ]; then
 	echo "[ERROR] PI_BENCH_DIR does not exist: $PI_BENCH_DIR" >&2
@@ -67,6 +60,64 @@ if [ "$PI_BENCH_RUN_DIR" != "$PI_BENCH_DIR" ]; then
 	# deleting files so cached node_modules and previous results can be reused.
 	cp -a "$PI_BENCH_DIR/." "$PI_BENCH_RUN_DIR/"
 fi
+
+patch_pi_bench_for_local_judge_models() {
+	local index_ts="$PI_BENCH_RUN_DIR/src/index.ts"
+	[ -f "$index_ts" ] || return 0
+	python3 - "$index_ts" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+marker = "LMEVAL_WEBUI_LOCAL_JUDGE_MODEL_RESOLUTION"
+if marker in text:
+    raise SystemExit(0)
+old_judge_parse = '''  let judgeModelReq;
+  if (values["judge-model"]) {
+    const parts = values["judge-model"].split("/");
+    judgeModelReq = parts.length > 1 ? getModel(parts[0] as any, parts[1]) : undefined;
+    if (!judgeModelReq && !values["print-output-dir"]) console.warn(`[WARN] Could not resolve judge model ${values["judge-model"]}. Using default.`);
+  }
+'''
+new_judge_parse = '''  let judgeModelReq;
+  if (values["judge-model"]) {
+    const parts = values["judge-model"].split("/");
+    if (parts.length > 1) {
+      const judgeProvider = parts[0] as any;
+      const judgeId = parts.slice(1).join("/");
+      judgeModelReq = getModel(judgeProvider, judgeId) || { provider: judgeProvider, id: judgeId };
+    }
+  }
+'''
+if old_judge_parse not in text:
+    raise SystemExit(f"Could not patch {path}: judge parser not found")
+text = text.replace(old_judge_parse, new_judge_parse, 1)
+needle = """    }
+
+    let resolvedAgentModel;
+"""
+insert = """    }
+
+    // LMEVAL_WEBUI_LOCAL_JUDGE_MODEL_RESOLUTION
+    if (judgeModelReq && !judgeModelReq.api) {
+      const resolvedJudgeModel = modelRegistry.find(judgeModelReq.provider, judgeModelReq.id);
+      if (!resolvedJudgeModel) {
+        throw new Error(`Could not find judge model ${judgeModelReq.provider}/${judgeModelReq.id} in registry`);
+      }
+      judgeModelReq = resolvedJudgeModel;
+      console.log(`[INFO] Judge resolved to model: ${judgeModelReq.provider}/${judgeModelReq.id}`);
+    }
+
+    let resolvedAgentModel;
+"""
+if needle not in text:
+    raise SystemExit(f"Could not patch {path}: insertion point not found")
+path.write_text(text.replace(needle, insert, 1), encoding="utf-8")
+PY
+}
+
+patch_pi_bench_for_local_judge_models
 
 MODEL_DOCKER_ARGS=()
 if [ -n "${PI_BENCH_MODELS_JSON:-}" ]; then
@@ -193,7 +244,6 @@ PY
 		set +e
 		docker run --init -i --rm --network host \
 			"${ENV_ARGS[@]}" \
-			"${PI_AUTH_DOCKER_ARGS[@]}" \
 			-v "$PI_BENCH_RUN_DIR:/pi-bench:z" \
 			"${MODEL_DOCKER_ARGS[@]}" \
 			-v "pi-bench-bun-cache:/root/.bun" \

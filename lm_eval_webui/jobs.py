@@ -35,6 +35,7 @@ from .swe_mini import (  # type: ignore[reportMissingImports]
     extract_swe_mini_result_rows,
     find_swe_mini_result_files,
     materialize_swe_mini_task_target,
+    normalize_swe_mini_judge_model,
     swe_mini_output_path,
 )
 from .telemetry import aggregate_telemetry_file
@@ -325,14 +326,14 @@ class JobManager:
             model_id, job_id, platform, pi_bench_dir=self.pi_bench_dir
         )
         task_target = materialize_swe_mini_task_target(self.pi_bench_dir, tasks, job_id)
-        judge_model = str(payload.get("judge_model") or DEFAULT_SWE_MINI_JUDGE_MODEL)
+        judge_model = normalize_swe_mini_judge_model(
+            str(payload.get("judge_model") or DEFAULT_SWE_MINI_JUDGE_MODEL)
+        )
         timeout_minutes = self._int_or_default(
             payload.get("swe_timeout", payload.get("timeout_minutes")), 30
         )
         pass_count = self._int_or_default(payload.get("pass_count"), 1)
         context_window = self._optional_int(payload.get("context_window"))
-        require_pi_auth = self._optional_bool(payload.get("require_pi_auth"), True)
-        use_pi_auth = self._optional_bool(payload.get("use_pi_auth"), True)
         provider = str(payload.get("swe_provider") or "lemonade")
         openai_base_url = payload.get(
             "openai_base_url", payload.get("lemonade_base_url", self.openai_base_url)
@@ -351,8 +352,6 @@ class JobManager:
             timeout_minutes=timeout_minutes,
             pass_count=pass_count,
             context_window=context_window,
-            require_pi_auth=require_pi_auth,
-            use_pi_auth=use_pi_auth,
         )
         command, env = build_swe_mini_command(request)
         now = time.time()
@@ -367,8 +366,6 @@ class JobManager:
             "timeout_minutes": timeout_minutes,
             "pass_count": pass_count,
             "context_window": context_window,
-            "require_pi_auth": require_pi_auth,
-            "use_pi_auth": use_pi_auth,
             "task_target": task_target,
             "pi_bench_dir": str(self.pi_bench_dir),
             "openai_base_url": str(openai_base_url),
@@ -601,14 +598,14 @@ class JobManager:
                 or self.openai_base_url
             ),
             provider=str(options.get("provider") or "lemonade"),
-            judge_model=str(options.get("judge_model") or DEFAULT_SWE_MINI_JUDGE_MODEL),
+            judge_model=normalize_swe_mini_judge_model(
+                str(options.get("judge_model") or DEFAULT_SWE_MINI_JUDGE_MODEL)
+            ),
             platform=str(options.get("platform") or DEFAULT_SWE_MINI_PLATFORM),
             model_tag=str(options.get("model_tag") or job.get("id") or ""),
             timeout_minutes=self._int_or_default(options.get("timeout_minutes"), 30),
             pass_count=self._int_or_default(options.get("pass_count"), 1),
             context_window=self._optional_int(options.get("context_window")),
-            require_pi_auth=self._optional_bool(options.get("require_pi_auth"), True),
-            use_pi_auth=self._optional_bool(options.get("use_pi_auth"), True),
         )
 
     @staticmethod
@@ -763,8 +760,6 @@ class JobManager:
                 "pass_count": "pass_count",
                 "timeout_minutes": "swe_timeout",
                 "context_window": "context_window",
-                "require_pi_auth": "require_pi_auth",
-                "use_pi_auth": "use_pi_auth",
                 "provider": "swe_provider",
                 "openai_base_url": "openai_base_url",
             }
