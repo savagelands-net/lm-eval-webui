@@ -2603,7 +2603,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="sweMiniJudgeHint"', index)
         self.assertIn("DEFAULT_SWE_JUDGE_MODEL", script)
         self.assertIn("function renderSweJudgeModels", script)
-        self.assertIn("suite: state.activeSuite", script)
+        self.assertIn("const suite = state.activeSuite", script)
         self.assertIn("kindBadge(task.kind)", script)
         self.assertIn('"Status"', script)
         self.assertIn('"Tasks"', script)

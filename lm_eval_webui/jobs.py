@@ -174,7 +174,12 @@ class JobManager:
     def result_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for job in self.list_jobs():
-            for result_file in job.get("result_files", []):
+            result_files = (
+                self._swe_mini_result_files(job)
+                if self._job_suite(job) == SWE_MINI_SUITE
+                else [Path(path) for path in job.get("result_files", [])]
+            )
+            for result_file in result_files:
                 try:
                     result_json = load_result_file(result_file)
                     if self._job_suite(job) == SWE_MINI_SUITE:
@@ -189,7 +194,7 @@ class JobManager:
         entries: list[dict[str, Any]] = []
         for job in self.list_jobs():
             if self._job_suite(job) == SWE_MINI_SUITE:
-                for result_file in job.get("result_files", []):
+                for result_file in self._swe_mini_result_files(job):
                     try:
                         result_json = load_result_file(result_file)
                         entries.append(
@@ -435,8 +440,9 @@ class JobManager:
                 returncode = self._run_lm_eval_job(job, env)
             job["returncode"] = returncode
             if self._job_suite(job) == SWE_MINI_SUITE:
+                output_path = self._persist_swe_mini_results(job)
                 job["result_files"] = [
-                    str(path) for path in find_swe_mini_result_files(job["output_path"])
+                    str(path) for path in find_swe_mini_result_files(output_path)
                 ]
             else:
                 job["result_files"] = [
@@ -798,8 +804,46 @@ class JobManager:
             payload["llamacpp_backend"] = llamacpp_backend
         return payload
 
+    def _swe_mini_result_files(self, job: dict[str, Any]) -> list[Path]:
+        result_files = [
+            Path(str(path))
+            for path in job.get("result_files", [])
+            if Path(str(path)).exists()
+        ]
+        if result_files:
+            return result_files
+        output_path = self._persist_swe_mini_results(job)
+        result_files = find_swe_mini_result_files(output_path)
+        if result_files:
+            job["result_files"] = [str(path) for path in result_files]
+            self._write_job(job)
+        return result_files
+
+    def _persist_swe_mini_results(self, job: dict[str, Any]) -> Path:
+        """Copy SWE Mini result artifacts from workspace storage into /data/runs."""
+
+        raw_source = str(job.get("output_path") or "").strip()
+        persistent_path = self.runs_dir / str(job["id"])
+        if not raw_source:
+            return persistent_path
+        source = Path(raw_source)
+        if source.exists() and source not in {Path("."), persistent_path}:
+            persistent_path.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, persistent_path, dirs_exist_ok=True)
+            job["pi_bench_output_path"] = str(source)
+            job["output_path"] = str(persistent_path)
+            raw_options = job.get("swe_options")
+            if isinstance(raw_options, dict):
+                raw_options["pi_bench_output_path"] = str(source)
+        return persistent_path if persistent_path.exists() else source
+
     def _remove_job_artifacts(self, job: dict[str, Any]) -> None:
-        for key in ("log_path", "output_path", "telemetry_path"):
+        for key in (
+            "log_path",
+            "output_path",
+            "pi_bench_output_path",
+            "telemetry_path",
+        ):
             raw_path = job.get(key)
             if not raw_path:
                 continue

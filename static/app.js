@@ -12,6 +12,7 @@ const state = {
 	visibleTaskNames: [],
 	hasAutoSelectedTask: false,
 	taskPage: 0,
+	taskLoadToken: 0,
 	activeSuite: "lm_eval",
 	resultSuite: "lm_eval",
 };
@@ -78,20 +79,28 @@ async function loadModels() {
 	}
 }
 async function loadTasks() {
+	const requestedSuite = state.activeSuite;
+	const loadToken = ++state.taskLoadToken;
 	state.visibleTaskNames = [];
 	setTaskLoading(true);
 	$("selectVisibleTasks").disabled = true;
 	$("unselectVisibleTasks").disabled = true;
-	setText($("taskList"), `Loading ${suiteLabel(state.activeSuite)} tasks…`);
+	setText($("taskList"), `Loading ${suiteLabel(requestedSuite)} tasks…`);
 	try {
-		const suite = encodeURIComponent(state.activeSuite);
+		const suite = encodeURIComponent(requestedSuite);
 		const payload = await api(`/api/tasks?suite=${suite}`);
+		if (loadToken !== state.taskLoadToken || requestedSuite !== state.activeSuite)
+			return;
 		state.tasks = payload.tasks || [];
 		renderTasks();
 	} catch (error) {
+		if (loadToken !== state.taskLoadToken || requestedSuite !== state.activeSuite)
+			return;
 		setText($("taskList"), `Could not load tasks: ${error.message}`);
 	} finally {
-		setTaskLoading(false);
+		if (loadToken === state.taskLoadToken && requestedSuite === state.activeSuite) {
+			setTaskLoading(false);
+		}
 	}
 }
 async function loadJobs() {
@@ -673,20 +682,21 @@ async function rerunSelectedJobs() {
 	}
 }
 async function startJobs() {
+	const suite = state.activeSuite;
 	const modelIds = [...state.selectedModels],
 		tasks = [...state.selectedTasks];
 	if (!modelIds.length || !tasks.length)
 		return ($("setupMessage").textContent =
-			`Select at least one model and one ${suiteLabel(state.activeSuite)} task.`);
+			`Select at least one model and one ${suiteLabel(suite)} task.`);
 	const body = {
-		suite: state.activeSuite,
+		suite,
 		model_ids: modelIds,
 		tasks,
 		openai_base_url: $("openaiBaseUrl").value.trim(),
 		llamacpp_backend: $("llamacppBackend").value || null,
 		max_concurrent_jobs: Number($("maxConcurrentJobs").value || 1),
 	};
-	if (state.activeSuite === "swe_mini") {
+	if (suite === "swe_mini") {
 		Object.assign(body, {
 			judge_model: $("sweJudgeModel").value.trim() || DEFAULT_SWE_JUDGE_MODEL,
 			swe_timeout: Number($("sweTimeout").value || 30),
@@ -716,9 +726,10 @@ async function startJobs() {
 			body: JSON.stringify(body),
 		});
 		$("setupMessage").textContent = `Started ${payload.jobs.length} job(s).`;
-		state.resultSuite = state.activeSuite;
+		state.resultSuite = suite;
 		updateSuiteUi();
 		await loadJobs();
+		if (suite === "swe_mini" && state.activeSuite === suite) await loadTasks();
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
 	}

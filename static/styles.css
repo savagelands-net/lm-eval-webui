@@ -179,6 +179,11 @@ button:disabled {
 	cursor: not-allowed;
 	opacity: 0.5;
 }
+input,
+select {
+	width: 100%;
+	min-width: 0;
+}
 button.primary {
 	background: linear-gradient(135deg, #1f6feb, #388bfd);
 	border-color: #58a6ff;
