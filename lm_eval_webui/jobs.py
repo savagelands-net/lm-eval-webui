@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -44,6 +45,10 @@ Launcher = Callable[[list[str], dict[str, str], Path], int]
 TelemetryProbe = Callable[[str, str], dict[str, Any]]
 ModelMetadataProbe = Callable[[str, str], dict[str, Any]]
 LLAMACPP_BACKENDS = {"system", "vulkan", "rocm"}
+SWE_MINI_PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\] Task:", re.MULTILINE)
+SWE_MINI_COMPLETE_RE = re.compile(
+    r"Tasks:\s*(\d+)\s*\|\s*Succeeded:\s*(\d+)\s*\|\s*Failed:\s*(\d+)"
+)
 
 
 def default_launcher(command: list[str], env: dict[str, str], log_path: Path) -> int:
@@ -160,10 +165,13 @@ class JobManager:
             jobs = [
                 self._read_job(path) for path in sorted(self.jobs_dir.glob("*.json"))
             ]
-        return sorted(jobs, key=lambda job: job.get("created_at", 0))
+        return sorted(
+            [self._with_progress(job) for job in jobs],
+            key=lambda job: job.get("created_at", 0),
+        )
 
     def get_job(self, job_id: str) -> dict[str, Any]:
-        return self._read_job(self.jobs_dir / f"{job_id}.json")
+        return self._with_progress(self._read_job(self.jobs_dir / f"{job_id}.json"))
 
     def get_log(self, job_id: str, max_chars: int = 20000) -> str:
         log_path = self.logs_dir / f"{job_id}.log"
@@ -803,6 +811,72 @@ class JobManager:
         if llamacpp_backend:
             payload["llamacpp_backend"] = llamacpp_backend
         return payload
+
+    def _with_progress(self, job: dict[str, Any]) -> dict[str, Any]:
+        public_job = self._public_job(job)
+        progress = self._job_progress(public_job)
+        if progress:
+            public_job["progress"] = progress
+        return public_job
+
+    def _job_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        if self._job_suite(job) == SWE_MINI_SUITE:
+            return self._swe_mini_progress(job)
+
+        raw_progress = job.get("batch_progress")
+        if not isinstance(raw_progress, dict):
+            return None
+        total = self._int_or_default(raw_progress.get("total"), 0)
+        if total <= 0:
+            return None
+        current = raw_progress.get("current")
+        failed = raw_progress.get("failed")
+        completed = self._int_or_default(raw_progress.get("completed"), 0)
+        display_current = self._int_or_default(current or failed or completed, 0)
+        return self._progress_payload(display_current, total, completed, "batches")
+
+    def _swe_mini_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        total = len(job.get("tasks") or [])
+        current = 0
+        completed = 0
+        log_tail = self.get_log(str(job.get("id") or ""), max_chars=200000)
+
+        complete_matches = list(SWE_MINI_COMPLETE_RE.finditer(log_tail))
+        if complete_matches:
+            match = complete_matches[-1]
+            total = self._int_or_default(match.group(1), total)
+            current = total
+            completed = total
+        else:
+            progress_matches = list(SWE_MINI_PROGRESS_RE.finditer(log_tail))
+            if progress_matches:
+                match = progress_matches[-1]
+                current = self._int_or_default(match.group(1), 0)
+                total = self._int_or_default(match.group(2), total)
+                completed = max(0, current - 1)
+            elif job.get("status") == "succeeded" and total:
+                current = total
+                completed = total
+
+        if total <= 0:
+            return None
+        return self._progress_payload(current, total, completed, "tasks")
+
+    @staticmethod
+    def _progress_payload(
+        current: int, total: int, completed: int, unit: str
+    ) -> dict[str, Any] | None:
+        if total <= 0:
+            return None
+        current = max(0, min(current, total))
+        completed = max(0, min(completed, total))
+        return {
+            "current": current,
+            "total": total,
+            "completed": completed,
+            "unit": unit,
+            "percent": (current / total) * 100,
+        }
 
     def _swe_mini_result_files(self, job: dict[str, Any]) -> list[Path]:
         result_files = [

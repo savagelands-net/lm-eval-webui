@@ -89,16 +89,25 @@ async function loadTasks() {
 	try {
 		const suite = encodeURIComponent(requestedSuite);
 		const payload = await api(`/api/tasks?suite=${suite}`);
-		if (loadToken !== state.taskLoadToken || requestedSuite !== state.activeSuite)
+		if (
+			loadToken !== state.taskLoadToken ||
+			requestedSuite !== state.activeSuite
+		)
 			return;
 		state.tasks = payload.tasks || [];
 		renderTasks();
 	} catch (error) {
-		if (loadToken !== state.taskLoadToken || requestedSuite !== state.activeSuite)
+		if (
+			loadToken !== state.taskLoadToken ||
+			requestedSuite !== state.activeSuite
+		)
 			return;
 		setText($("taskList"), `Could not load tasks: ${error.message}`);
 	} finally {
-		if (loadToken === state.taskLoadToken && requestedSuite === state.activeSuite) {
+		if (
+			loadToken === state.taskLoadToken &&
+			requestedSuite === state.activeSuite
+		) {
 			setTaskLoading(false);
 		}
 	}
@@ -343,6 +352,8 @@ function renderJobs() {
 		const summary = document.createElement("summary");
 		summary.className = "job-summary";
 		const summaryActions = div("job-summary-actions");
+		const progress = progressBadge(job);
+		if (progress) summaryActions.append(progress);
 		summaryActions.append(suiteBadge(job), statusBadge(job), checkbox);
 		summary.append(
 			summaryBlock(
@@ -740,6 +751,27 @@ function statusBadge(job) {
 	status.textContent = job.status;
 	return status;
 }
+function progressBadge(job) {
+	const text = progressText(job);
+	if (!text) return null;
+	const badge = document.createElement("span");
+	badge.className = "badge progress";
+	badge.textContent = text;
+	return badge;
+}
+function progressText(job) {
+	const progress = job.progress;
+	if (!progress || !progress.total) return "";
+	const current = Number(progress.current || 0),
+		total = Number(progress.total || 0),
+		percent = Number(progress.percent || 0);
+	if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0)
+		return "";
+	const formattedPercent = Number.isFinite(percent)
+		? percent.toLocaleString(undefined, { maximumFractionDigits: 1 })
+		: "0";
+	return `${current}/${total} (${formattedPercent}%)`;
+}
 function suiteBadge(job) {
 	const badge = document.createElement("span");
 	badge.className = "badge suite";
@@ -753,6 +785,7 @@ function jobDetailMeta(job) {
 	const batchProgress = job.batch_progress || {};
 	const values = [
 		`Suite: ${suiteLabel(jobSuite(job))}`,
+		progressText(job) ? `Progress: ${progressText(job)}` : null,
 		job.rerun_of ? `Rerun of: ${job.rerun_of}` : null,
 		evalOptions.task_batch_size
 			? `Task batch size: ${evalOptions.task_batch_size}`

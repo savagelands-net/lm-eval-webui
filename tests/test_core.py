@@ -1770,6 +1770,51 @@ class JobManagerSweMiniTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def test_swe_mini_running_progress_is_parsed_from_log(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_root = Path(tmp) / "repo"
+            pi_bench_dir = project_root / "third_party" / "pi-bench"
+            scripts_dir = project_root / "scripts"
+            pi_bench_dir.mkdir(parents=True)
+            scripts_dir.mkdir()
+            (scripts_dir / "run-swe-mini.sh").write_text(
+                "#!/bin/sh\n", encoding="utf-8"
+            )
+            self._write_swe_task(pi_bench_dir, "django__django-11790")
+            self._write_swe_task(pi_bench_dir, "django__django-11815")
+            self._write_swe_task(pi_bench_dir, "django__django-11848")
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=project_root,
+                run_async=True,
+                pi_bench_dir=pi_bench_dir,
+            )
+            created = manager._create_swe_mini_job(
+                "Model-A",
+                [
+                    "django__django-11790",
+                    "django__django-11815",
+                    "django__django-11848",
+                ],
+                {"suite": "swe_mini"},
+            )
+            job = manager.get_job(created["id"])
+            job["status"] = "running"
+            manager._write_job(job)
+            Path(job["log_path"]).write_text(
+                "[1/3] Task: django__django-11790\n"
+                "[2/3] Task: django__django-11815\n",
+                encoding="utf-8",
+            )
+
+            listed = manager.list_jobs()[0]
+
+        self.assertEqual(listed["progress"]["current"], 2)
+        self.assertEqual(listed["progress"]["total"], 3)
+        self.assertAlmostEqual(listed["progress"]["percent"], 66.6666666667)
+
     def test_swe_mini_job_uses_suite_command_and_parses_summary(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
         commands = []
@@ -2637,6 +2682,9 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("function selectVisibleTasks", script)
         self.assertIn("job-select", script)
         self.assertIn("job-summary-actions", script)
+        self.assertIn("function progressBadge", script)
+        self.assertIn("function progressText", script)
+        self.assertIn("summaryActions.append(progress)", script)
         self.assertIn(
             "summaryActions.append(suiteBadge(job), statusBadge(job), checkbox)", script
         )

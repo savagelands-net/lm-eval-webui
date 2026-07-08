@@ -281,6 +281,10 @@ summary {
 .badge.suite {
 	color: var(--good);
 }
+.badge.progress {
+	color: var(--accent);
+	font-variant-numeric: tabular-nums;
+}
 .selected-panel {
 	margin-top: 16px;
 }
