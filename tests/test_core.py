@@ -1804,8 +1804,7 @@ class JobManagerSweMiniTests(unittest.TestCase):
             job["status"] = "running"
             manager._write_job(job)
             Path(job["log_path"]).write_text(
-                "[1/3] Task: django__django-11790\n"
-                "[2/3] Task: django__django-11815\n",
+                "[1/3] Task: django__django-11790\n[2/3] Task: django__django-11815\n",
                 encoding="utf-8",
             )
 
