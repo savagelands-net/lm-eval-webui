@@ -329,6 +329,10 @@ summary {
 .job-summary-actions .job-select {
 	margin: 0;
 }
+.job-rerun {
+	padding: 4px 8px;
+	font-size: 0.82rem;
+}
 .job-summary {
 	cursor: pointer;
 	padding: 12px;

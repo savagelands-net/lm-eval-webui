@@ -354,7 +354,19 @@ function renderJobs() {
 		const summaryActions = div("job-summary-actions");
 		const progress = progressBadge(job);
 		if (progress) summaryActions.append(progress);
-		summaryActions.append(suiteBadge(job), statusBadge(job), checkbox);
+		const rerunButton = button("Rerun", "job-rerun");
+		rerunButton.title = "Clear this job and start it again with the same options";
+		rerunButton.addEventListener("click", (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			rerunJobs([job.id]);
+		});
+		summaryActions.append(
+			rerunButton,
+			suiteBadge(job),
+			statusBadge(job),
+			checkbox,
+		);
 		summary.append(
 			summaryBlock(
 				job.model_id,
@@ -470,13 +482,11 @@ function renderLmEvalLeaderboard(list, entries) {
 	const tbody = document.createElement("tbody");
 	entries.forEach((entry, index) => {
 		const model = modelForEntry(entry);
+		const modelName = entry.model || entry.model_id || "unknown model";
 		const tr = document.createElement("tr");
 		tr.append(
 			leaderboardCell(`#${index + 1}`, "rank-cell"),
-			leaderboardCell(
-				entry.model || entry.model_id || "unknown model",
-				"model-cell",
-			),
+			leaderboardCell(modelName, "model-cell", modelName),
 			leaderboardCell(entry.status || (entry.partial ? "partial" : "—")),
 			leaderboardCell(formatTaskCoverage(entry)),
 			leaderboardCell(modelBackendLabel(entry, model)),
@@ -525,7 +535,6 @@ function renderSweMiniLeaderboard(list, entries) {
 		"Model",
 		"Runtime backend",
 		"Judge",
-		"Platform",
 		"Passed",
 		"Success",
 		"Avg duration",
@@ -538,16 +547,13 @@ function renderSweMiniLeaderboard(list, entries) {
 	const tbody = document.createElement("tbody");
 	entries.forEach((entry, index) => {
 		const model = modelForEntry(entry);
+		const modelName = entry.model || entry.model_id || "unknown model";
 		const tr = document.createElement("tr");
 		tr.append(
 			leaderboardCell(`#${index + 1}`, "rank-cell"),
-			leaderboardCell(
-				entry.model || entry.model_id || "unknown model",
-				"model-cell",
-			),
+			leaderboardCell(modelName, "model-cell", modelName),
 			leaderboardCell(modelBackendLabel(entry, model)),
-			leaderboardCell(entry.judge_model || "—"),
-			leaderboardCell(entry.platform || "—"),
+			leaderboardCell(displayJudgeModel(entry.judge_model)),
 			leaderboardCell(`${entry.passed_tasks ?? 0}/${entry.total_tasks ?? 0}`),
 			leaderboardCell(
 				formatScore(entry.overall_score),
@@ -675,13 +681,27 @@ async function clearFailedJobs() {
 async function rerunSelectedJobs() {
 	const jobIds = [...state.selectedJobs];
 	if (!jobIds.length) return;
-	$("setupMessage").textContent = "Rerunning selected jobs…";
+	await rerunJobs(jobIds);
+}
+
+async function rerunJobs(jobIds) {
+	if (!jobIds.length) return;
+	$("setupMessage").textContent = "Rerunning job…";
 	try {
 		const payload = await api("/api/jobs/rerun", {
 			method: "POST",
 			body: JSON.stringify({ job_ids: jobIds }),
 		});
 		const created = payload.jobs || [];
+		const rerunOriginals = created
+			.map((job) => job.rerun_of)
+			.filter(Boolean);
+		if (rerunOriginals.length) {
+			await api("/api/jobs/clear", {
+				method: "POST",
+				body: JSON.stringify({ job_ids: rerunOriginals }),
+			});
+		}
 		state.selectedJobs.clear();
 		if (created.length) state.selectedJobId = created[created.length - 1].id;
 		$("setupMessage").textContent = `Started ${created.length} rerun job(s).`;
@@ -793,8 +813,7 @@ function jobDetailMeta(job) {
 		batchProgress.total
 			? `Batches: ${batchProgress.completed || 0}/${batchProgress.total}`
 			: null,
-		options.judge_model ? `Judge: ${options.judge_model}` : null,
-		options.platform ? `Platform: ${options.platform}` : null,
+		options.judge_model ? `Judge: ${displayJudgeModel(options.judge_model)}` : null,
 		options.pass_count ? `Pass attempts: ${options.pass_count}` : null,
 		job.provider_backend ? `Runtime backend: ${job.provider_backend}` : null,
 	].filter(Boolean);
@@ -914,10 +933,14 @@ function categoryScoreFor(entry, category) {
 		(score) => score.category === category,
 	);
 }
-function leaderboardCell(value, className = "") {
+function displayJudgeModel(judgeModel) {
+	return String(judgeModel || "—").replace(/^lemonade\//, "");
+}
+function leaderboardCell(value, className = "", title = "") {
 	const cell = document.createElement("td");
 	if (className) cell.className = className;
 	cell.textContent = value ?? "—";
+	if (title) cell.title = title;
 	return cell;
 }
 function div(className) {
@@ -930,6 +953,13 @@ function input(type, className, value) {
 	node.type = type;
 	node.className = className;
 	node.value = value;
+	return node;
+}
+function button(text, className = "") {
+	const node = document.createElement("button");
+	node.type = "button";
+	if (className) node.className = className;
+	node.textContent = text;
 	return node;
 }
 function svgRect(x, y, width, height) {

@@ -2684,9 +2684,12 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("function progressBadge", script)
         self.assertIn("function progressText", script)
         self.assertIn("summaryActions.append(progress)", script)
-        self.assertIn(
-            "summaryActions.append(suiteBadge(job), statusBadge(job), checkbox)", script
-        )
+        self.assertIn('button("Rerun", "job-rerun")', script)
+        self.assertIn("function rerunJobs", script)
+        self.assertIn("displayJudgeModel(entry.judge_model)", script)
+        self.assertIn('replace(/^lemonade\\//, "")', script)
+        self.assertIn('leaderboardCell(modelName, "model-cell", modelName)', script)
+        self.assertIn("summaryActions.append(", script)
         self.assertIn('checkbox.addEventListener("click"', script)
         self.assertIn("job-details", script)
         self.assertIn("job-summary", script)
