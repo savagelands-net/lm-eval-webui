@@ -355,7 +355,8 @@ function renderJobs() {
 		const progress = progressBadge(job);
 		if (progress) summaryActions.append(progress);
 		const rerunButton = button("Rerun", "job-rerun");
-		rerunButton.title = "Clear this job and start it again with the same options";
+		rerunButton.title =
+			"Clear this job and start it again with the same options";
 		rerunButton.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -693,9 +694,7 @@ async function rerunJobs(jobIds) {
 			body: JSON.stringify({ job_ids: jobIds }),
 		});
 		const created = payload.jobs || [];
-		const rerunOriginals = created
-			.map((job) => job.rerun_of)
-			.filter(Boolean);
+		const rerunOriginals = created.map((job) => job.rerun_of).filter(Boolean);
 		if (rerunOriginals.length) {
 			await api("/api/jobs/clear", {
 				method: "POST",
@@ -813,7 +812,9 @@ function jobDetailMeta(job) {
 		batchProgress.total
 			? `Batches: ${batchProgress.completed || 0}/${batchProgress.total}`
 			: null,
-		options.judge_model ? `Judge: ${displayJudgeModel(options.judge_model)}` : null,
+		options.judge_model
+			? `Judge: ${displayJudgeModel(options.judge_model)}`
+			: null,
 		options.pass_count ? `Pass attempts: ${options.pass_count}` : null,
 		job.provider_backend ? `Runtime backend: ${job.provider_backend}` : null,
 	].filter(Boolean);
