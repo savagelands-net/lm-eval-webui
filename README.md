@@ -100,6 +100,34 @@ The Kubernetes manifest uses a privileged Docker-in-Docker sidecar. If your
 cluster disallows privileged pods, replace the sidecar with a cluster-native job
 runner before enabling SWE Mini jobs.
 
+## Job control and API behavior
+
+Queued and running jobs can be cancelled from the Jobs panel. Running
+subprocess groups receive `SIGTERM` and then `SIGKILL` after a grace period;
+SWE Mini containers are labelled and removed as part of cancellation. Active
+jobs must be cancelled before they can be cleared or rerun. After an application
+restart, queued jobs are resumed and jobs interrupted while running are marked
+failed instead of remaining stuck.
+
+The browser polls only lightweight job summaries and never overlaps polling
+requests. Leaderboard data is refreshed when jobs reach a terminal state, while
+detailed rows are loaded lazily in paginated requests. The backend builds each
+result summary once, persists compact per-job summaries under the data directory,
+and caches serialized ETag/gzip responses. HTTP request concurrency is bounded
+to 16 workers by default; override it with:
+
+```bash
+python -m lm_eval_webui --max-request-workers 8
+```
+
+The relevant read APIs are:
+
+- `GET /api/jobs` — lightweight job summaries
+- `GET /api/jobs/<id>` — full job details
+- `GET /api/jobs/<id>/log` — an efficient log tail
+- `GET /api/leaderboard` — compact leaderboard entries
+- `GET /api/results?offset=0&limit=1000&suite=lm_eval` — paginated rows
+
 ## Notes
 
 - This software was created with the help of AI coding assistants.

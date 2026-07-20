@@ -29,4 +29,4 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 COPY . .
 
 EXPOSE 8080
-CMD ["python", "-m", "lm_eval_webui", "--host", "0.0.0.0", "--port", "8080", "--data-dir", "/data", "--static-dir", "/app/static", "--pi-bench-dir", "/app/third_party/pi-bench"]
+CMD ["python", "-m", "lm_eval_webui", "--host", "0.0.0.0", "--port", "8080", "--data-dir", "/data", "--static-dir", "/app/static", "--max-request-workers", "16", "--pi-bench-dir", "/app/third_party/pi-bench"]

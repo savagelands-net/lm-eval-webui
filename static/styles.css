@@ -329,9 +329,13 @@ summary {
 .job-summary-actions .job-select {
 	margin: 0;
 }
-.job-rerun {
+.job-rerun,
+.job-cancel {
 	padding: 4px 8px;
 	font-size: 0.82rem;
+}
+.job-cancel {
+	border-color: color-mix(in srgb, var(--bad), var(--border) 55%);
 }
 .job-summary {
 	cursor: pointer;
@@ -378,8 +382,12 @@ summary {
 .status.failed {
 	color: var(--bad);
 }
+.status.cancelled {
+	color: var(--muted);
+}
 .status.running,
-.status.queued {
+.status.queued,
+.status.cancelling {
 	color: var(--warn);
 }
 .log {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import importlib.util
 import json
 import math
@@ -9,14 +11,19 @@ import mimetypes
 import os
 import re
 import subprocess
-from collections.abc import Callable
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .jobs import JobManager
+from .jobs import ActiveJobError, JobManager
 from .lemonade import DEFAULT_OPENAI_BASE_URL, fetch_loaded_model_metadata, fetch_models
 from .runner import find_lm_eval_python
 from .swe_mini import find_swe_mini_tasks  # type: ignore[reportMissingImports]
@@ -353,18 +360,173 @@ def write_response(
     status: int | HTTPStatus,
     content_type: str,
     body: bytes,
+    *,
+    cache_control: str = "no-store",
+    headers: Mapping[str, str] | None = None,
 ) -> None:
     """Write an HTTP response, ignoring client disconnects during any phase."""
 
     try:
         handler.send_response(status)
         handler.send_header("Content-Type", content_type)
-        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("Cache-Control", cache_control)
+        for name, value in (headers or {}).items():
+            handler.send_header(name, value)
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
-        handler.wfile.write(body)
-    except BrokenPipeError:
+        if body:
+            handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
         return
+
+
+class JsonResponseCache:
+    """Bounded cache for serialized and compressed result responses."""
+
+    def __init__(self, max_entries: int = 16) -> None:
+        self.max_entries = max(1, max_entries)
+        self._generation: int | None = None
+        self._entries: OrderedDict[str, tuple[bytes, bytes, str]] = OrderedDict()
+        self._lock = threading.RLock()
+
+    def get_or_create(
+        self, generation: int, key: str, payload: dict[str, Any]
+    ) -> tuple[bytes, bytes, str]:
+        with self._lock:
+            if generation != self._generation:
+                self._generation = generation
+                self._entries.clear()
+            cached = self._entries.get(key)
+            if cached is not None:
+                self._entries.move_to_end(key)
+                return cached
+            body = json.dumps(
+                json_safe(payload), separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+            compressed = gzip.compress(body, compresslevel=5)
+            etag = f'"{hashlib.sha256(body).hexdigest()}"'
+            cached = (body, compressed, etag)
+            self._entries[key] = cached
+            while len(self._entries) > self.max_entries:
+                self._entries.popitem(last=False)
+            return cached
+
+
+class BoundedThreadPoolHTTPServer(HTTPServer):
+    """HTTP server with a fixed-size request pool and no unbounded queue."""
+
+    allow_reuse_address = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler: type[BaseHTTPRequestHandler],
+        max_workers: int = 16,
+    ) -> None:
+        try:
+            parsed_workers = int(max_workers)
+        except (TypeError, ValueError, OverflowError):
+            parsed_workers = 16
+        self.max_workers = max(1, parsed_workers)
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.max_workers,
+            thread_name_prefix="lm-eval-http",
+        )
+        self._request_slots = threading.BoundedSemaphore(self.max_workers)
+        self._active_requests = 0
+        self._active_lock = threading.Lock()
+        super().__init__(server_address, request_handler)
+
+    @property
+    def active_requests(self) -> int:
+        with self._active_lock:
+            return self._active_requests
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self._reject_busy_request(request)
+            return
+        with self._active_lock:
+            self._active_requests += 1
+        try:
+            self._executor.submit(self._process_request, request, client_address)
+        except RuntimeError:
+            with self._active_lock:
+                self._active_requests = max(0, self._active_requests - 1)
+            self._request_slots.release()
+            self.shutdown_request(request)
+
+    def _process_request(self, request: Any, client_address: Any) -> None:
+        with suppress(AttributeError, OSError):
+            request.settimeout(30)
+        try:
+            self.finish_request(request, client_address)
+        except Exception:  # pragma: no cover - mirrors socketserver behavior
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+            with self._active_lock:
+                self._active_requests = max(0, self._active_requests - 1)
+            self._request_slots.release()
+
+    def _reject_busy_request(self, request: Any) -> None:
+        body = b'{"error":"server busy; retry later"}'
+        response = (
+            b"HTTP/1.1 503 Service Unavailable\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Cache-Control: no-store\r\n"
+            b"Retry-After: 5\r\n"
+            b"Connection: close\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+            + body
+        )
+        try:
+            request.sendall(response)
+        except OSError:
+            pass
+        finally:
+            self.shutdown_request(request)
+
+    def server_close(self) -> None:
+        super().server_close()
+        self._executor.shutdown(wait=True, cancel_futures=True)
+
+
+def compact_leaderboard_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Remove per-task detail that the leaderboard UI does not render."""
+
+    compact = {key: value for key, value in entry.items() if key != "task_scores"}
+    categories = compact.get("category_scores")
+    if isinstance(categories, list):
+        compact["category_scores"] = [
+            {
+                key: value
+                for key, value in category.items()
+                if key != "tasks"
+            }
+            | {"task_count": len(category.get("tasks") or [])}
+            for category in categories
+            if isinstance(category, dict)
+        ]
+    return compact
+
+
+def bounded_query_int(
+    params: dict[str, list[str]], key: str, default: int, minimum: int, maximum: int
+) -> int:
+    try:
+        value = int(params.get(key, [str(default)])[0])
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def compact_created_job(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: job.get(key)
+        for key in ("id", "model_id", "rerun_of", "status", "suite")
+        if job.get(key) is not None
+    }
 
 
 def safe_static_path(static_root: str | Path, request_path: str) -> Path | None:
@@ -734,20 +896,42 @@ def make_handler(
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
 ):
     static_root = Path(static_dir)
+    result_response_cache = JsonResponseCache()
 
     class WebUIHandler(BaseHTTPRequestHandler):
-        server_version = "lm-eval-webui/0.1"
+        server_version = "lm-eval-webui/0.2"
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             return
 
+        def handle_one_request(self) -> None:
+            started = time.monotonic()
+            try:
+                super().handle_one_request()
+            finally:
+                elapsed = time.monotonic() - started
+                path = getattr(self, "path", "")
+                if elapsed >= 2 and path.startswith("/api/"):
+                    print(
+                        f"Slow request: {path} took {elapsed:.2f}s",
+                        flush=True,
+                    )
+
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/api/health":
+                server = getattr(self, "server", None)
                 self._json(
                     {
                         "ok": True,
                         "lm_eval_python": find_lm_eval_python(manager.lm_eval_python),
+                        "jobs": manager.runtime_state(),
+                        "http": {
+                            "active_requests": getattr(
+                                server, "active_requests", None
+                            ),
+                            "max_workers": getattr(server, "max_workers", None),
+                        },
                     }
                 )
             elif parsed.path == "/api/config":
@@ -767,16 +951,13 @@ def make_handler(
                     }
                 )
             elif parsed.path == "/api/jobs":
-                self._json({"jobs": manager.list_jobs()})
+                self._json({"jobs": manager.list_job_summaries()})
             elif parsed.path.startswith("/api/jobs/"):
-                self._handle_job_get(parsed.path)
+                self._handle_job_get(parsed.path, parsed.query)
+            elif parsed.path == "/api/leaderboard":
+                self._handle_leaderboard()
             elif parsed.path == "/api/results":
-                self._json(
-                    {
-                        "rows": manager.result_rows(),
-                        "leaderboard": manager.leaderboard_entries(),
-                    }
-                )
+                self._handle_results(parsed.query)
             else:
                 self._serve_static(parsed.path)
 
@@ -788,30 +969,48 @@ def make_handler(
                 except ValueError as exc:
                     self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                     return
-                self._json({"jobs": jobs}, HTTPStatus.CREATED)
+                self._json(
+                    {"jobs": [compact_created_job(job) for job in jobs]},
+                    HTTPStatus.CREATED,
+                )
             elif parsed.path == "/api/jobs/rerun":
-                payload = self._read_json()
-                job_ids = payload.get("job_ids") or []
-                if isinstance(job_ids, str):
-                    job_ids = [job_ids]
                 try:
-                    jobs = manager.rerun_jobs([str(job_id) for job_id in job_ids])
+                    jobs = manager.rerun_jobs(self._read_job_ids())
+                except ActiveJobError as exc:
+                    self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                    return
                 except ValueError as exc:
                     self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
                     return
                 self._json(
-                    {"jobs": jobs, "all_jobs": manager.list_jobs()}, HTTPStatus.CREATED
+                    {
+                        "jobs": [compact_created_job(job) for job in jobs],
+                        "all_jobs": manager.list_job_summaries(),
+                    },
+                    HTTPStatus.CREATED,
+                )
+            elif parsed.path == "/api/jobs/cancel":
+                cancelled = manager.cancel_jobs(self._read_job_ids())
+                self._json(
+                    {
+                        "cancelled": cancelled,
+                        "jobs": manager.list_job_summaries(),
+                    }
                 )
             elif parsed.path == "/api/jobs/clear-failed":
                 cleared = manager.clear_failed_jobs()
-                self._json({"cleared": cleared, "jobs": manager.list_jobs()})
+                self._json(
+                    {"cleared": cleared, "jobs": manager.list_job_summaries()}
+                )
             elif parsed.path == "/api/jobs/clear":
-                payload = self._read_json()
-                job_ids = payload.get("job_ids") or []
-                if isinstance(job_ids, str):
-                    job_ids = [job_ids]
-                cleared = manager.clear_jobs([str(job_id) for job_id in job_ids])
-                self._json({"cleared": cleared, "jobs": manager.list_jobs()})
+                try:
+                    cleared = manager.clear_jobs(self._read_job_ids())
+                except ActiveJobError as exc:
+                    self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
+                    return
+                self._json(
+                    {"cleared": cleared, "jobs": manager.list_job_summaries()}
+                )
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -825,18 +1024,110 @@ def make_handler(
                 return
             self._json({"models": models})
 
-        def _handle_job_get(self, path: str) -> None:
+        def _handle_job_get(self, path: str, query: str) -> None:
             parts = path.strip("/").split("/")
-            if len(parts) == 3:
-                try:
-                    job = manager.get_job(parts[2])
-                except FileNotFoundError:
-                    self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
-                    return
-                job["log_tail"] = manager.get_log(parts[2])
+            if len(parts) not in {3, 4}:
+                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            is_log_request = len(parts) == 4 and parts[3] == "log"
+            if len(parts) == 4 and not is_log_request:
+                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                job = manager.get_job(parts[2], include_progress=not is_log_request)
+            except FileNotFoundError:
+                self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+                return
+            if not is_log_request:
                 self._json({"job": job})
                 return
-            self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+            params = parse_qs(query)
+            max_chars = bounded_query_int(
+                params, "max_chars", 20000, minimum=1000, maximum=200000
+            )
+            include_command = params.get("include_command", ["0"])[0] in {
+                "1",
+                "true",
+                "yes",
+            }
+            log_job = {
+                "id": job.get("id"),
+                "status": job.get("status"),
+                "log_tail": manager.get_log(parts[2], max_chars=max_chars),
+            }
+            if include_command:
+                log_job["command"] = job.get("command") or []
+            self._json({"job": log_job})
+
+        def _handle_leaderboard(self) -> None:
+            try:
+                snapshot = manager.results_snapshot()
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                self._json(
+                    {"error": f"Could not build results: {exc}"},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            raw_generation = snapshot.get("version")
+            generation = raw_generation if isinstance(raw_generation, int) else 0
+            entries = [
+                compact_leaderboard_entry(entry)
+                for entry in snapshot["leaderboard"]
+                if isinstance(entry, dict)
+            ]
+            self._cached_json(
+                {"leaderboard": entries, "version": generation},
+                generation,
+                "leaderboard",
+            )
+
+        def _handle_results(self, query: str) -> None:
+            params = parse_qs(query)
+            offset = bounded_query_int(
+                params, "offset", 0, minimum=0, maximum=10_000_000
+            )
+            limit = bounded_query_int(
+                params, "limit", 1000, minimum=1, maximum=5000
+            )
+            suite = params.get("suite", [""])[0]
+            try:
+                snapshot = manager.results_snapshot()
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                self._json(
+                    {"error": f"Could not build results: {exc}"},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            raw_generation = snapshot.get("version")
+            generation = raw_generation if isinstance(raw_generation, int) else 0
+            rows = [
+                row
+                for row in snapshot["rows"]
+                if isinstance(row, dict)
+                and (not suite or str(row.get("suite") or "lm_eval") == suite)
+            ]
+            page = rows[offset : offset + limit]
+            next_offset = offset + len(page)
+            if next_offset >= len(rows):
+                next_offset = None
+            payload = {
+                "rows": page,
+                "total": len(rows),
+                "offset": offset,
+                "limit": limit,
+                "next_offset": next_offset,
+                "version": generation,
+            }
+            cache_key = f"results:{suite}:{offset}:{limit}"
+            self._cached_json(payload, generation, cache_key)
+
+        def _read_job_ids(self) -> list[str]:
+            payload = self._read_json()
+            job_ids = payload.get("job_ids") or []
+            if isinstance(job_ids, str):
+                job_ids = [job_ids]
+            return [str(job_id) for job_id in job_ids]
 
         def _read_json(self) -> dict[str, Any]:
             try:
@@ -852,12 +1143,47 @@ def make_handler(
             return payload if isinstance(payload, dict) else {}
 
         def _json(
-            self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK
+            self,
+            payload: dict[str, Any],
+            status: int | HTTPStatus = HTTPStatus.OK,
         ) -> None:
-            body = json.dumps(json_safe(payload), indent=2, allow_nan=False).encode(
-                "utf-8"
-            )
+            body = json.dumps(
+                json_safe(payload), separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
             write_response(self, status, "application/json; charset=utf-8", body)
+
+        def _cached_json(
+            self, payload: dict[str, Any], generation: int, cache_key: str
+        ) -> None:
+            body, compressed, etag = result_response_cache.get_or_create(
+                generation, cache_key, payload
+            )
+            headers = {
+                "ETag": etag,
+                "Vary": "Accept-Encoding",
+            }
+            if self.headers.get("If-None-Match") == etag:
+                write_response(
+                    self,
+                    HTTPStatus.NOT_MODIFIED,
+                    "application/json; charset=utf-8",
+                    b"",
+                    cache_control="private, max-age=0, must-revalidate",
+                    headers=headers,
+                )
+                return
+            accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
+            if accepts_gzip and len(compressed) < len(body):
+                body = compressed
+                headers["Content-Encoding"] = "gzip"
+            write_response(
+                self,
+                HTTPStatus.OK,
+                "application/json; charset=utf-8",
+                body,
+                cache_control="private, max-age=0, must-revalidate",
+                headers=headers,
+            )
 
         def _serve_static(self, path: str) -> None:
             file_path = safe_static_path(static_root, path)
@@ -883,6 +1209,7 @@ def serve(
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
     lm_eval_python: str | None = None,
     max_concurrent_jobs: int = 1,
+    max_request_workers: int = 16,
     pi_bench_dir: str | Path | None = None,
 ) -> None:
     manager = JobManager(
@@ -896,6 +1223,11 @@ def serve(
         pi_bench_dir=pi_bench_dir,
     )
     handler = make_handler(manager, static_dir, openai_base_url)
-    httpd = ThreadingHTTPServer((host, port), handler)
-    print(f"Serving lm-eval WebUI at http://{host}:{port}")
+    httpd = BoundedThreadPoolHTTPServer(
+        (host, port), handler, max_workers=max_request_workers
+    )
+    print(
+        f"Serving lm-eval WebUI at http://{host}:{port} "
+        f"with {httpd.max_workers} request workers"
+    )
     httpd.serve_forever()

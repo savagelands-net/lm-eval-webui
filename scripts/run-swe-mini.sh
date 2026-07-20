@@ -10,6 +10,27 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PI_BENCH_DIR="${PI_BENCH_DIR:-$REPO_ROOT/third_party/pi-bench}"
 PI_BENCH_RUN_DIR="${PI_BENCH_RUN_DIR:-$PI_BENCH_DIR}"
 REGISTRY="${SWE_BENCH_IMAGE_REGISTRY:-ghcr.io/epoch-research/swe-bench.eval.x86_64}"
+JOB_ID="${LMEVAL_WEBUI_JOB_ID:-manual-$$}"
+SAFE_JOB_ID="$(printf '%s' "$JOB_ID" | tr -c 'A-Za-z0-9_.-' '-')"
+ACTIVE_CONTAINER=""
+
+cleanup_active_container() {
+	if [ -n "$ACTIVE_CONTAINER" ]; then
+		docker rm -f "$ACTIVE_CONTAINER" >/dev/null 2>&1 || true
+		ACTIVE_CONTAINER=""
+	fi
+}
+
+cancel_run() {
+	local exit_code="$1"
+	trap - EXIT INT TERM
+	cleanup_active_container
+	exit "$exit_code"
+}
+
+trap cleanup_active_container EXIT
+trap 'cancel_run 130' INT
+trap 'cancel_run 143' TERM
 
 usage() {
 	cat >&2 <<'USAGE'
@@ -241,8 +262,12 @@ PY
 		fi
 
 		LOGFILE="$(mktemp /tmp/lm-eval-swe-mini-log.XXXXXX)"
+		CONTAINER_NAME="lm-eval-webui-${SAFE_JOB_ID}-${COUNT}-${ATTEMPT}"
+		ACTIVE_CONTAINER="$CONTAINER_NAME"
 		set +e
 		docker run --init -i --rm --network host \
+			--name "$CONTAINER_NAME" \
+			--label "lm-eval-webui.job-id=$JOB_ID" \
 			"${ENV_ARGS[@]}" \
 			-v "$PI_BENCH_RUN_DIR:/pi-bench:z" \
 			"${MODEL_DOCKER_ARGS[@]}" \
@@ -264,6 +289,7 @@ PY
         bun run src/index.ts '$REL_TASK_FILE' ${EXTRA_ARGS[*]@Q}
       " 2>&1 | tee "$LOGFILE"
 		EXIT_CODE=${PIPESTATUS[0]}
+		ACTIVE_CONTAINER=""
 		set -e
 
 		if [ -z "${RESULTS_DIR:-}" ]; then

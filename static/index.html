@@ -257,7 +257,7 @@
       </section>
 
       <section class="card">
-        <details>
+        <details id="resultDetails">
           <summary>Detailed metric comparison</summary>
           <div class="row between detail-header">
             <h2>Detailed results</h2>
@@ -282,6 +282,9 @@
                 jobs</label
               >
               <span id="selectedJobCount" class="hint">0 selected</span>
+              <button id="cancelSelectedJobs" type="button" disabled>
+                Cancel active
+              </button>
               <button id="clearSelectedJobs" type="button" disabled>
                 Clear selected
               </button>

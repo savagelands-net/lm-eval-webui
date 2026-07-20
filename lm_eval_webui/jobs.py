@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +53,22 @@ SWE_MINI_PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\] Task:", re.MULTILINE)
 SWE_MINI_COMPLETE_RE = re.compile(
     r"Tasks:\s*(\d+)\s*\|\s*Succeeded:\s*(\d+)\s*\|\s*Failed:\s*(\d+)"
 )
+ACTIVE_JOB_STATUSES = {"queued", "running", "cancelling"}
+TERMINAL_JOB_STATUSES = {"cancelled", "failed", "succeeded"}
+RESULT_SUMMARY_VERSION = 1
+CANCEL_GRACE_SECONDS = 10.0
+
+
+class ActiveJobError(ValueError):
+    """Raised when an operation requires a terminal job."""
+
+
+class JobCancelled(Exception):
+    """Internal control flow used after a cancellation request."""
+
+    def __init__(self, returncode: int | None = None) -> None:
+        super().__init__("job cancelled")
+        self.returncode = returncode
 
 
 def default_launcher(command: list[str], env: dict[str, str], log_path: Path) -> int:
@@ -62,6 +82,7 @@ def default_launcher(command: list[str], env: dict[str, str], log_path: Path) ->
             env=process_env,
             cwd=launch_cwd,
             text=True,
+            start_new_session=True,
         )
         return process.wait()
 
@@ -98,18 +119,40 @@ class JobManager:
         )
         self._active_jobs = 0
         self._scheduler = threading.Condition(threading.RLock())
+        self._pending_jobs: deque[str] = deque()
+        self._pending_job_ids: set[str] = set()
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._active_processes: dict[str, subprocess.Popen[str]] = {}
+        self._process_lock = threading.RLock()
+        self._results_condition = threading.Condition(threading.RLock())
+        self._results_generation = 1
+        self._results_building = False
+        self._results_cache: dict[str, Any] | None = None
         self.jobs_dir = self.data_dir / "jobs"
         self.logs_dir = self.data_dir / "logs"
         self.runs_dir = self.data_dir / "runs"
         self.telemetry_dir = self.data_dir / "telemetry"
+        self.result_summaries_dir = self.data_dir / "result-summaries"
         for directory in (
             self.jobs_dir,
             self.logs_dir,
             self.runs_dir,
             self.telemetry_dir,
+            self.result_summaries_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        recovered_jobs = self._reconcile_jobs()
+        self._scheduler_thread: threading.Thread | None = None
+        if self.run_async:
+            self._scheduler_thread = threading.Thread(
+                target=self._scheduler_loop,
+                name="lm-eval-job-scheduler",
+                daemon=True,
+            )
+            self._scheduler_thread.start()
+            for job_id in recovered_jobs:
+                self._enqueue_job(job_id)
 
     def create_jobs(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         model_ids = payload.get("model_ids") or payload.get("models") or []
@@ -135,20 +178,30 @@ class JobManager:
             )
             created.append(job)
             if self.run_async:
-                threading.Thread(
-                    target=self._run_job_with_limit, args=(job["id"],), daemon=True
-                ).start()
+                self._enqueue_job(str(job["id"]))
             else:
-                self._run_job(job["id"])
+                self._run_job(str(job["id"]))
         return created
 
     def rerun_jobs(self, job_ids: list[str]) -> list[dict[str, Any]]:
-        created: list[dict[str, Any]] = []
+        jobs: list[dict[str, Any]] = []
         for job_id in [str(job_id) for job_id in job_ids if str(job_id).strip()]:
             try:
-                job = self.get_job(job_id)
+                jobs.append(self.get_job(job_id))
             except FileNotFoundError:
                 continue
+        active = [
+            str(job["id"])
+            for job in jobs
+            if job.get("status") in ACTIVE_JOB_STATUSES
+        ]
+        if active:
+            raise ActiveJobError(
+                "Cancel active jobs before rerunning them: " + ", ".join(active)
+            )
+
+        created: list[dict[str, Any]] = []
+        for job in jobs:
             payload = self._rerun_payload(job)
             if not payload.get("model_ids") or not payload.get("tasks"):
                 continue
@@ -160,96 +213,314 @@ class JobManager:
             self.max_concurrent_jobs = self._int_or_default(value, 1)
             self._scheduler.notify_all()
 
+    def runtime_state(self) -> dict[str, int]:
+        with self._scheduler:
+            return {
+                "active_jobs": self._active_jobs,
+                "queued_jobs": len(self._pending_job_ids),
+                "max_concurrent_jobs": self.max_concurrent_jobs,
+            }
+
     def list_jobs(self) -> list[dict[str, Any]]:
-        with self._lock:
-            jobs = [
-                self._read_job(path) for path in sorted(self.jobs_dir.glob("*.json"))
-            ]
         return sorted(
-            [self._with_progress(job) for job in jobs],
+            [self._with_progress(job) for job in self._stored_jobs()],
             key=lambda job: job.get("created_at", 0),
         )
 
-    def get_job(self, job_id: str) -> dict[str, Any]:
-        return self._with_progress(self._read_job(self.jobs_dir / f"{job_id}.json"))
+    def list_job_summaries(self) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        omitted = {
+            "command",
+            "log_path",
+            "output_path",
+            "pi_bench_output_path",
+            "result_files",
+            "tasks",
+            "telemetry_path",
+        }
+        for job in self.list_jobs():
+            tasks = job.get("tasks") or []
+            summary = {key: value for key, value in job.items() if key not in omitted}
+            summary["task_count"] = len(tasks)
+            summary["task_preview"] = list(tasks[:3])
+            summaries.append(summary)
+        return summaries
+
+    def get_job(
+        self, job_id: str, *, include_progress: bool = True
+    ) -> dict[str, Any]:
+        with self._lock:
+            job = self._read_job(self.jobs_dir / f"{job_id}.json")
+        return self._with_progress(job) if include_progress else self._public_job(job)
 
     def get_log(self, job_id: str, max_chars: int = 20000) -> str:
         log_path = self.logs_dir / f"{job_id}.log"
-        if not log_path.exists():
+        parsed_max_chars = self._optional_int(max_chars)
+        max_chars = max(0, parsed_max_chars or 0)
+        if max_chars == 0 or not log_path.exists():
             return ""
-        return log_path.read_text(encoding="utf-8", errors="replace")[-max_chars:]
+        with log_path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - (max_chars * 4)))
+            content = handle.read()
+        return content.decode("utf-8", errors="replace")[-max_chars:]
+
+    def results_snapshot(self) -> dict[str, Any]:
+        while True:
+            with self._results_condition:
+                generation = self._results_generation
+                cached = self._results_cache
+                if cached is not None and cached.get("version") == generation:
+                    return cached
+                while self._results_building:
+                    self._results_condition.wait()
+                    cached = self._results_cache
+                    if cached is not None and cached.get("version") == generation:
+                        return cached
+                    generation = self._results_generation
+                self._results_building = True
+
+            try:
+                snapshot = self._build_results_snapshot()
+                snapshot["version"] = generation
+            except Exception:
+                with self._results_condition:
+                    self._results_building = False
+                    self._results_condition.notify_all()
+                raise
+
+            with self._results_condition:
+                self._results_building = False
+                if generation == self._results_generation:
+                    self._results_cache = snapshot
+                    self._results_condition.notify_all()
+                    return snapshot
+                self._results_condition.notify_all()
 
     def result_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for job in self.list_jobs():
-            result_files = (
-                self._swe_mini_result_files(job)
-                if self._job_suite(job) == SWE_MINI_SUITE
-                else [Path(path) for path in job.get("result_files", [])]
-            )
-            for result_file in result_files:
-                try:
-                    result_json = load_result_file(result_file)
-                    if self._job_suite(job) == SWE_MINI_SUITE:
-                        rows.extend(extract_swe_mini_result_rows(job, result_json))
-                    else:
-                        rows.extend(extract_result_rows(job["id"], result_json))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    continue
-        return rows
+        return list(self.results_snapshot()["rows"])
 
     def leaderboard_entries(self) -> list[dict[str, Any]]:
-        entries: list[dict[str, Any]] = []
-        for job in self.list_jobs():
-            if self._job_suite(job) == SWE_MINI_SUITE:
-                for result_file in self._swe_mini_result_files(job):
-                    try:
-                        result_json = load_result_file(result_file)
-                        entries.append(
-                            extract_swe_mini_leaderboard_entry(job, result_json)
-                        )
-                    except (OSError, ValueError, json.JSONDecodeError):
-                        continue
+        return list(self.results_snapshot()["leaderboard"])
+
+    def clear_jobs(self, job_ids: list[str]) -> int:
+        selected = {str(job_id) for job_id in job_ids if str(job_id).strip()}
+        if not selected:
+            return 0
+        jobs = [job for job in self._stored_jobs() if job.get("id") in selected]
+        active = [
+            str(job["id"])
+            for job in jobs
+            if job.get("status") in ACTIVE_JOB_STATUSES
+        ]
+        if active:
+            raise ActiveJobError(
+                "Cancel active jobs before clearing them: " + ", ".join(active)
+            )
+
+        with self._lock:
+            for job in jobs:
+                self._remove_job_artifacts(job)
+        if jobs:
+            self._invalidate_results()
+        return len(jobs)
+
+    def clear_failed_jobs(self) -> int:
+        return self.clear_jobs(
+            [job["id"] for job in self._stored_jobs() if job.get("status") == "failed"]
+        )
+
+    def cancel_jobs(self, job_ids: list[str]) -> int:
+        selected = {str(job_id) for job_id in job_ids if str(job_id).strip()}
+        if not selected:
+            return 0
+        jobs = [job for job in self._stored_jobs() if job.get("id") in selected]
+        changed: list[dict[str, Any]] = []
+        now = time.time()
+        for job in jobs:
+            status = str(job.get("status") or "")
+            if status not in ACTIVE_JOB_STATUSES:
                 continue
-            result_jsons = []
-            for result_file in job.get("result_files", []):
-                try:
-                    result_jsons.append(load_result_file(result_file))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    continue
-            if result_jsons:
-                merged = (
-                    merge_result_jsons(result_jsons)
-                    if len(result_jsons) > 1
-                    else result_jsons[0]
+            job_id = str(job["id"])
+            self._cancel_event(job_id).set()
+            job["cancel_requested_at"] = now
+            job["updated_at"] = now
+            if status == "queued":
+                job["status"] = "cancelled"
+                job["cancelled_at"] = now
+                self._cleanup_swe_task_target(job)
+            else:
+                job["status"] = "cancelling"
+            self._write_job(job)
+            changed.append(job)
+
+        with self._scheduler:
+            self._scheduler.notify_all()
+        for job in changed:
+            job_id = str(job["id"])
+            if job.get("status") == "cancelling":
+                self._terminate_active_process(job_id)
+                if self._job_suite(job) == SWE_MINI_SUITE:
+                    threading.Thread(
+                        target=self._stop_swe_containers,
+                        args=(job_id,),
+                        name=f"cancel-swe-{job_id}",
+                        daemon=True,
+                    ).start()
+        return len(changed)
+
+    def _stored_jobs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                self._read_job(path) for path in sorted(self.jobs_dir.glob("*.json"))
+            ]
+
+    def _reconcile_jobs(self) -> list[str]:
+        queued: list[dict[str, Any]] = []
+        interrupted = False
+        for job in self._stored_jobs():
+            status = str(job.get("status") or "")
+            if status == "queued":
+                if self._job_suite(job) == SWE_MINI_SUITE:
+                    raw_options = job.get("swe_options")
+                    options = raw_options if isinstance(raw_options, dict) else {}
+                    try:
+                        task_target = materialize_swe_mini_task_target(
+                            options.get("pi_bench_dir", self.pi_bench_dir),
+                            [str(task) for task in job.get("tasks") or []],
+                            str(job["id"]),
+                        )
+                        options["task_target"] = task_target
+                        job["swe_options"] = options
+                        command, _env = build_swe_mini_command(
+                            self._swe_request_from_job(job)
+                        )
+                        job["command"] = command
+                        self._write_job(job)
+                    except (OSError, ValueError) as exc:
+                        job["status"] = "failed"
+                        job["error"] = f"Could not recover queued job: {exc}"
+                        job["updated_at"] = time.time()
+                        self._write_job(job)
+                        interrupted = True
+                        continue
+                queued.append(job)
+                continue
+            if status not in {"running", "cancelling"}:
+                continue
+            with suppress(OSError, ValueError):
+                self._discover_result_files(job)
+            job["status"] = "failed"
+            job["error"] = "Interrupted by application restart"
+            job["interrupted"] = True
+            job["updated_at"] = time.time()
+            self._write_job(job)
+            interrupted = True
+        if interrupted:
+            self._invalidate_results()
+        return [
+            str(job["id"])
+            for job in sorted(queued, key=lambda item: item.get("created_at", 0))
+        ]
+
+    def _invalidate_results(self) -> None:
+        with self._results_condition:
+            self._results_generation += 1
+            self._results_cache = None
+            self._results_condition.notify_all()
+
+    def _build_results_snapshot(self) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
+        for job in self._stored_jobs():
+            summary = self._job_result_summary(job)
+            raw_rows = summary.get("rows")
+            if isinstance(raw_rows, list):
+                rows.extend(row for row in raw_rows if isinstance(row, dict))
+            raw_entries = summary.get("leaderboard")
+            if isinstance(raw_entries, list):
+                entries.extend(
+                    entry for entry in raw_entries if isinstance(entry, dict)
                 )
-                entries.append(extract_leaderboard_entry(job, merged))
-        return sorted(
-            entries,
+        entries.sort(
             key=lambda entry: (
                 entry.get("overall_score") is not None,
                 entry.get("overall_score") or 0,
             ),
             reverse=True,
         )
+        return {"rows": rows, "leaderboard": entries}
 
-    def clear_jobs(self, job_ids: list[str]) -> int:
-        selected = {str(job_id) for job_id in job_ids if str(job_id).strip()}
-        if not selected:
-            return 0
-        cleared = 0
-        with self._lock:
-            for job in self.list_jobs():
-                if job.get("id") not in selected:
-                    continue
-                self._remove_job_artifacts(job)
-                cleared += 1
-        return cleared
+    def _job_result_summary(self, job: dict[str, Any]) -> dict[str, Any]:
+        summary_path = self.result_summaries_dir / f"{job['id']}.json"
+        summary_key = self._result_summary_key(job)
+        if summary_path.exists():
+            try:
+                with summary_path.open("r", encoding="utf-8") as handle:
+                    summary = json.load(handle)
+                if (
+                    isinstance(summary, dict)
+                    and summary.get("summary_version") == RESULT_SUMMARY_VERSION
+                    and summary.get("job_key") == summary_key
+                ):
+                    return summary
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        return self._write_job_result_summary(job)
 
-    def clear_failed_jobs(self) -> int:
-        return self.clear_jobs(
-            [job["id"] for job in self.list_jobs() if job.get("status") == "failed"]
+    def _write_job_result_summary(
+        self, job: dict[str, Any]
+    ) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
+        suite = self._job_suite(job)
+        result_files = (
+            self._swe_mini_result_files(job)
+            if suite == SWE_MINI_SUITE
+            else [Path(str(path)) for path in job.get("result_files", [])]
         )
+        result_jsons: list[dict[str, Any]] = []
+        for result_file in result_files:
+            try:
+                result_json = load_result_file(result_file)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if suite == SWE_MINI_SUITE:
+                rows.extend(extract_swe_mini_result_rows(job, result_json))
+                entries.append(extract_swe_mini_leaderboard_entry(job, result_json))
+            else:
+                rows.extend(extract_result_rows(str(job["id"]), result_json))
+                result_jsons.append(result_json)
+        if result_jsons:
+            merged = (
+                merge_result_jsons(result_jsons)
+                if len(result_jsons) > 1
+                else result_jsons[0]
+            )
+            entries.append(extract_leaderboard_entry(job, merged))
+
+        summary = {
+            "summary_version": RESULT_SUMMARY_VERSION,
+            "job_key": self._result_summary_key(job),
+            "rows": rows,
+            "leaderboard": entries,
+        }
+        summary_path = self.result_summaries_dir / f"{job['id']}.json"
+        self._write_json_atomic(summary_path, summary)
+        return summary
+
+    @staticmethod
+    def _result_summary_key(job: dict[str, Any]) -> str:
+        relevant = {
+            "id": job.get("id"),
+            "status": job.get("status"),
+            "updated_at": job.get("updated_at"),
+            "result_files": job.get("result_files") or [],
+            "telemetry": job.get("telemetry") or {},
+            "model_metadata": job.get("model_metadata") or {},
+        }
+        return json.dumps(relevant, sort_keys=True, separators=(",", ":"))
 
     def _create_job(
         self, model_id: str, tasks: list[str], payload: dict[str, Any]
@@ -367,6 +638,7 @@ class JobManager:
             context_window=context_window,
         )
         command, env = build_swe_mini_command(request)
+        env["LMEVAL_WEBUI_JOB_ID"] = job_id
         now = time.time()
         llamacpp_backend = self._optional_llamacpp_backend(
             payload.get("llamacpp_backend")
@@ -421,11 +693,37 @@ class JobManager:
         self._write_job(job)
         return self._public_job(job)
 
-    def _run_job_with_limit(self, job_id: str) -> None:
+    def _enqueue_job(self, job_id: str) -> None:
         with self._scheduler:
-            while self._active_jobs >= self.max_concurrent_jobs:
-                self._scheduler.wait()
-            self._active_jobs += 1
+            if job_id in self._pending_job_ids:
+                return
+            self._pending_jobs.append(job_id)
+            self._pending_job_ids.add(job_id)
+            self._cancel_event(job_id)
+            self._scheduler.notify_all()
+
+    def _scheduler_loop(self) -> None:
+        while True:
+            with self._scheduler:
+                while (
+                    not self._pending_jobs
+                    or self._active_jobs >= self.max_concurrent_jobs
+                ):
+                    self._scheduler.wait()
+                job_id = self._pending_jobs.popleft()
+                self._pending_job_ids.discard(job_id)
+                if self._cancel_event(job_id).is_set():
+                    self._cancel_events.pop(job_id, None)
+                    continue
+                self._active_jobs += 1
+            threading.Thread(
+                target=self._run_scheduled_job,
+                args=(job_id,),
+                name=f"lm-eval-job-{job_id}",
+                daemon=True,
+            ).start()
+
+    def _run_scheduled_job(self, job_id: str) -> None:
         try:
             self._run_job(job_id)
         except FileNotFoundError:
@@ -433,52 +731,198 @@ class JobManager:
         finally:
             with self._scheduler:
                 self._active_jobs = max(0, self._active_jobs - 1)
+                self._cancel_events.pop(job_id, None)
                 self._scheduler.notify_all()
 
+    def _cancel_event(self, job_id: str) -> threading.Event:
+        with self._scheduler:
+            return self._cancel_events.setdefault(job_id, threading.Event())
+
+    def _raise_if_cancelled(
+        self, job_id: str, returncode: int | None = None
+    ) -> None:
+        if self._cancel_event(job_id).is_set():
+            raise JobCancelled(returncode)
+
+    def _launch_command(
+        self,
+        job_id: str,
+        command: list[str],
+        env: dict[str, str],
+        log_path: Path,
+    ) -> int:
+        if self.launcher is not default_launcher:
+            return self.launcher(command, env, log_path)
+
+        launch_cwd = env.get(LAUNCH_CWD_ENV) or None
+        process_env = {key: value for key, value in env.items() if key != LAUNCH_CWD_ENV}
+        with log_path.open("a", encoding="utf-8") as log_file:
+            process = subprocess.Popen(  # noqa: S603
+                command,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=process_env,
+                cwd=launch_cwd,
+                text=True,
+                start_new_session=True,
+            )
+            with self._process_lock:
+                self._active_processes[job_id] = process
+            if self._cancel_event(job_id).is_set():
+                self._terminate_process(process)
+            try:
+                return process.wait()
+            finally:
+                with self._process_lock:
+                    if self._active_processes.get(job_id) is process:
+                        self._active_processes.pop(job_id, None)
+
+    def _terminate_active_process(self, job_id: str) -> None:
+        with self._process_lock:
+            process = self._active_processes.get(job_id)
+        if process is not None:
+            self._terminate_process(process)
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            try:
+                process.terminate()
+            except OSError:
+                return
+        threading.Thread(
+            target=JobManager._kill_after_grace,
+            args=(process,),
+            name=f"kill-process-{process.pid}",
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _kill_after_grace(process: subprocess.Popen[str]) -> None:
+        deadline = time.monotonic() + CANCEL_GRACE_SECONDS
+        while process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                process.kill()
+            except OSError:
+                return
+
+    @staticmethod
+    def _stop_swe_containers(job_id: str) -> None:
+        try:
+            listed = subprocess.run(  # noqa: S603
+                [
+                    "docker",
+                    "ps",
+                    "-aq",
+                    "--filter",
+                    f"label=lm-eval-webui.job-id={job_id}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            container_ids = listed.stdout.split()
+            if container_ids:
+                subprocess.run(  # noqa: S603
+                    ["docker", "rm", "-f", *container_ids],
+                    check=False,
+                    capture_output=True,
+                    timeout=30,
+                )
+        except (OSError, subprocess.SubprocessError):
+            return
+
+    def _cleanup_swe_task_target(self, job: dict[str, Any]) -> None:
+        if self._job_suite(job) != SWE_MINI_SUITE:
+            return
+        raw_options = job.get("swe_options")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        cleanup_swe_mini_task_target(
+            options.get("pi_bench_dir", self.pi_bench_dir),
+            options.get("task_target"),
+        )
+
     def _run_job(self, job_id: str) -> None:
-        job = self.get_job(job_id)
-        env = job.pop("_env", None) or self._launch_env_for_job(job)
+        with self._lock:
+            job = self._read_job(self.jobs_dir / f"{job_id}.json")
+        if job.get("status") == "cancelled":
+            return
+        if self._cancel_event(job_id).is_set():
+            job["status"] = "cancelled"
+            job["cancelled_at"] = time.time()
+            job["updated_at"] = time.time()
+            self._write_job(job)
+            return
+        env = self._launch_env_for_job(job)
         job["status"] = "running"
         job["updated_at"] = time.time()
         self._write_job(job)
         try:
             if self._job_suite(job) == SWE_MINI_SUITE:
-                returncode = self.launcher(job["command"], env, Path(job["log_path"]))
+                returncode = self._launch_command(
+                    job_id, job["command"], env, Path(job["log_path"])
+                )
             else:
                 returncode = self._run_lm_eval_job(job, env)
+            self._raise_if_cancelled(job_id, returncode)
             job["returncode"] = returncode
-            if self._job_suite(job) == SWE_MINI_SUITE:
-                output_path = self._persist_swe_mini_results(job)
-                job["result_files"] = [
-                    str(path) for path in find_swe_mini_result_files(output_path)
-                ]
-            else:
-                job["result_files"] = [
-                    str(path) for path in find_result_files(job["output_path"])
-                ]
+            self._discover_result_files(job)
             job["telemetry"] = self._collect_telemetry(job, returncode)
             job["model_metadata"] = self._collect_model_metadata(job, returncode)
             self._apply_model_metadata(job)
+            self._raise_if_cancelled(job_id, returncode)
             job["status"] = "succeeded" if returncode == 0 else "failed"
+        except JobCancelled as exc:
+            job["status"] = "cancelled"
+            job["returncode"] = exc.returncode
+            job["error"] = None
+            job["cancelled_at"] = time.time()
+            self._append_log(Path(job["log_path"]), "\n[INFO] Job cancelled.\n")
+            self._discover_result_files(job)
         except Exception as exc:  # pragma: no cover
             job["status"] = "failed"
             job["error"] = str(exc)
+            self._discover_result_files(job)
         finally:
+            self._cleanup_swe_task_target(job)
             if self._job_suite(job) == SWE_MINI_SUITE:
-                raw_options = job.get("swe_options")
-                options = raw_options if isinstance(raw_options, dict) else {}
-                cleanup_swe_mini_task_target(
-                    options.get("pi_bench_dir", self.pi_bench_dir),
-                    options.get("task_target"),
-                )
+                progress = self._swe_mini_progress(job)
+                if progress:
+                    job["swe_progress"] = progress
             job["updated_at"] = time.time()
             self._write_job(job)
+            if job.get("status") in TERMINAL_JOB_STATUSES:
+                with suppress(OSError, ValueError, json.JSONDecodeError):
+                    self._write_job_result_summary(job)
+                self._invalidate_results()
+
+    def _discover_result_files(self, job: dict[str, Any]) -> None:
+        if self._job_suite(job) == SWE_MINI_SUITE:
+            output_path = self._persist_swe_mini_results(job)
+            result_files = find_swe_mini_result_files(output_path)
+        else:
+            result_files = find_result_files(job.get("output_path") or "")
+        job["result_files"] = [str(path) for path in result_files]
 
     def _run_lm_eval_job(self, job: dict[str, Any], env: dict[str, str]) -> int:
         batch_size = self._task_batch_size_for_job(job)
         tasks = [str(task) for task in job.get("tasks") or []]
+        self._raise_if_cancelled(str(job["id"]))
         if batch_size is None or len(tasks) <= batch_size:
-            return self.launcher(job["command"], env, Path(job["log_path"]))
+            return self._launch_command(
+                str(job["id"]), job["command"], env, Path(job["log_path"])
+            )
         return self._run_lm_eval_task_batches(job, tasks, batch_size)
 
     def _run_lm_eval_task_batches(
@@ -489,6 +933,7 @@ class JobManager:
             for index in range(0, len(tasks), batch_size)
         ]
         total = len(batches)
+        job_id = str(job["id"])
         log_path = Path(job["log_path"])
         job["batch_progress"] = {
             "task_batch_size": batch_size,
@@ -499,6 +944,7 @@ class JobManager:
         }
         self._write_job(job)
         for index, batch in enumerate(batches, start=1):
+            self._raise_if_cancelled(job_id)
             batch_output_path = (
                 Path(job["output_path"]) / f"batch_{index:03d}_of_{total:03d}"
             )
@@ -521,7 +967,8 @@ class JobManager:
                 f"({len(batch)} task{'s' if len(batch) != 1 else ''}) ===\n"
                 f"$ {shlex.join(command)}\n",
             )
-            returncode = self.launcher(command, batch_env, log_path)
+            returncode = self._launch_command(job_id, command, batch_env, log_path)
+            self._raise_if_cancelled(job_id, returncode)
             if returncode != 0:
                 job["batch_progress"] = {
                     "task_batch_size": batch_size,
@@ -558,7 +1005,9 @@ class JobManager:
     def _launch_env_for_job(self, job: dict[str, Any]) -> dict[str, str]:
         if self._job_suite(job) == SWE_MINI_SUITE:
             request = self._swe_request_from_job(job)
-            return build_swe_mini_command(request)[1]
+            env = build_swe_mini_command(request)[1]
+            env["LMEVAL_WEBUI_JOB_ID"] = str(job.get("id") or "")
+            return env
         return build_eval_command(self._eval_request_from_job(job), self.project_root)[
             1
         ]
@@ -837,6 +1286,12 @@ class JobManager:
 
     def _swe_mini_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
         total = len(job.get("tasks") or [])
+        persisted = job.get("swe_progress")
+        if isinstance(persisted, dict) and job.get("status") in TERMINAL_JOB_STATUSES:
+            return persisted
+        if job.get("status") == "succeeded" and total:
+            return self._progress_payload(total, total, total, "tasks")
+
         current = 0
         completed = 0
         log_tail = self.get_log(str(job.get("id") or ""), max_chars=200000)
@@ -933,14 +1388,37 @@ class JobManager:
                     path.unlink()
             except OSError:
                 continue
-        job_path = self.jobs_dir / f"{job['id']}.json"
-        if job_path.exists():
-            job_path.unlink()
+        for metadata_path in (
+            self.jobs_dir / f"{job['id']}.json",
+            self.result_summaries_dir / f"{job['id']}.json",
+        ):
+            if metadata_path.exists():
+                metadata_path.unlink()
 
     def _write_job(self, job: dict[str, Any]) -> None:
-        job_path = self.jobs_dir / f"{job['id']}.json"
-        with self._lock, job_path.open("w", encoding="utf-8") as handle:
-            json.dump(self._public_job(job), handle, indent=2, sort_keys=True)
+        job_id = str(job["id"])
+        with self._scheduler:
+            cancel_event = self._cancel_events.get(job_id)
+            if (
+                job.get("status") == "running"
+                and cancel_event is not None
+                and cancel_event.is_set()
+            ):
+                job["status"] = "cancelling"
+        job_path = self.jobs_dir / f"{job_id}.json"
+        with self._lock:
+            self._write_json_atomic(job_path, self._public_job(job))
+
+    @staticmethod
+    def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     @staticmethod
     def _public_job(job: dict[str, Any]) -> dict[str, Any]:

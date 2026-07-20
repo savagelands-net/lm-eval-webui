@@ -727,6 +727,14 @@ class SweMiniWrapperScriptTests(unittest.TestCase):
         self.assertIn("No result file produced", script)
         self.assertIn('exit "$EXIT_CODE"', script)
 
+    def test_wrapper_labels_and_cleans_up_cancelled_containers(self):
+        script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
+
+        self.assertIn("LMEVAL_WEBUI_JOB_ID", script)
+        self.assertIn('lm-eval-webui.job-id=$JOB_ID', script)
+        self.assertIn('trap \'cancel_run 143\' TERM', script)
+        self.assertIn('docker rm -f "$ACTIVE_CONTAINER"', script)
+
 
 class TaskCompatibilityTests(unittest.TestCase):
     def test_malformed_generate_until_group_is_marked_incompatible(self):
@@ -2186,6 +2194,256 @@ class JobManagerConcurrencyTests(unittest.TestCase):
             )
 
 
+class JobManagerCancellationTests(unittest.TestCase):
+    def test_queued_job_can_be_cancelled_without_starting(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        first_started = threading.Event()
+        release = threading.Event()
+        launched_models = []
+
+        def blocking_launcher(command, _env, log_path):
+            model_args = command[command.index("--model_args") + 1 :]
+            launched_models.append(
+                next(value.split("=", 1)[1] for value in model_args if value.startswith("model="))
+            )
+            Path(log_path).write_text("started\n", encoding="utf-8")
+            first_started.set()
+            release.wait(2)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp),
+                project_root=Path("/repo"),
+                launcher=blocking_launcher,
+                run_async=True,
+            )
+            jobs = manager.create_jobs(
+                {"model_ids": ["Model-A", "Model-B"], "tasks": ["gsm8k"]}
+            )
+            self.assertTrue(first_started.wait(1))
+
+            self.assertEqual(manager.cancel_jobs([jobs[1]["id"]]), 1)
+            queued_job = manager.get_job(jobs[1]["id"])
+            release.set()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if manager.get_job(jobs[0]["id"])["status"] == "succeeded":
+                    break
+                time.sleep(0.02)
+
+            self.assertEqual(queued_job["status"], "cancelled")
+            self.assertEqual(launched_models, ["Model-A"])
+
+    def test_running_default_process_is_terminated_and_marked_cancelled(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp), project_root=Path("/repo"), run_async=True
+            )
+            created = manager._create_job("Model-A", ["gsm8k"], {})
+            job = manager.get_job(created["id"])
+            job["command"] = [
+                __import__("sys").executable,
+                "-c",
+                "import time; time.sleep(60)",
+            ]
+            job["eval_options"]["task_batch_size"] = None
+            manager._write_job(job)
+            manager._enqueue_job(job["id"])
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if manager.get_job(job["id"])["status"] == "running":
+                    break
+                time.sleep(0.02)
+
+            self.assertEqual(manager.cancel_jobs([job["id"]]), 1)
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if manager.get_job(job["id"])["status"] == "cancelled":
+                    break
+                time.sleep(0.02)
+            cancelled = manager.get_job(job["id"])
+
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["returncode"], -15)
+
+    def test_active_job_cannot_be_cleared_or_rerun(self):
+        ActiveJobError = symbol("lm_eval_webui.jobs", "ActiveJobError")
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_launcher(_command, _env, _log_path):
+            started.set()
+            release.wait(2)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp),
+                project_root=Path("/repo"),
+                launcher=blocking_launcher,
+                run_async=True,
+            )
+            job = manager.create_jobs(
+                {"model_ids": ["Model-A"], "tasks": ["gsm8k"]}
+            )[0]
+            self.assertTrue(started.wait(1))
+
+            with self.assertRaises(ActiveJobError):
+                manager.clear_jobs([job["id"]])
+            with self.assertRaises(ActiveJobError):
+                manager.rerun_jobs([job["id"]])
+            release.set()
+
+    def test_startup_marks_running_jobs_failed_and_requeues_queued_jobs(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            jobs_dir = data_dir / "jobs"
+            jobs_dir.mkdir()
+            base_job = {
+                "model_id": "Model-A",
+                "tasks": ["gsm8k"],
+                "created_at": 1,
+                "updated_at": 1,
+                "command": [__import__("sys").executable, "-c", "pass"],
+                "output_path": str(data_dir / "runs" / "job"),
+                "log_path": str(data_dir / "logs" / "job.log"),
+                "telemetry_path": str(data_dir / "telemetry" / "job.jsonl"),
+                "backend": "openai-compatible-chat-completions",
+                "eval_options": {},
+                "result_files": [],
+                "returncode": None,
+                "error": None,
+            }
+            for job_id, status, created_at in (
+                ("running-job", "running", 1),
+                ("queued-job", "queued", 2),
+            ):
+                payload = {
+                    **base_job,
+                    "id": job_id,
+                    "status": status,
+                    "created_at": created_at,
+                    "output_path": str(data_dir / "runs" / job_id),
+                    "log_path": str(data_dir / "logs" / f"{job_id}.log"),
+                    "telemetry_path": str(
+                        data_dir / "telemetry" / f"{job_id}.jsonl"
+                    ),
+                }
+                (jobs_dir / f"{job_id}.json").write_text(
+                    json.dumps(payload), encoding="utf-8"
+                )
+
+            manager = JobManager(
+                data_dir=data_dir, project_root=Path("/repo"), run_async=True
+            )
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                if manager.get_job("queued-job")["status"] == "succeeded":
+                    break
+                time.sleep(0.02)
+            running = manager.get_job("running-job")
+            queued = manager.get_job("queued-job")
+
+        self.assertEqual(running["status"], "failed")
+        self.assertTrue(running["interrupted"])
+        self.assertIn("application restart", running["error"])
+        self.assertEqual(queued["status"], "succeeded")
+
+
+class ResultSnapshotTests(unittest.TestCase):
+    def test_result_files_are_parsed_once_and_summary_survives_restart(self):
+        jobs_module = import_module("lm_eval_webui.jobs")
+        JobManager = jobs_module.JobManager
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            jobs_dir = data_dir / "jobs"
+            result_dir = data_dir / "runs" / "job-1"
+            jobs_dir.mkdir(parents=True)
+            result_dir.mkdir(parents=True)
+            result_files = []
+            for index, task in enumerate(("task_a", "task_b"), start=1):
+                path = result_dir / f"results_{index}.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "model_name": "Model-A",
+                            "config": {"model": "openai-compatible-chat-completions"},
+                            "results": {task: {"acc,none": 0.5}},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                result_files.append(str(path))
+            (jobs_dir / "job-1.json").write_text(
+                json.dumps(
+                    {
+                        "id": "job-1",
+                        "model_id": "Model-A",
+                        "tasks": ["task_a", "task_b"],
+                        "status": "succeeded",
+                        "created_at": 1,
+                        "updated_at": 2,
+                        "command": [],
+                        "output_path": str(result_dir),
+                        "log_path": str(data_dir / "logs" / "job-1.log"),
+                        "result_files": result_files,
+                        "returncode": 0,
+                        "error": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manager = JobManager(
+                data_dir=data_dir, project_root=Path("/repo"), run_async=False
+            )
+            with mock.patch.object(
+                jobs_module,
+                "load_result_file",
+                wraps=jobs_module.load_result_file,
+            ) as load_result:
+                snapshot = manager.results_snapshot()
+                manager.result_rows()
+                manager.leaderboard_entries()
+            self.assertEqual(load_result.call_count, 2)
+            self.assertEqual(len(snapshot["rows"]), 2)
+            self.assertEqual(len(snapshot["leaderboard"]), 1)
+            self.assertTrue((data_dir / "result-summaries" / "job-1.json").exists())
+
+            restarted = JobManager(
+                data_dir=data_dir, project_root=Path("/repo"), run_async=False
+            )
+            with mock.patch.object(
+                jobs_module,
+                "load_result_file",
+                wraps=jobs_module.load_result_file,
+            ) as load_result:
+                restarted.results_snapshot()
+            self.assertEqual(load_result.call_count, 0)
+
+    def test_job_summaries_omit_commands_and_full_task_lists(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp), project_root=Path("/repo"), run_async=False
+            )
+            manager._create_job("Model-A", ["a", "b", "c", "d"], {})
+            summary = manager.list_job_summaries()[0]
+
+        self.assertNotIn("command", summary)
+        self.assertNotIn("tasks", summary)
+        self.assertNotIn("result_files", summary)
+        self.assertEqual(summary["task_count"], 4)
+        self.assertEqual(summary["task_preview"], ["a", "b", "c"])
+
+
 class JobManagerDeletionTests(unittest.TestCase):
     def test_clear_jobs_ignores_missing_empty_artifact_paths(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
@@ -2509,6 +2767,75 @@ class BrokenPipeResponseTests(unittest.TestCase):
         self.assertEqual(handler.body, b"")
 
 
+class ServerEfficiencyTests(unittest.TestCase):
+    def test_serialized_result_cache_is_generation_scoped_and_gzipped(self):
+        JsonResponseCache = symbol("lm_eval_webui.server", "JsonResponseCache")
+        cache = JsonResponseCache(max_entries=2)
+
+        body, compressed, etag = cache.get_or_create(
+            1, "results", {"rows": [{"value": "x" * 2000}]}
+        )
+        repeated = cache.get_or_create(
+            1, "results", {"rows": [{"value": "different"}]}
+        )
+        replacement = cache.get_or_create(2, "results", {"rows": []})
+
+        self.assertEqual(repeated, (body, compressed, etag))
+        self.assertEqual(__import__("gzip").decompress(compressed), body)
+        self.assertNotEqual(replacement[2], etag)
+
+    def test_compact_leaderboard_omits_per_task_payloads(self):
+        compact_leaderboard_entry = symbol(
+            "lm_eval_webui.server", "compact_leaderboard_entry"
+        )
+
+        compact = compact_leaderboard_entry(
+            {
+                "job_id": "job-1",
+                "task_scores": [{"task": "a", "score": 1}],
+                "category_scores": [
+                    {"category": "Math", "score": 100, "tasks": ["a", "b"]}
+                ],
+            }
+        )
+
+        self.assertNotIn("task_scores", compact)
+        self.assertNotIn("tasks", compact["category_scores"][0])
+        self.assertEqual(compact["category_scores"][0]["task_count"], 2)
+
+    def test_results_handler_paginates_and_filters_by_suite(self):
+        make_handler = symbol("lm_eval_webui.server", "make_handler")
+
+        class Manager:
+            def results_snapshot(self):
+                return {
+                    "version": 3,
+                    "rows": [
+                        {"job_id": "a", "suite": "swe_mini"},
+                        {"job_id": "b"},
+                        {"job_id": "c"},
+                    ],
+                    "leaderboard": [],
+                }
+
+        Handler = make_handler(Manager(), "static")
+        handler = Handler.__new__(Handler)
+        captured = {}
+
+        def cached_json(self, payload, generation, cache_key):
+            captured.update(
+                payload=payload, generation=generation, cache_key=cache_key
+            )
+
+        handler._cached_json = types.MethodType(cached_json, handler)
+        handler._handle_results("suite=lm_eval&offset=1&limit=1")
+
+        self.assertEqual(captured["generation"], 3)
+        self.assertEqual(captured["payload"]["rows"], [{"job_id": "c"}])
+        self.assertIsNone(captured["payload"]["next_offset"])
+        self.assertEqual(captured["payload"]["total"], 2)
+
+
 class SmokeTests(unittest.TestCase):
     def test_github_workflow_pins_actions_and_does_not_persist_credentials(self):
         workflow = Path(".github/workflows/docker-image.yml").read_text(
@@ -2603,6 +2930,7 @@ class SmokeTests(unittest.TestCase):
         index = Path("static/index.html").read_text(encoding="utf-8")
         script = Path("static/app.js").read_text(encoding="utf-8")
 
+        self.assertIn('id="cancelSelectedJobs"', index)
         self.assertIn('id="clearSelectedJobs"', index)
         self.assertIn('id="selectAllJobs"', index)
         self.assertIn("Select all", index)
@@ -2696,13 +3024,18 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("job-expanded", script)
         self.assertNotIn("job-expanded-header", script)
         self.assertIn("job-task-list", script)
-        self.assertIn("job.tasks.forEach", script)
+        self.assertIn("(job.tasks || []).forEach", script)
+        self.assertIn("function loadJobDetails", script)
+        self.assertIn("jobDetails", script)
         self.assertIn("expandedJobs", script)
         self.assertIn("details.open = state.expandedJobs.has(job.id)", script)
         self.assertIn('details.addEventListener("toggle"', script)
         self.assertIn("selectAllJobs", script)
         self.assertIn("function toggleAllJobs", script)
         self.assertIn("function syncSelectAllJobs", script)
+        self.assertIn("cancelSelectedJobs", script)
+        self.assertIn("function cancelJobs", script)
+        self.assertIn("/api/jobs/cancel", script)
         self.assertIn("clearSelectedJobs", script)
         self.assertIn("rerunSelectedJobs", script)
         self.assertIn('id="rerunSelectedJobs"', index)
@@ -2734,6 +3067,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("function shouldAutoScrollLog", script)
         self.assertIn("function scrollLogToBottom", script)
         self.assertIn("loadSelectedJobLog()", script)
+        self.assertIn("/log${query}", script)
         self.assertIn("shouldAutoScrollLog(log)", script)
         self.assertIn("scrollLogToBottom(log)", script)
         self.assertIn("spinner", index)
@@ -2749,11 +3083,19 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn(".job-row:has(.job-details:not([open]))", styles)
         server = Path("lm_eval_webui/server.py").read_text(encoding="utf-8")
         self.assertIn("Cache-Control", server)
+        self.assertIn("BoundedThreadPoolHTTPServer", server)
         self.assertIn("/api/jobs/rerun", server)
+        self.assertIn("/api/jobs/cancel", server)
+        self.assertIn("/api/leaderboard", server)
         self.assertIn("/api/config", server)
         self.assertIn('"openai_base_url": openai_base_url', server)
         self.assertIn("no-store", server)
         self.assertIn("BrokenPipeError", server)
+        self.assertIn("Content-Encoding", server)
+        self.assertNotIn("setInterval(", script)
+        self.assertIn("function singleFlight", script)
+        self.assertIn("function scheduleJobPoll", script)
+        self.assertIn('id="resultDetails"', index)
 
     def test_requirements_include_libra_scoring_dependency(self):
         requirements = Path("requirements.txt").read_text(encoding="utf-8")

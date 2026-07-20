@@ -7,6 +7,10 @@ const state = {
 	selectedJobId: null,
 	selectedJobs: new Set(),
 	expandedJobs: new Set(),
+	jobDetails: new Map(),
+	jobCommands: new Map(),
+	loadedResultSuites: new Set(),
+	jobsLoaded: false,
 	selectedModels: new Set(),
 	selectedTasks: new Set(),
 	visibleTaskNames: [],
@@ -43,15 +47,55 @@ const SUITES = {
 	swe_mini: "SWE Mini",
 };
 const DEFAULT_SWE_JUDGE_MODEL = "gpt-oss-120b-mxfp-GGUF";
+const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
+const TERMINAL_JOB_STATUSES = new Set(["cancelled", "failed", "succeeded"]);
+const RESULT_PAGE_SIZE = 2000;
+const JOB_POLL_INTERVAL_MS = 5000;
+const REQUEST_TIMEOUT_MS = 30000;
+const inFlightRequests = new Map();
+let jobPollTimer = null;
+let jobPollFailures = 0;
 
 async function api(path, options = {}) {
-	const response = await fetch(path, {
-		headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-		...options,
-	});
-	const payload = await response.json();
-	if (!response.ok) throw new Error(payload.error || response.statusText);
-	return payload;
+	const { timeoutMs = REQUEST_TIMEOUT_MS, ...fetchOptions } = options;
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const response = await fetch(path, {
+			headers: {
+				"Content-Type": "application/json",
+				...(fetchOptions.headers || {}),
+			},
+			...fetchOptions,
+			signal: fetchOptions.signal || controller.signal,
+		});
+		const text = await response.text();
+		let payload = {};
+		if (text) {
+			try {
+				payload = JSON.parse(text);
+			} catch (_error) {
+				throw new Error(`Invalid response from ${path}`);
+			}
+		}
+		if (!response.ok) throw new Error(payload.error || response.statusText);
+		return payload;
+	} catch (error) {
+		if (error.name === "AbortError")
+			throw new Error(`Request timed out: ${path}`);
+		throw error;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+function singleFlight(key, operation) {
+	if (inFlightRequests.has(key)) return inFlightRequests.get(key);
+	const request = Promise.resolve()
+		.then(operation)
+		.finally(() => inFlightRequests.delete(key));
+	inFlightRequests.set(key, request);
+	return request;
 }
 
 async function loadConfig() {
@@ -112,20 +156,94 @@ async function loadTasks() {
 		}
 	}
 }
-async function loadJobs() {
-	const payload = await api("/api/jobs");
-	state.jobs = payload.jobs || [];
-	renderJobs();
+async function loadJobs({ refreshResultsOnTransition = true } = {}) {
+	return singleFlight("jobs", async () => {
+		const previousStatuses = new Map(
+			state.jobs.map((job) => [job.id, job.status]),
+		);
+		const payload = await api("/api/jobs");
+		state.jobs = payload.jobs || [];
+		const existing = new Set(state.jobs.map((job) => job.id));
+		for (const jobId of state.jobDetails.keys()) {
+			if (!existing.has(jobId)) state.jobDetails.delete(jobId);
+		}
+		for (const jobId of state.jobCommands.keys()) {
+			if (!existing.has(jobId)) state.jobCommands.delete(jobId);
+		}
+		const reachedTerminalState =
+			state.jobsLoaded &&
+			state.jobs.some(
+				(job) =>
+					ACTIVE_JOB_STATUSES.has(previousStatuses.get(job.id)) &&
+					TERMINAL_JOB_STATUSES.has(job.status),
+			);
+		state.jobsLoaded = true;
+		renderJobs();
+		if (refreshResultsOnTransition && reachedTerminalState) {
+			invalidateResultRows();
+			void loadResults({ forceRows: true });
+		}
+		return state.jobs;
+	});
 }
-async function loadResults() {
-	try {
-		const payload = await api("/api/results");
-		state.rows = payload.rows || [];
-		state.leaderboard = payload.leaderboard || [];
+
+async function loadLeaderboard() {
+	return singleFlight("leaderboard", async () => {
+		try {
+			const payload = await api("/api/leaderboard", { timeoutMs: 120000 });
+			state.leaderboard = payload.leaderboard || [];
+			renderLeaderboard();
+		} catch (error) {
+			setText($("leaderboard"), `Could not load results: ${error.message}`);
+		}
+	});
+}
+
+async function loadResultRows(suite = state.resultSuite, force = false) {
+	if (!force && state.loadedResultSuites.has(suite)) {
 		renderResults();
-	} catch (error) {
-		setText($("leaderboard"), `Could not load results: ${error.message}`);
-		setText($("chart"), `Could not load results: ${error.message}`);
+		return;
+	}
+	return singleFlight(`results:${suite}`, async () => {
+		setText($("chart"), `Loading ${suiteLabel(suite)} result details…`);
+		let offset = 0;
+		const rows = [];
+		do {
+			const query = new URLSearchParams({
+				suite,
+				offset: String(offset),
+				limit: String(RESULT_PAGE_SIZE),
+			});
+			const payload = await api(`/api/results?${query}`, {
+				timeoutMs: 120000,
+			});
+			rows.push(...(payload.rows || []));
+			offset = Number.isFinite(payload.next_offset)
+				? payload.next_offset
+				: null;
+		} while (offset !== null);
+		state.rows = [
+			...state.rows.filter((row) => recordSuite(row) !== suite),
+			...rows,
+		];
+		state.loadedResultSuites.add(suite);
+		renderResults();
+	});
+}
+
+function invalidateResultRows() {
+	state.rows = [];
+	state.loadedResultSuites.clear();
+}
+
+async function loadResults({ forceRows = false } = {}) {
+	await loadLeaderboard();
+	if ($("resultDetails").open) {
+		try {
+			await loadResultRows(state.resultSuite, forceRows);
+		} catch (error) {
+			setText($("chart"), `Could not load results: ${error.message}`);
+		}
 	}
 }
 
@@ -342,25 +460,50 @@ function renderJobs() {
 			renderSelectedJobs();
 		});
 		const details = document.createElement("details");
+		const expanded = div("job-expanded");
 		details.className = "job-details";
 		details.open = state.expandedJobs.has(job.id);
 		details.addEventListener("toggle", () => {
-			details.open
-				? state.expandedJobs.add(job.id)
-				: state.expandedJobs.delete(job.id);
+			if (details.open) {
+				state.expandedJobs.add(job.id);
+				if (state.jobDetails.has(job.id)) {
+					renderJobExpanded(expanded, job);
+				} else {
+					void loadJobDetails(job.id);
+				}
+			} else {
+				state.expandedJobs.delete(job.id);
+				expanded.replaceChildren();
+			}
 		});
 		const summary = document.createElement("summary");
 		summary.className = "job-summary";
 		const summaryActions = div("job-summary-actions");
 		const progress = progressBadge(job);
 		if (progress) summaryActions.append(progress);
+		if (ACTIVE_JOB_STATUSES.has(job.status)) {
+			const cancelButton = button(
+				job.status === "cancelling" ? "Stopping…" : "Cancel",
+				"job-cancel",
+			);
+			cancelButton.disabled = job.status === "cancelling";
+			cancelButton.title = "Stop this job and mark it cancelled";
+			cancelButton.addEventListener("click", (event) => {
+				event.preventDefault();
+				event.stopPropagation();
+				void cancelJobs([job.id]);
+			});
+			summaryActions.append(cancelButton);
+		}
 		const rerunButton = button("Rerun", "job-rerun");
-		rerunButton.title =
-			"Clear this job and start it again with the same options";
+		rerunButton.disabled = ACTIVE_JOB_STATUSES.has(job.status);
+		rerunButton.title = rerunButton.disabled
+			? "Cancel this job before rerunning it"
+			: "Clear this job and start it again with the same options";
 		rerunButton.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
-			rerunJobs([job.id]);
+			void rerunJobs([job.id]);
 		});
 		summaryActions.append(
 			rerunButton,
@@ -371,33 +514,79 @@ function renderJobs() {
 		summary.append(
 			summaryBlock(
 				job.model_id,
-				`Job ${job.id} · ${suiteLabel(jobSuite(job))}`,
+				`Job ${job.id} · ${suiteLabel(jobSuite(job))} · ${Number(job.task_count || 0).toLocaleString()} tasks`,
 			),
 			summaryActions,
 		);
-		summary.addEventListener("click", () => selectJob(job.id));
-		const expanded = div("job-expanded");
-		const taskList = document.createElement("ul");
-		taskList.className = "job-task-list";
-		job.tasks.forEach((taskName) => {
-			const taskItem = document.createElement("li");
-			taskItem.textContent = taskName;
-			taskList.append(taskItem);
-		});
-		expanded.append(jobDetailMeta(job), taskList);
+		summary.addEventListener("click", () => void selectJob(job.id));
+		if (details.open) renderJobExpanded(expanded, job);
 		details.append(summary, expanded);
 		row.append(details);
 		list.append(row);
 	});
 	renderSelectedJobs();
 	if (!state.selectedJobId && state.jobs.length)
-		selectJob(state.jobs[state.jobs.length - 1].id);
+		void selectJob(state.jobs.at(-1).id);
 }
+
+function renderJobExpanded(container, summaryJob) {
+	container.replaceChildren();
+	const job = state.jobDetails.get(summaryJob.id);
+	if (!job) {
+		setText(container, "Expand to load job details…");
+		return;
+	}
+	if (job.detail_error) {
+		setText(container, `Could not load job details: ${job.detail_error}`);
+		return;
+	}
+	const taskList = document.createElement("ul");
+	taskList.className = "job-task-list";
+	(job.tasks || []).forEach((taskName) => {
+		const taskItem = document.createElement("li");
+		taskItem.textContent = taskName;
+		taskList.append(taskItem);
+	});
+	container.append(
+		jobDetailMeta({ ...job, ...summaryJob, tasks: job.tasks }),
+		taskList,
+	);
+}
+
+async function loadJobDetails(jobId) {
+	if (state.jobDetails.has(jobId)) return state.jobDetails.get(jobId);
+	return singleFlight(`job-detail:${jobId}`, async () => {
+		try {
+			const { job } = await api(`/api/jobs/${jobId}`);
+			state.jobDetails.set(jobId, job);
+			if (Array.isArray(job.command)) state.jobCommands.set(jobId, job.command);
+			if (state.expandedJobs.has(jobId)) renderJobs();
+			return job;
+		} catch (error) {
+			const failedDetail = {
+				id: jobId,
+				tasks: [],
+				detail_error: error.message,
+			};
+			state.jobDetails.set(jobId, failedDetail);
+			if (state.expandedJobs.has(jobId)) renderJobs();
+			return failedDetail;
+		}
+	});
+}
+
 function renderSelectedJobs() {
-	const count = state.selectedJobs.size;
-	$("selectedJobCount").textContent = `${count.toLocaleString()} selected`;
-	$("clearSelectedJobs").disabled = count === 0;
-	$("rerunSelectedJobs").disabled = count === 0;
+	const selected = state.jobs.filter((job) => state.selectedJobs.has(job.id));
+	const count = selected.length;
+	const activeCount = selected.filter((job) =>
+		ACTIVE_JOB_STATUSES.has(job.status),
+	).length;
+	$("selectedJobCount").textContent = activeCount
+		? `${count.toLocaleString()} selected · ${activeCount.toLocaleString()} active`
+		: `${count.toLocaleString()} selected`;
+	$("cancelSelectedJobs").disabled = activeCount === 0;
+	$("clearSelectedJobs").disabled = count === 0 || activeCount > 0;
+	$("rerunSelectedJobs").disabled = count === 0 || activeCount > 0;
 	syncSelectAllJobs();
 }
 function syncSelectAllJobs() {
@@ -421,17 +610,25 @@ async function selectJob(jobId) {
 	await loadSelectedJobLog({ forceScroll: true });
 }
 async function loadSelectedJobLog({ forceScroll = false } = {}) {
-	if (!state.selectedJobId) return;
-	const log = $("jobLog");
-	const autoScroll = forceScroll || shouldAutoScrollLog(log);
-	try {
-		const { job } = await api(`/api/jobs/${state.selectedJobId}`);
-		const content = `$ ${job.command.join(" ")}\n\n${job.log_tail || "No log output yet."}`;
-		if (log.textContent !== content) log.textContent = content;
-	} catch (error) {
-		log.textContent = error.message;
-	}
-	if (autoScroll) scrollLogToBottom(log);
+	const jobId = state.selectedJobId;
+	if (!jobId) return;
+	return singleFlight(`job-log:${jobId}`, async () => {
+		const log = $("jobLog");
+		const autoScroll = forceScroll || shouldAutoScrollLog(log);
+		try {
+			const includeCommand = !state.jobCommands.has(jobId);
+			const query = includeCommand ? "?include_command=1" : "";
+			const { job } = await api(`/api/jobs/${jobId}/log${query}`);
+			if (state.selectedJobId !== jobId) return;
+			if (Array.isArray(job.command)) state.jobCommands.set(jobId, job.command);
+			const command = (state.jobCommands.get(jobId) || []).join(" ");
+			const content = `$ ${command}\n\n${job.log_tail || "No log output yet."}`;
+			if (log.textContent !== content) log.textContent = content;
+		} catch (error) {
+			if (state.selectedJobId === jobId) log.textContent = error.message;
+		}
+		if (autoScroll && state.selectedJobId === jobId) scrollLogToBottom(log);
+	});
 }
 function shouldAutoScrollLog(log) {
 	return log.scrollHeight - log.scrollTop - log.clientHeight < 24;
@@ -645,6 +842,35 @@ function renderTable(rows) {
 	table.append(thead, tbody);
 	wrap.append(table);
 }
+async function cancelSelectedJobs() {
+	const jobIds = state.jobs
+		.filter(
+			(job) =>
+				state.selectedJobs.has(job.id) && ACTIVE_JOB_STATUSES.has(job.status),
+		)
+		.map((job) => job.id);
+	if (!jobIds.length) return;
+	await cancelJobs(jobIds);
+}
+
+async function cancelJobs(jobIds) {
+	if (!jobIds.length) return;
+	$("setupMessage").textContent = "Stopping selected job(s)…";
+	try {
+		const payload = await api("/api/jobs/cancel", {
+			method: "POST",
+			body: JSON.stringify({ job_ids: jobIds }),
+		});
+		state.jobs = payload.jobs || [];
+		$("setupMessage").textContent =
+			`Cancellation requested for ${payload.cancelled} job(s).`;
+		renderJobs();
+		await loadSelectedJobLog();
+	} catch (error) {
+		$("setupMessage").textContent = error.message;
+	}
+}
+
 async function clearSelectedJobs() {
 	const jobIds = [...state.selectedJobs];
 	if (!jobIds.length) return;
@@ -656,11 +882,14 @@ async function clearSelectedJobs() {
 		state.jobs = payload.jobs || [];
 		state.selectedJobs.clear();
 		state.selectedJobId = null;
+		state.jobDetails.clear();
+		state.jobCommands.clear();
 		$("jobLog").textContent = "";
 		$("setupMessage").textContent =
 			`Cleared ${payload.cleared} selected job(s).`;
 		renderJobs();
-		await loadResults();
+		invalidateResultRows();
+		await loadResults({ forceRows: true });
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
 	}
@@ -671,10 +900,13 @@ async function clearFailedJobs() {
 		state.jobs = payload.jobs || [];
 		state.selectedJobs.clear();
 		state.selectedJobId = null;
+		state.jobDetails.clear();
+		state.jobCommands.clear();
 		$("jobLog").textContent = "";
 		$("setupMessage").textContent = `Cleared ${payload.cleared} failed job(s).`;
 		renderJobs();
-		await loadResults();
+		invalidateResultRows();
+		await loadResults({ forceRows: true });
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
 	}
@@ -702,10 +934,11 @@ async function rerunJobs(jobIds) {
 			});
 		}
 		state.selectedJobs.clear();
-		if (created.length) state.selectedJobId = created[created.length - 1].id;
+		if (created.length) state.selectedJobId = created.at(-1).id;
 		$("setupMessage").textContent = `Started ${created.length} rerun job(s).`;
-		await loadJobs();
-		await loadResults();
+		await loadJobs({ refreshResultsOnTransition: false });
+		invalidateResultRows();
+		await loadResults({ forceRows: true });
 		await loadSelectedJobLog({ forceScroll: true });
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
@@ -1067,30 +1300,48 @@ async function selectBenchmarkSuite(suite) {
 	renderSelectedTasks();
 	await loadTasks();
 }
-function selectResultSuite(suite) {
+async function selectResultSuite(suite) {
 	state.resultSuite = suite;
 	updateSuiteUi();
 	renderResults();
+	if ($("resultDetails").open) {
+		try {
+			await loadResultRows(suite);
+		} catch (error) {
+			setText($("chart"), `Could not load results: ${error.message}`);
+		}
+	}
 }
 
 $("refreshModels").addEventListener("click", loadModels);
 $("modelFilter").addEventListener("input", renderModels);
 $("selectAllJobs").addEventListener("change", toggleAllJobs);
+$("cancelSelectedJobs").addEventListener("click", cancelSelectedJobs);
 $("clearSelectedJobs").addEventListener("click", clearSelectedJobs);
 $("rerunSelectedJobs").addEventListener("click", rerunSelectedJobs);
 $("clearFailedJobs").addEventListener("click", clearFailedJobs);
 $("refreshJobs").addEventListener("click", () =>
-	Promise.all([loadJobs(), loadResults(), loadSelectedJobLog()]),
+	Promise.all([
+		loadJobs(),
+		loadResults({ forceRows: true }),
+		loadSelectedJobLog(),
+	]),
 );
 $("refreshAll").addEventListener("click", () =>
 	Promise.all([
 		loadModels(),
 		loadTasks(),
 		loadJobs(),
-		loadResults(),
+		loadResults({ forceRows: true }),
 		loadSelectedJobLog(),
 	]),
 );
+$("resultDetails").addEventListener("toggle", () => {
+	if (!$("resultDetails").open) return;
+	void loadResultRows(state.resultSuite).catch((error) =>
+		setText($("chart"), `Could not load results: ${error.message}`),
+	);
+});
 $("startJobs").addEventListener("click", startJobs);
 $("selectVisibleTasks").addEventListener("click", selectVisibleTasks);
 $("unselectVisibleTasks").addEventListener("click", unselectVisibleTasks);
@@ -1112,20 +1363,56 @@ $("suiteSweMini").addEventListener("click", () =>
 	selectBenchmarkSuite("swe_mini"),
 );
 $("leaderboardLmEval").addEventListener("click", () =>
-	selectResultSuite("lm_eval"),
+	void selectResultSuite("lm_eval"),
 );
 $("leaderboardSweMini").addEventListener("click", () =>
-	selectResultSuite("swe_mini"),
+	void selectResultSuite("swe_mini"),
 );
+
+document.addEventListener("visibilitychange", () => {
+	if (!document.hidden) scheduleJobPoll(0);
+});
+
+function scheduleJobPoll(delay = JOB_POLL_INTERVAL_MS) {
+	if (jobPollTimer !== null) clearTimeout(jobPollTimer);
+	jobPollTimer = setTimeout(pollJobs, delay);
+}
+
+async function pollJobs() {
+	jobPollTimer = null;
+	if (document.hidden) {
+		scheduleJobPoll();
+		return;
+	}
+	try {
+		await loadJobs();
+		jobPollFailures = 0;
+		const selectedJob = state.jobs.find(
+			(job) => job.id === state.selectedJobId,
+		);
+		if (selectedJob && ACTIVE_JOB_STATUSES.has(selectedJob.status)) {
+			await loadSelectedJobLog();
+		}
+	} catch (_error) {
+		jobPollFailures += 1;
+	}
+	const backoff = Math.min(
+		60000,
+		JOB_POLL_INTERVAL_MS * 2 ** Math.min(jobPollFailures, 4),
+	);
+	scheduleJobPoll(backoff);
+}
 
 async function bootstrap() {
 	updateSuiteUi();
 	await loadConfig();
-	await Promise.all([loadModels(), loadTasks(), loadJobs(), loadResults()]);
+	await Promise.allSettled([
+		loadModels(),
+		loadTasks(),
+		loadJobs({ refreshResultsOnTransition: false }),
+	]);
+	scheduleJobPoll();
+	void loadResults();
 }
 
-bootstrap();
-setInterval(
-	() => Promise.all([loadJobs(), loadResults(), loadSelectedJobLog()]),
-	5000,
-);
+void bootstrap();
