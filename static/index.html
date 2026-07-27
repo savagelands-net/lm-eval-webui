@@ -159,15 +159,20 @@
         <details>
           <summary>Benchmark options</summary>
           <div id="lmEvalBenchmarkOptions" class="grid four">
-            <label>Limit <input id="limit" value="1" /></label>
             <label
-              >Few-shot <input id="numFewshot" type="number" value="0"
+              >Limit (blank = all) <input id="limit" placeholder="All samples"
             /></label>
             <label
-              >Max gen tokens <input id="maxGenToks" type="number" value="256"
+              >Few-shot (blank = task default)
+              <input id="numFewshot" type="number" placeholder="Task default"
             /></label>
             <label
-              >Timeout seconds <input id="timeout" type="number" value="300"
+              >Minimum generation tokens
+              <input id="maxGenToks" type="number" value="32768" min="1"
+            /></label>
+            <label
+              >Timeout seconds
+              <input id="timeout" type="number" value="7200" min="1"
             /></label>
             <label
               >Concurrent requests

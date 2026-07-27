@@ -1362,11 +1362,13 @@ $("suiteLmEval").addEventListener("click", () =>
 $("suiteSweMini").addEventListener("click", () =>
 	selectBenchmarkSuite("swe_mini"),
 );
-$("leaderboardLmEval").addEventListener("click", () =>
-	void selectResultSuite("lm_eval"),
+$("leaderboardLmEval").addEventListener(
+	"click",
+	() => void selectResultSuite("lm_eval"),
 );
-$("leaderboardSweMini").addEventListener("click", () =>
-	void selectResultSuite("swe_mini"),
+$("leaderboardSweMini").addEventListener(
+	"click",
+	() => void selectResultSuite("swe_mini"),
 );
 
 document.addEventListener("visibilitychange", () => {

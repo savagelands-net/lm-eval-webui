@@ -499,11 +499,7 @@ def compact_leaderboard_entry(entry: dict[str, Any]) -> dict[str, Any]:
     categories = compact.get("category_scores")
     if isinstance(categories, list):
         compact["category_scores"] = [
-            {
-                key: value
-                for key, value in category.items()
-                if key != "tasks"
-            }
+            {key: value for key, value in category.items() if key != "tasks"}
             | {"task_count": len(category.get("tasks") or [])}
             for category in categories
             if isinstance(category, dict)
@@ -927,9 +923,7 @@ def make_handler(
                         "lm_eval_python": find_lm_eval_python(manager.lm_eval_python),
                         "jobs": manager.runtime_state(),
                         "http": {
-                            "active_requests": getattr(
-                                server, "active_requests", None
-                            ),
+                            "active_requests": getattr(server, "active_requests", None),
                             "max_workers": getattr(server, "max_workers", None),
                         },
                     }
@@ -999,18 +993,14 @@ def make_handler(
                 )
             elif parsed.path == "/api/jobs/clear-failed":
                 cleared = manager.clear_failed_jobs()
-                self._json(
-                    {"cleared": cleared, "jobs": manager.list_job_summaries()}
-                )
+                self._json({"cleared": cleared, "jobs": manager.list_job_summaries()})
             elif parsed.path == "/api/jobs/clear":
                 try:
                     cleared = manager.clear_jobs(self._read_job_ids())
                 except ActiveJobError as exc:
                     self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
                     return
-                self._json(
-                    {"cleared": cleared, "jobs": manager.list_job_summaries()}
-                )
+                self._json({"cleared": cleared, "jobs": manager.list_job_summaries()})
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -1087,9 +1077,7 @@ def make_handler(
             offset = bounded_query_int(
                 params, "offset", 0, minimum=0, maximum=10_000_000
             )
-            limit = bounded_query_int(
-                params, "limit", 1000, minimum=1, maximum=5000
-            )
+            limit = bounded_query_int(params, "limit", 1000, minimum=1, maximum=5000)
             suite = params.get("suite", [""])[0]
             try:
                 snapshot = manager.results_snapshot()

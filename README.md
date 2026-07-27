@@ -128,6 +128,50 @@ The relevant read APIs are:
 - `GET /api/leaderboard` — compact leaderboard entries
 - `GET /api/results?offset=0&limit=1000&suite=lm_eval` — paginated rows
 
+## Thinking models and quality preflight
+
+Normal benchmark jobs are unlimited by default and preserve each task's own
+few-shot setting. The OpenAI-compatible adapter allows at least 32,768 output
+tokens, removes server-side task stop strings so they cannot terminate an
+internal thinking block, and applies those stop strings locally to the final
+answer. It accepts the `reasoning`, `reasoning_content`, and `analysis` stream
+fields used by current vLLM, llama.cpp, and other compatible providers. Only
+final `content` is scored; an unfinished reasoning trace is never treated as an
+answer.
+
+A full run without **Limit** can be extremely expensive. Before starting one,
+dry-run the all-model preflight:
+
+```bash
+python scripts/smoke-all-models.py \
+  --webui-url https://lm-eval.example.net \
+  --openai-base-url https://llm.example.net/v1
+```
+
+Review the discovered models and payload, then add `--run` to enqueue serial
+GSM8K, generative MMLU, and IFEval jobs for every downloaded chat model
+(non-chat TTS/transcription models are skipped). The preflight uses three
+samples per task, enables sample logging, and fails any model that does not
+return final answer content for every request or still reaches its generation
+cap. Use repeated
+`--model MODEL_ID` options to test a subset.
+
+The `gpt-oss-120b-mxfp-GGUF` value in this WebUI is only the default SWE Mini
+judge; selecting or listing it does not send an inference request or preload it.
+Lemonade loads a model when a client asks for that model. With
+`max_loaded_models=1`, unrelated client traffic can evict a benchmark model. On
+the Lemonade host, protect a benchmark run with:
+
+```bash
+lemonade pin MODEL_ID
+# run the benchmark
+lemonade unpin MODEL_ID
+```
+
+A competing model request then fails with HTTP 409 instead of evicting the
+pinned model. Alternatively, increase `max_loaded_models` only when the host has
+enough memory for both models.
+
 ## Notes
 
 - This software was created with the help of AI coding assistants.

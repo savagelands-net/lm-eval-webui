@@ -76,6 +76,20 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
 
         self.assertIn("stream_responses=True", command)
 
+    def test_eval_command_defaults_to_full_quality_run(self):
+        EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
+        build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
+
+        command, _env = build_eval_command(
+            EvalRequest(model_id="Model-A", tasks=["gsm8k"], output_path="out"),
+            project_root="/repo",
+        )
+
+        self.assertIn("max_gen_toks=32768", command)
+        self.assertIn("timeout=7200", command)
+        self.assertNotIn("--limit", command)
+        self.assertNotIn("--num_fewshot", command)
+
     def test_eval_command_applies_chat_template_by_default(self):
         EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
         build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
@@ -544,6 +558,13 @@ class LmEvalRunnerTests(unittest.TestCase):
 
 
 class LemonadeModelTests(unittest.TestCase):
+    @staticmethod
+    def completion():
+        completion_type = symbol(
+            "lm_eval_webui.lemonade_model", "OpenAICompatibleChatCompletion"
+        )
+        return object.__new__(completion_type)
+
     def test_add_runtime_options_adds_selected_llamacpp_backend(self):
         add_runtime_options = symbol(
             "lm_eval_webui.lemonade_model", "add_runtime_options"
@@ -567,12 +588,50 @@ class LemonadeModelTests(unittest.TestCase):
 
         self.assertNotIn("llamacpp_backend", payload)
 
-    def test_parse_generations_preserves_empty_choice_responses(self):
-        OpenAICompatibleChatCompletion = symbol(
+    def test_create_payload_defers_stops_and_floors_generation_budget(self):
+        completion_type = symbol(
             "lm_eval_webui.lemonade_model", "OpenAICompatibleChatCompletion"
         )
+        parent_type = completion_type.__mro__[1]
+        stop_context = symbol("lm_eval_webui.lemonade_model", "_CURRENT_STOP_SEQUENCES")
+        context_token = stop_context.set(stop_context.get())
 
-        generations = OpenAICompatibleChatCompletion.parse_generations(
+        def parent_payload(
+            _self, _messages, generate=False, gen_kwargs=None, **_kwargs
+        ):
+            generation_kwargs = gen_kwargs or {}
+            return {
+                "max_tokens": generation_kwargs.get("max_gen_toks", 7),
+                "stop": generation_kwargs.get("until", ["parent-default"]),
+            }
+
+        try:
+            with mock.patch.object(
+                parent_type, "_create_payload", parent_payload, create=True
+            ):
+                completion = self.completion()
+                completion._max_gen_toks = 32768
+                completion._llamacpp_backend = "rocm"
+                payload = completion._create_payload(
+                    [{"role": "user", "content": "question"}],
+                    generate=True,
+                    gen_kwargs={"max_gen_toks": 256, "until": ["\n"]},
+                )
+
+            self.assertNotIn("stop", payload)
+            self.assertEqual(payload["max_tokens"], 32768)
+            self.assertEqual(payload["llamacpp_backend"], "rocm")
+            self.assertEqual(
+                self.completion().parse_generations(
+                    {"choices": [{"index": 0, "message": {"content": "answer\nextra"}}]}
+                ),
+                ["answer"],
+            )
+        finally:
+            stop_context.reset(context_token)
+
+    def test_parse_generations_preserves_empty_choice_responses(self):
+        generations = self.completion().parse_generations(
             [
                 {"model": "Model-A", "timings": {"predicted_n": 0}, "choices": []},
                 {
@@ -584,6 +643,99 @@ class LemonadeModelTests(unittest.TestCase):
         )
 
         self.assertEqual(generations, ["", "ok"])
+
+    def test_parse_generations_never_grades_unfinished_reasoning(self):
+        for reasoning_field in ("reasoning", "reasoning_content", "analysis"):
+            with self.subTest(reasoning_field=reasoning_field):
+                output: dict[str, Any] = {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "finish_reason": "length",
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                reasoning_field: "The answer may be 42.",
+                            },
+                        }
+                    ]
+                }
+                generations = self.completion().parse_generations(output)
+
+                self.assertEqual(generations, [""])
+                self.assertTrue(output["response"]["has_reasoning"])
+                self.assertFalse(output["response"]["has_final_content"])
+                self.assertTrue(output["response"]["hit_generation_limit"])
+
+    def test_parse_generations_extracts_final_answer_and_applies_task_stop(self):
+        completion = self.completion()
+
+        generations = completion.parse_generations(
+            {
+                "_lm_eval_stop_sequences": ["\n"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "<think>work it out</think>\n\n42\nextra",
+                        },
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(generations, ["42"])
+        self.assertEqual(
+            completion.parse_generations(
+                {
+                    "_lm_eval_stop_sequences": ["\n"],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "reasoning": "work it out",
+                                "content": "\n42\nextra",
+                            },
+                        }
+                    ],
+                }
+            ),
+            ["42"],
+        )
+
+    def test_parse_generations_keeps_concurrent_request_stops_separate(self):
+        completion = self.completion()
+
+        generations = completion.parse_generations(
+            [
+                {
+                    "_lm_eval_stop_sequences": ["\n"],
+                    "choices": [{"index": 0, "message": {"content": "first\nextra"}}],
+                },
+                {
+                    "_lm_eval_stop_sequences": ["<END>"],
+                    "choices": [
+                        {"index": 0, "message": {"content": "second<END>extra"}}
+                    ],
+                },
+            ]
+        )
+
+        self.assertEqual(generations, ["first", "second"])
+
+    def test_generation_payload_defers_stops_and_raises_task_token_caps(self):
+        prepare_generation_payload = symbol(
+            "lm_eval_webui.lemonade_model", "prepare_generation_payload"
+        )
+        for token_key in ("max_tokens", "max_completion_tokens"):
+            with self.subTest(token_key=token_key):
+                payload = {"model": "Model-A", token_key: 7, "stop": ["\n"]}
+
+                prepared = prepare_generation_payload(payload, 32768)
+
+                self.assertNotIn("stop", prepared)
+                self.assertEqual(prepared[token_key], 32768)
 
     def test_stream_response_json_records_client_ttft(self):
         stream_response_json = symbol(
@@ -623,6 +775,108 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(output["timings"]["ttft_s"], 3.0)
         self.assertEqual(output["timings"]["predicted_n"], 1)
         self.assertEqual(output["usage"], {"completion_tokens": 2})
+        self.assertTrue(output["response"]["has_final_content"])
+        self.assertFalse(output["response"]["has_reasoning"])
+
+    def test_stream_response_json_supports_reasoning_from_all_provider_schemas(self):
+        stream_response_json = symbol(
+            "lm_eval_webui.lemonade_model", "stream_response_json"
+        )
+        provider_fields = {
+            "vllm-0.20": "reasoning",
+            "llamacpp-and-deepseek": "reasoning_content",
+            "analysis-alias": "analysis",
+        }
+
+        for provider, reasoning_field in provider_fields.items():
+            with self.subTest(provider=provider):
+
+                class Response:
+                    def __init__(self, model_name, field_name):
+                        self.model_name = model_name
+                        self.field_name = field_name
+
+                    def iter_lines(self, decode_unicode=False):
+                        chunks = [
+                            {
+                                "model": self.model_name,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {
+                                            "role": "assistant",
+                                            self.field_name: "work",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {self.field_name: " more"},
+                                    }
+                                ]
+                            },
+                            {"choices": [{"index": 0, "delta": {"content": "42"}}]},
+                        ]
+                        lines = [f"data: {json.dumps(chunk)}" for chunk in chunks]
+                        lines.append("data: [DONE]")
+                        return (
+                            lines
+                            if decode_unicode
+                            else [line.encode("utf-8") for line in lines]
+                        )
+
+                times = iter([1.0, 2.0, 3.0, 4.0, 5.0])
+                output = stream_response_json(
+                    Response(provider, reasoning_field),
+                    started=0.0,
+                    clock=lambda iterator=times: next(iterator),
+                )
+
+                message = output["choices"][0]["message"]
+                self.assertEqual(message["reasoning"], "work more")
+                self.assertEqual(message["content"], "42")
+                self.assertEqual(output["timings"]["ttft_source"], "first_reasoning")
+                self.assertTrue(output["response"]["has_reasoning"])
+                self.assertTrue(output["response"]["has_final_content"])
+                self.assertEqual(self.completion().parse_generations(output), ["42"])
+
+    def test_telemetry_aggregates_final_content_and_reasoning_coverage(self):
+        aggregate_telemetry_events = symbol(
+            "lm_eval_webui.telemetry", "aggregate_telemetry_events"
+        )
+
+        aggregate = aggregate_telemetry_events(
+            [
+                {
+                    "timings": {"ttft_s": 1.0},
+                    "usage": {"completion_tokens": 10, "prompt_tokens": 5},
+                    "response": {
+                        "has_final_content": True,
+                        "has_reasoning": True,
+                    },
+                },
+                {
+                    "timings": {"ttft_s": 2.0},
+                    "usage": {"completion_tokens": 20, "prompt_tokens": 7},
+                    "response": {
+                        "has_final_content": False,
+                        "has_reasoning": True,
+                        "hit_generation_limit": True,
+                    },
+                },
+            ]
+        )
+
+        self.assertEqual(aggregate["response_metadata_count"], 2)
+        self.assertEqual(aggregate["final_content_response_count"], 1)
+        self.assertEqual(aggregate["reasoning_response_count"], 2)
+        self.assertEqual(aggregate["empty_response_count"], 1)
+        self.assertEqual(aggregate["generation_limited_response_count"], 1)
+        self.assertEqual(aggregate["generated_tokens"], 30)
+        self.assertEqual(aggregate["prompt_tokens"], 12)
 
     def test_normalize_models_extracts_llamacpp_runtime_backend(self):
         normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
@@ -731,8 +985,8 @@ class SweMiniWrapperScriptTests(unittest.TestCase):
         script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
 
         self.assertIn("LMEVAL_WEBUI_JOB_ID", script)
-        self.assertIn('lm-eval-webui.job-id=$JOB_ID', script)
-        self.assertIn('trap \'cancel_run 143\' TERM', script)
+        self.assertIn("lm-eval-webui.job-id=$JOB_ID", script)
+        self.assertIn("trap 'cancel_run 143' TERM", script)
         self.assertIn('docker rm -f "$ACTIVE_CONTAINER"', script)
 
 
@@ -2204,7 +2458,11 @@ class JobManagerCancellationTests(unittest.TestCase):
         def blocking_launcher(command, _env, log_path):
             model_args = command[command.index("--model_args") + 1 :]
             launched_models.append(
-                next(value.split("=", 1)[1] for value in model_args if value.startswith("model="))
+                next(
+                    value.split("=", 1)[1]
+                    for value in model_args
+                    if value.startswith("model=")
+                )
             )
             Path(log_path).write_text("started\n", encoding="utf-8")
             first_started.set()
@@ -2287,9 +2545,7 @@ class JobManagerCancellationTests(unittest.TestCase):
                 launcher=blocking_launcher,
                 run_async=True,
             )
-            job = manager.create_jobs(
-                {"model_ids": ["Model-A"], "tasks": ["gsm8k"]}
-            )[0]
+            job = manager.create_jobs({"model_ids": ["Model-A"], "tasks": ["gsm8k"]})[0]
             self.assertTrue(started.wait(1))
 
             with self.assertRaises(ActiveJobError):
@@ -2331,9 +2587,7 @@ class JobManagerCancellationTests(unittest.TestCase):
                     "created_at": created_at,
                     "output_path": str(data_dir / "runs" / job_id),
                     "log_path": str(data_dir / "logs" / f"{job_id}.log"),
-                    "telemetry_path": str(
-                        data_dir / "telemetry" / f"{job_id}.jsonl"
-                    ),
+                    "telemetry_path": str(data_dir / "telemetry" / f"{job_id}.jsonl"),
                 }
                 (jobs_dir / f"{job_id}.json").write_text(
                     json.dumps(payload), encoding="utf-8"
@@ -2775,9 +3029,7 @@ class ServerEfficiencyTests(unittest.TestCase):
         body, compressed, etag = cache.get_or_create(
             1, "results", {"rows": [{"value": "x" * 2000}]}
         )
-        repeated = cache.get_or_create(
-            1, "results", {"rows": [{"value": "different"}]}
-        )
+        repeated = cache.get_or_create(1, "results", {"rows": [{"value": "different"}]})
         replacement = cache.get_or_create(2, "results", {"rows": []})
 
         self.assertEqual(repeated, (body, compressed, etag))
@@ -2823,9 +3075,7 @@ class ServerEfficiencyTests(unittest.TestCase):
         captured = {}
 
         def cached_json(self, payload, generation, cache_key):
-            captured.update(
-                payload=payload, generation=generation, cache_key=cache_key
-            )
+            captured.update(payload=payload, generation=generation, cache_key=cache_key)
 
         handler._cached_json = types.MethodType(cached_json, handler)
         handler._handle_results("suite=lm_eval&offset=1&limit=1")
@@ -2925,6 +3175,37 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("max-width: 100%", log_rule)
         self.assertIn("min-width: 0", log_rule)
         self.assertIn("overflow-wrap: anywhere", log_rule)
+
+    def test_static_ui_defaults_to_full_quality_benchmarks(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        limit_control = index[
+            index.index('id="limit"') - 50 : index.index('id="limit"') + 100
+        ]
+        fewshot_control = index[
+            index.index('id="numFewshot"') - 80 : index.index('id="numFewshot"') + 120
+        ]
+
+        self.assertNotIn("value=", limit_control)
+        self.assertNotIn("value=", fewshot_control)
+        self.assertIn('id="maxGenToks" type="number" value="32768"', index)
+        self.assertIn('id="timeout" type="number" value="7200"', index)
+        self.assertIn("Limit (blank = all)", index)
+        self.assertIn("Few-shot (blank = task default)", index)
+
+    def test_all_model_smoke_script_is_safe_by_default(self):
+        script = Path("scripts/smoke-all-models.py").read_text(encoding="utf-8")
+
+        self.assertIn('SMOKE_TASKS = ("gsm8k",', script)
+        self.assertIn('"mmlu_abstract_algebra_generative"', script)
+        self.assertIn('"ifeval"', script)
+        self.assertIn('"log_samples": True', script)
+        self.assertIn('"max_concurrent_jobs": 1', script)
+        self.assertIn("without this flag the script is read-only", script)
+        script_symbols = __import__("runpy").run_path("scripts/smoke-all-models.py")
+        is_chat_model = script_symbols["is_chat_model"]
+        self.assertTrue(is_chat_model({"labels": ["llm", "reasoning"]}))
+        self.assertFalse(is_chat_model({"labels": ["tts"]}))
+        self.assertFalse(is_chat_model({"labels": ["transcription", "hot"]}))
 
     def test_static_ui_exposes_selected_job_controls(self):
         index = Path("static/index.html").read_text(encoding="utf-8")

@@ -15,6 +15,8 @@ DEFAULT_LM_EVAL_PYTHON_CANDIDATES = (
     "/home/iain/.virtualenvs/lm-eval/bin/python",
     "/home/iain/venvs/lm-eval/bin/python",
 )
+DEFAULT_MAX_GEN_TOKS = 32_768
+DEFAULT_REQUEST_TIMEOUT = 7_200
 
 
 @dataclass(slots=True)
@@ -29,9 +31,9 @@ class EvalRequest:
     limit: str | None = None
     num_fewshot: int | None = None
     batch_size: str = "1"
-    max_gen_toks: int = 256
+    max_gen_toks: int = DEFAULT_MAX_GEN_TOKS
     num_concurrent: int = 1
-    timeout: int = 300
+    timeout: int = DEFAULT_REQUEST_TIMEOUT
     apply_chat_template: bool = True
     fewshot_as_multiturn: bool = False
     log_samples: bool = False

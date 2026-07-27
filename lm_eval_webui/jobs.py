@@ -26,7 +26,12 @@ from .results import (
     load_result_file,
     merge_result_jsons,
 )
-from .runner import EvalRequest, build_eval_command
+from .runner import (
+    DEFAULT_MAX_GEN_TOKS,
+    DEFAULT_REQUEST_TIMEOUT,
+    EvalRequest,
+    build_eval_command,
+)
 from .swe_mini import (  # type: ignore[reportMissingImports]
     DEFAULT_SWE_MINI_JUDGE_MODEL,
     DEFAULT_SWE_MINI_PLATFORM,
@@ -191,9 +196,7 @@ class JobManager:
             except FileNotFoundError:
                 continue
         active = [
-            str(job["id"])
-            for job in jobs
-            if job.get("status") in ACTIVE_JOB_STATUSES
+            str(job["id"]) for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES
         ]
         if active:
             raise ActiveJobError(
@@ -246,9 +249,7 @@ class JobManager:
             summaries.append(summary)
         return summaries
 
-    def get_job(
-        self, job_id: str, *, include_progress: bool = True
-    ) -> dict[str, Any]:
+    def get_job(self, job_id: str, *, include_progress: bool = True) -> dict[str, Any]:
         with self._lock:
             job = self._read_job(self.jobs_dir / f"{job_id}.json")
         return self._with_progress(job) if include_progress else self._public_job(job)
@@ -310,9 +311,7 @@ class JobManager:
             return 0
         jobs = [job for job in self._stored_jobs() if job.get("id") in selected]
         active = [
-            str(job["id"])
-            for job in jobs
-            if job.get("status") in ACTIVE_JOB_STATUSES
+            str(job["id"]) for job in jobs if job.get("status") in ACTIVE_JOB_STATUSES
         ]
         if active:
             raise ActiveJobError(
@@ -469,9 +468,7 @@ class JobManager:
                 pass
         return self._write_job_result_summary(job)
 
-    def _write_job_result_summary(
-        self, job: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _write_job_result_summary(self, job: dict[str, Any]) -> dict[str, Any]:
         rows: list[dict[str, Any]] = []
         entries: list[dict[str, Any]] = []
         suite = self._job_suite(job)
@@ -549,9 +546,13 @@ class JobManager:
             limit=payload.get("limit"),
             num_fewshot=self._optional_int(payload.get("num_fewshot")),
             batch_size=str(payload.get("batch_size", "1")),
-            max_gen_toks=self._int_or_default(payload.get("max_gen_toks"), 256),
+            max_gen_toks=self._int_or_default(
+                payload.get("max_gen_toks"), DEFAULT_MAX_GEN_TOKS
+            ),
             num_concurrent=self._int_or_default(payload.get("num_concurrent"), 1),
-            timeout=self._int_or_default(payload.get("timeout"), 300),
+            timeout=self._int_or_default(
+                payload.get("timeout"), DEFAULT_REQUEST_TIMEOUT
+            ),
             apply_chat_template=bool(payload.get("apply_chat_template", True)),
             fewshot_as_multiturn=bool(payload.get("fewshot_as_multiturn", False)),
             log_samples=bool(payload.get("log_samples", False)),
@@ -738,9 +739,7 @@ class JobManager:
         with self._scheduler:
             return self._cancel_events.setdefault(job_id, threading.Event())
 
-    def _raise_if_cancelled(
-        self, job_id: str, returncode: int | None = None
-    ) -> None:
+    def _raise_if_cancelled(self, job_id: str, returncode: int | None = None) -> None:
         if self._cancel_event(job_id).is_set():
             raise JobCancelled(returncode)
 
@@ -755,7 +754,9 @@ class JobManager:
             return self.launcher(command, env, log_path)
 
         launch_cwd = env.get(LAUNCH_CWD_ENV) or None
-        process_env = {key: value for key, value in env.items() if key != LAUNCH_CWD_ENV}
+        process_env = {
+            key: value for key, value in env.items() if key != LAUNCH_CWD_ENV
+        }
         with log_path.open("a", encoding="utf-8") as log_file:
             process = subprocess.Popen(  # noqa: S603
                 command,
@@ -1030,9 +1031,13 @@ class JobManager:
             limit=options.get("limit"),
             num_fewshot=self._optional_int(options.get("num_fewshot")),
             batch_size=str(options.get("batch_size", "1")),
-            max_gen_toks=self._int_or_default(options.get("max_gen_toks"), 256),
+            max_gen_toks=self._int_or_default(
+                options.get("max_gen_toks"), DEFAULT_MAX_GEN_TOKS
+            ),
             num_concurrent=self._int_or_default(options.get("num_concurrent"), 1),
-            timeout=self._int_or_default(options.get("timeout"), 300),
+            timeout=self._int_or_default(
+                options.get("timeout"), DEFAULT_REQUEST_TIMEOUT
+            ),
             apply_chat_template=self._optional_bool(
                 options.get("apply_chat_template"), True
             ),
