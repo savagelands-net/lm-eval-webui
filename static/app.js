@@ -4,11 +4,12 @@ const state = {
 	jobs: [],
 	rows: [],
 	leaderboard: [],
-	selectedJobId: null,
 	selectedJobs: new Set(),
 	expandedJobs: new Set(),
 	jobDetails: new Map(),
 	jobCommands: new Map(),
+	jobLogs: new Map(),
+	jobLogElements: new Map(),
 	loadedResultSuites: new Set(),
 	jobsLoaded: false,
 	selectedModels: new Set(),
@@ -172,6 +173,9 @@ async function loadJobs({ refreshResultsOnTransition = true } = {}) {
 		}
 		for (const jobId of state.jobCommands.keys()) {
 			if (!existing.has(jobId)) state.jobCommands.delete(jobId);
+		}
+		for (const jobId of state.jobLogs.keys()) {
+			if (!existing.has(jobId)) state.jobLogs.delete(jobId);
 		}
 		const reachedTerminalState =
 			state.jobsLoaded &&
@@ -437,6 +441,14 @@ function renderSelectedTasks() {
 
 function renderJobs() {
 	const list = $("jobList");
+	const logViews = new Map();
+	for (const [jobId, log] of state.jobLogElements) {
+		logViews.set(jobId, {
+			autoScroll: shouldAutoScrollLog(log),
+			scrollTop: log.scrollTop,
+		});
+	}
+	state.jobLogElements.clear();
 	list.replaceChildren();
 	const existing = new Set(state.jobs.map((job) => job.id));
 	state.selectedJobs = new Set(
@@ -447,7 +459,6 @@ function renderJobs() {
 	);
 	if (!state.jobs.length) {
 		setText(list, "No jobs yet.");
-		$("jobLog").textContent = "";
 		renderSelectedJobs();
 		return;
 	}
@@ -467,15 +478,14 @@ function renderJobs() {
 		details.className = "job-details";
 		details.open = state.expandedJobs.has(job.id);
 		details.addEventListener("toggle", () => {
+			if (details.open === state.expandedJobs.has(job.id)) return;
 			if (details.open) {
 				state.expandedJobs.add(job.id);
-				if (state.jobDetails.has(job.id)) {
-					renderJobExpanded(expanded, job);
-				} else {
-					void loadJobDetails(job.id);
-				}
+				renderJobExpanded(expanded, job);
+				void loadJobLog(job.id, { forceScroll: true });
 			} else {
 				state.expandedJobs.delete(job.id);
+				state.jobLogElements.delete(job.id);
 				expanded.replaceChildren();
 			}
 		});
@@ -521,39 +531,62 @@ function renderJobs() {
 			),
 			summaryActions,
 		);
-		summary.addEventListener("click", () => void selectJob(job.id));
 		if (details.open) renderJobExpanded(expanded, job);
 		details.append(summary, expanded);
 		row.append(details);
 		list.append(row);
 	});
 	renderSelectedJobs();
-	if (!state.selectedJobId && state.jobs.length)
-		void selectJob(state.jobs.at(-1).id);
+	for (const [jobId, view] of logViews) {
+		const log = state.jobLogElements.get(jobId);
+		if (!log) continue;
+		if (view.autoScroll) {
+			scrollLogToBottom(log);
+		} else {
+			log.scrollTop = view.scrollTop;
+		}
+	}
 }
 
 function renderJobExpanded(container, summaryJob) {
 	container.replaceChildren();
 	const job = state.jobDetails.get(summaryJob.id);
 	if (!job) {
-		setText(container, "Expand to load job details…");
-		return;
+		const message = div("job-detail-message");
+		setText(message, "Loading job details…");
+		container.append(message);
+		void loadJobDetails(summaryJob.id);
+	} else if (job.detail_error) {
+		const message = div("job-detail-message");
+		setText(message, `Could not load job details: ${job.detail_error}`);
+		container.append(message);
+	} else {
+		const taskList = document.createElement("ul");
+		taskList.className = "job-task-list";
+		(job.tasks || []).forEach((taskName) => {
+			const taskItem = document.createElement("li");
+			taskItem.textContent = taskName;
+			taskList.append(taskItem);
+		});
+		container.append(
+			jobDetailMeta({ ...job, ...summaryJob, tasks: job.tasks }),
+			taskList,
+		);
 	}
-	if (job.detail_error) {
-		setText(container, `Could not load job details: ${job.detail_error}`);
-		return;
+
+	const logLabel = div("job-log-label");
+	setText(logLabel, "Live output");
+	const log = document.createElement("pre");
+	log.className = "log job-log";
+	log.dataset.jobId = summaryJob.id;
+	log.setAttribute("aria-label", `Live output for job ${summaryJob.id}`);
+	log.setAttribute("aria-live", "polite");
+	log.textContent = state.jobLogs.get(summaryJob.id) || "Loading log output…";
+	state.jobLogElements.set(summaryJob.id, log);
+	container.append(logLabel, log);
+	if (!state.jobLogs.has(summaryJob.id)) {
+		void loadJobLog(summaryJob.id, { forceScroll: true });
 	}
-	const taskList = document.createElement("ul");
-	taskList.className = "job-task-list";
-	(job.tasks || []).forEach((taskName) => {
-		const taskItem = document.createElement("li");
-		taskItem.textContent = taskName;
-		taskList.append(taskItem);
-	});
-	container.append(
-		jobDetailMeta({ ...job, ...summaryJob, tasks: job.tasks }),
-		taskList,
-	);
 }
 
 async function loadJobDetails(jobId) {
@@ -608,30 +641,55 @@ function toggleAllJobs() {
 	}
 	renderJobs();
 }
-async function selectJob(jobId) {
-	state.selectedJobId = jobId;
-	await loadSelectedJobLog({ forceScroll: true });
-}
-async function loadSelectedJobLog({ forceScroll = false } = {}) {
-	const jobId = state.selectedJobId;
-	if (!jobId) return;
+async function loadJobLog(jobId, { forceScroll = false } = {}) {
 	return singleFlight(`job-log:${jobId}`, async () => {
-		const log = $("jobLog");
-		const autoScroll = forceScroll || shouldAutoScrollLog(log);
+		const initialLog = state.jobLogElements.get(jobId);
+		const autoScroll =
+			forceScroll || !initialLog || shouldAutoScrollLog(initialLog);
+		const scrollTop = initialLog?.scrollTop || 0;
+		let content;
 		try {
 			const includeCommand = !state.jobCommands.has(jobId);
 			const query = includeCommand ? "?include_command=1" : "";
 			const { job } = await api(`/api/jobs/${jobId}/log${query}`);
-			if (state.selectedJobId !== jobId) return;
+			if (!state.jobs.some((candidate) => candidate.id === jobId)) return;
 			if (Array.isArray(job.command)) state.jobCommands.set(jobId, job.command);
 			const command = (state.jobCommands.get(jobId) || []).join(" ");
-			const content = `$ ${command}\n\n${job.log_tail || "No log output yet."}`;
-			if (log.textContent !== content) log.textContent = content;
+			content = `$ ${command}\n\n${job.log_tail || "No log output yet."}`;
 		} catch (error) {
-			if (state.selectedJobId === jobId) log.textContent = error.message;
+			if (!state.jobs.some((candidate) => candidate.id === jobId)) return;
+			content = error.message;
 		}
-		if (autoScroll && state.selectedJobId === jobId) scrollLogToBottom(log);
+		state.jobLogs.set(jobId, content);
+		const log = state.jobLogElements.get(jobId);
+		if (!log) return;
+		if (log.textContent !== content) log.textContent = content;
+		if (autoScroll) {
+			scrollLogToBottom(log);
+		} else {
+			log.scrollTop = scrollTop;
+		}
 	});
+}
+async function loadExpandedJobLogs({
+	forceScroll = false,
+	includeAll = false,
+	includeJobIds = new Set(),
+} = {}) {
+	const jobs = state.jobs.filter(
+		(job) =>
+			state.expandedJobs.has(job.id) &&
+			(includeAll ||
+				ACTIVE_JOB_STATUSES.has(job.status) ||
+				includeJobIds.has(job.id)),
+	);
+	await Promise.allSettled(
+		jobs.map((job) => loadJobLog(job.id, { forceScroll })),
+	);
+}
+async function refreshJobsAndLogs() {
+	await loadJobs();
+	await loadExpandedJobLogs({ includeAll: true });
 }
 function shouldAutoScrollLog(log) {
 	return log.scrollHeight - log.scrollTop - log.clientHeight < 24;
@@ -868,7 +926,7 @@ async function cancelJobs(jobIds) {
 		$("setupMessage").textContent =
 			`Cancellation requested for ${payload.cancelled} job(s).`;
 		renderJobs();
-		await loadSelectedJobLog();
+		await loadExpandedJobLogs({ includeAll: true });
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
 	}
@@ -884,10 +942,10 @@ async function clearSelectedJobs() {
 		});
 		state.jobs = payload.jobs || [];
 		state.selectedJobs.clear();
-		state.selectedJobId = null;
 		state.jobDetails.clear();
 		state.jobCommands.clear();
-		$("jobLog").textContent = "";
+		state.jobLogs.clear();
+		state.jobLogElements.clear();
 		$("setupMessage").textContent =
 			`Cleared ${payload.cleared} selected job(s).`;
 		renderJobs();
@@ -902,10 +960,10 @@ async function clearFailedJobs() {
 		const payload = await api("/api/jobs/clear-failed", { method: "POST" });
 		state.jobs = payload.jobs || [];
 		state.selectedJobs.clear();
-		state.selectedJobId = null;
 		state.jobDetails.clear();
 		state.jobCommands.clear();
-		$("jobLog").textContent = "";
+		state.jobLogs.clear();
+		state.jobLogElements.clear();
 		$("setupMessage").textContent = `Cleared ${payload.cleared} failed job(s).`;
 		renderJobs();
 		invalidateResultRows();
@@ -937,12 +995,12 @@ async function rerunJobs(jobIds) {
 			});
 		}
 		state.selectedJobs.clear();
-		if (created.length) state.selectedJobId = created.at(-1).id;
+		if (created.length) state.expandedJobs.add(created.at(-1).id);
 		$("setupMessage").textContent = `Started ${created.length} rerun job(s).`;
 		await loadJobs({ refreshResultsOnTransition: false });
 		invalidateResultRows();
 		await loadResults({ forceRows: true });
-		await loadSelectedJobLog({ forceScroll: true });
+		await loadExpandedJobLogs({ forceScroll: true, includeAll: true });
 	} catch (error) {
 		$("setupMessage").textContent = error.message;
 	}
@@ -1324,19 +1382,14 @@ $("clearSelectedJobs").addEventListener("click", clearSelectedJobs);
 $("rerunSelectedJobs").addEventListener("click", rerunSelectedJobs);
 $("clearFailedJobs").addEventListener("click", clearFailedJobs);
 $("refreshJobs").addEventListener("click", () =>
-	Promise.all([
-		loadJobs(),
-		loadResults({ forceRows: true }),
-		loadSelectedJobLog(),
-	]),
+	Promise.all([refreshJobsAndLogs(), loadResults({ forceRows: true })]),
 );
 $("refreshAll").addEventListener("click", () =>
 	Promise.all([
 		loadModels(),
 		loadTasks(),
-		loadJobs(),
+		refreshJobsAndLogs(),
 		loadResults({ forceRows: true }),
-		loadSelectedJobLog(),
 	]),
 );
 $("resultDetails").addEventListener("toggle", () => {
@@ -1390,14 +1443,14 @@ async function pollJobs() {
 		return;
 	}
 	try {
+		const previouslyActive = new Set(
+			state.jobs
+				.filter((job) => ACTIVE_JOB_STATUSES.has(job.status))
+				.map((job) => job.id),
+		);
 		await loadJobs();
 		jobPollFailures = 0;
-		const selectedJob = state.jobs.find(
-			(job) => job.id === state.selectedJobId,
-		);
-		if (selectedJob && ACTIVE_JOB_STATUSES.has(selectedJob.status)) {
-			await loadSelectedJobLog();
-		}
+		await loadExpandedJobLogs({ includeJobIds: previouslyActive });
 	} catch (_error) {
 		jobPollFailures += 1;
 	}

@@ -373,6 +373,17 @@ summary {
 	padding: 2px 0;
 	overflow-wrap: anywhere;
 }
+.job-log-label {
+	margin-top: 16px;
+	color: var(--muted);
+	font-size: 0.82rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+.job-log {
+	margin-top: 8px;
+}
 .status {
 	font-weight: 700;
 }
