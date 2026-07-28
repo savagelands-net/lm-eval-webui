@@ -412,6 +412,50 @@ class JsonResponseCache:
             return cached
 
 
+class TaskCatalogCache:
+    """Load each task suite once while concurrent callers share the result."""
+
+    def __init__(self, loader: Callable[[str], list[dict[str, str]]]) -> None:
+        self._loader = loader
+        self._tasks: dict[str, list[dict[str, str]]] = {}
+        self._loading: set[str] = set()
+        self._condition = threading.Condition()
+
+    def get(self, suite: str) -> list[dict[str, str]]:
+        with self._condition:
+            while suite in self._loading:
+                self._condition.wait()
+            cached = self._tasks.get(suite)
+            if cached is not None:
+                return cached
+            self._loading.add(suite)
+        try:
+            tasks = self._loader(suite)
+        except BaseException:
+            with self._condition:
+                self._loading.discard(suite)
+                self._condition.notify_all()
+            raise
+        with self._condition:
+            self._tasks[suite] = tasks
+            self._loading.discard(suite)
+            self._condition.notify_all()
+            return tasks
+
+
+def prewarm_task_catalog(task_catalog: TaskCatalogCache) -> None:
+    started = time.monotonic()
+    try:
+        tasks = task_catalog.get("lm_eval")
+    except Exception as exc:  # pragma: no cover - startup resilience
+        print(f"Could not prewarm lm-eval task catalog: {exc}", flush=True)
+        return
+    print(
+        f"Prewarmed {len(tasks)} lm-eval tasks in {time.monotonic() - started:.2f}s",
+        flush=True,
+    )
+
+
 class BoundedThreadPoolHTTPServer(HTTPServer):
     """HTTP server with a fixed-size request pool and no unbounded queue."""
 
@@ -890,9 +934,28 @@ def make_handler(
     manager: JobManager,
     static_dir: str | Path,
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL,
+    *,
+    task_catalog: TaskCatalogCache | None = None,
+    prewarm_tasks: bool = False,
 ):
     static_root = Path(static_dir)
     result_response_cache = JsonResponseCache()
+    task_response_cache = JsonResponseCache(max_entries=4)
+    if task_catalog is None:
+        task_catalog = TaskCatalogCache(
+            lambda suite: load_available_tasks(
+                manager.lm_eval_python,
+                suite=suite,
+                pi_bench_dir=manager.pi_bench_dir,
+            )
+        )
+    if prewarm_tasks:
+        threading.Thread(
+            target=prewarm_task_catalog,
+            args=(task_catalog,),
+            name="lm-eval-task-prewarm",
+            daemon=True,
+        ).start()
 
     class WebUIHandler(BaseHTTPRequestHandler):
         server_version = "lm-eval-webui/0.2"
@@ -933,17 +996,7 @@ def make_handler(
             elif parsed.path == "/api/models":
                 self._handle_models(parsed.query)
             elif parsed.path == "/api/tasks":
-                params = parse_qs(parsed.query)
-                suite = params.get("suite", ["lm_eval"])[0]
-                self._json(
-                    {
-                        "tasks": load_available_tasks(
-                            manager.lm_eval_python,
-                            suite=suite,
-                            pi_bench_dir=manager.pi_bench_dir,
-                        )
-                    }
-                )
+                self._handle_tasks(parsed.query)
             elif parsed.path == "/api/jobs":
                 self._json({"jobs": manager.list_job_summaries()})
             elif parsed.path.startswith("/api/jobs/"):
@@ -1003,6 +1056,17 @@ def make_handler(
                 self._json({"cleared": cleared, "jobs": manager.list_job_summaries()})
             else:
                 self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+
+        def _handle_tasks(self, query: str) -> None:
+            params = parse_qs(query)
+            requested_suite = params.get("suite", ["lm_eval"])[0]
+            suite = requested_suite if requested_suite == "swe_mini" else "lm_eval"
+            self._cached_json(
+                {"tasks": task_catalog.get(suite)},
+                0,
+                f"tasks:{suite}",
+                response_cache=task_response_cache,
+            )
 
         def _handle_models(self, query: str) -> None:
             params = parse_qs(query)
@@ -1141,11 +1205,15 @@ def make_handler(
             write_response(self, status, "application/json; charset=utf-8", body)
 
         def _cached_json(
-            self, payload: dict[str, Any], generation: int, cache_key: str
+            self,
+            payload: dict[str, Any],
+            generation: int,
+            cache_key: str,
+            *,
+            response_cache: JsonResponseCache | None = None,
         ) -> None:
-            body, compressed, etag = result_response_cache.get_or_create(
-                generation, cache_key, payload
-            )
+            cache = response_cache or result_response_cache
+            body, compressed, etag = cache.get_or_create(generation, cache_key, payload)
             headers = {
                 "ETag": etag,
                 "Vary": "Accept-Encoding",
@@ -1210,7 +1278,12 @@ def serve(
         max_concurrent_jobs=max_concurrent_jobs,
         pi_bench_dir=pi_bench_dir,
     )
-    handler = make_handler(manager, static_dir, openai_base_url)
+    handler = make_handler(
+        manager,
+        static_dir,
+        openai_base_url,
+        prewarm_tasks=True,
+    )
     httpd = BoundedThreadPoolHTTPServer(
         (host, port), handler, max_workers=max_request_workers
     )

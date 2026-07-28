@@ -52,6 +52,7 @@ const TERMINAL_JOB_STATUSES = new Set(["cancelled", "failed", "succeeded"]);
 const RESULT_PAGE_SIZE = 2000;
 const JOB_POLL_INTERVAL_MS = 5000;
 const REQUEST_TIMEOUT_MS = 30000;
+const TASK_REQUEST_TIMEOUT_MS = 120000;
 const inFlightRequests = new Map();
 let jobPollTimer = null;
 let jobPollFailures = 0;
@@ -132,7 +133,9 @@ async function loadTasks() {
 	setText($("taskList"), `Loading ${suiteLabel(requestedSuite)} tasks…`);
 	try {
 		const suite = encodeURIComponent(requestedSuite);
-		const payload = await api(`/api/tasks?suite=${suite}`);
+		const payload = await api(`/api/tasks?suite=${suite}`, {
+			timeoutMs: TASK_REQUEST_TIMEOUT_MS,
+		});
 		if (
 			loadToken !== state.taskLoadToken ||
 			requestedSuite !== state.activeSuite

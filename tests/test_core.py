@@ -3036,6 +3036,36 @@ class ServerEfficiencyTests(unittest.TestCase):
         self.assertEqual(__import__("gzip").decompress(compressed), body)
         self.assertNotEqual(replacement[2], etag)
 
+    def test_task_catalog_load_is_shared_by_concurrent_callers(self):
+        TaskCatalogCache = symbol("lm_eval_webui.server", "TaskCatalogCache")
+        loader_started = threading.Event()
+        release_loader = threading.Event()
+        loader_calls = []
+        results = []
+
+        def loader(suite):
+            loader_calls.append(suite)
+            loader_started.set()
+            release_loader.wait(2)
+            return [{"name": "gsm8k"}]
+
+        catalog = TaskCatalogCache(loader)
+        threads = [
+            threading.Thread(target=lambda: results.append(catalog.get("lm_eval")))
+            for _index in range(2)
+        ]
+        threads[0].start()
+        self.assertTrue(loader_started.wait(1))
+        threads[1].start()
+        release_loader.set()
+        for thread in threads:
+            thread.join(2)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(loader_calls, ["lm_eval"])
+        self.assertEqual(results, [[{"name": "gsm8k"}], [{"name": "gsm8k"}]])
+        self.assertIs(catalog.get("lm_eval"), results[0])
+
     def test_compact_leaderboard_omits_per_task_payloads(self):
         compact_leaderboard_entry = symbol(
             "lm_eval_webui.server", "compact_leaderboard_entry"
@@ -3191,6 +3221,12 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="timeout" type="number" value="7200"', index)
         self.assertIn("Limit (blank = all)", index)
         self.assertIn("Few-shot (blank = task default)", index)
+
+    def test_task_catalog_request_uses_extended_timeout(self):
+        script = Path("static/app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const TASK_REQUEST_TIMEOUT_MS = 120000", script)
+        self.assertIn("timeoutMs: TASK_REQUEST_TIMEOUT_MS", script)
 
     def test_all_model_smoke_script_is_safe_by_default(self):
         script = Path("scripts/smoke-all-models.py").read_text(encoding="utf-8")
