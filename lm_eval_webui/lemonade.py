@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_LOCAL_OPENAI_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_OPENAI_BASE_URL = os.environ.get(
@@ -13,6 +13,12 @@ DEFAULT_OPENAI_BASE_URL = os.environ.get(
     os.environ.get("LEMONADE_BASE_URL", DEFAULT_LOCAL_OPENAI_BASE_URL),
 ).rstrip("/")
 DEFAULT_LEMONADE_BASE_URL = DEFAULT_OPENAI_BASE_URL
+MODEL_LOAD_TIMEOUT = 7_200
+MODEL_PIN_TIMEOUT = 120
+
+
+class ModelLifecycleUnsupported(RuntimeError):
+    """Raised when an OpenAI-compatible host has no Lemonade lifecycle API."""
 
 
 def normalize_openai_base_url(base_url: str) -> str:
@@ -36,6 +42,21 @@ def openai_api_url(base_url: str, path: str) -> str:
     if suffix.startswith("/v1/"):
         suffix = suffix[len("/v1") :]
     return f"{normalize_openai_base_url(base_url)}{suffix}"
+
+
+def lemonade_management_base_url(base_url: str) -> str:
+    """Return the server root corresponding to an OpenAI-compatible /v1 URL."""
+
+    parsed = urlsplit(normalize_openai_base_url(base_url))
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[: -len("/v1")]
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+
+
+def lemonade_management_url(base_url: str, path: str) -> str:
+    suffix = path if path.startswith("/") else f"/{path}"
+    return f"{lemonade_management_base_url(base_url)}{suffix}"
 
 
 def _runtime_backend(recipe: str, recipe_options: dict[str, Any]) -> str:
@@ -87,6 +108,52 @@ def _get_json(url: str, timeout: int) -> dict[str, Any]:
     )
     response.raise_for_status()
     return _read_json_response(response)
+
+
+def _post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+    requests_module = importlib.import_module("requests")
+    response = requests_module.post(
+        url,
+        json=payload,
+        headers={"Accept": "application/json"},
+        timeout=timeout,
+    )
+    if response.status_code in {404, 405}:
+        raise ModelLifecycleUnsupported(
+            f"Model host does not expose the Lemonade lifecycle API ({response.status_code})"
+        )
+    response.raise_for_status()
+    if not response.content:
+        return {}
+    return _read_json_response(response)
+
+
+def load_and_pin_model(
+    base_url: str,
+    model_id: str,
+    timeout: int = MODEL_LOAD_TIMEOUT,
+) -> dict[str, Any]:
+    """Load a Lemonade model and protect it from automatic eviction."""
+
+    return _post_json(
+        lemonade_management_url(base_url, "/api/v1/load"),
+        {"model_name": str(model_id), "pinned": True},
+        timeout,
+    )
+
+
+def unpin_model(
+    base_url: str,
+    model_id: str,
+    timeout: int = MODEL_PIN_TIMEOUT,
+) -> dict[str, Any]:
+    """Release benchmark-owned eviction protection for a Lemonade model."""
+
+    return _post_json(
+        lemonade_management_url(base_url, "/internal/pin"),
+        {"model": str(model_id), "pinned": False},
+        timeout,
+    )
 
 
 def fetch_loaded_model_metadata(

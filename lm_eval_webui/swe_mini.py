@@ -10,7 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .lemonade import DEFAULT_OPENAI_BASE_URL, normalize_openai_base_url
+from .lemonade import (
+    DEFAULT_OPENAI_BASE_URL,
+    lemonade_management_base_url,
+    normalize_openai_base_url,
+)
 
 
 def repo_root() -> Path:
@@ -33,6 +37,9 @@ SWE_MINI_SUITE = "swe_mini"
 WEBUI_TASKSET_DIR = ".webui-tasksets"
 LAUNCH_CWD_ENV = "LMEVAL_WEBUI_LAUNCH_CWD"
 SWE_OUTPUT_ENV = "SWE_MINI_OUTPUT_PATH"
+SWE_LEMONADE_BASE_URL_ENV = "LMEVAL_WEBUI_LEMONADE_BASE_URL"
+SWE_CANDIDATE_MODEL_ENV = "LMEVAL_WEBUI_CANDIDATE_MODEL_ID"
+SWE_JUDGE_MODEL_ENV = "LMEVAL_WEBUI_JUDGE_MODEL_ID"
 
 
 def normalize_swe_mini_judge_model(
@@ -78,6 +85,27 @@ class SweMiniRequest:
     context_window: int | None = None
     extra_args: list[str] | None = None
     models_json_path: str | Path | None = None
+
+
+def swe_mini_model_lifecycle_env(request: SweMiniRequest) -> dict[str, str]:
+    """Build opt-in environment for swapping a pinned candidate with its judge."""
+
+    judge_model = normalize_swe_mini_judge_model(request.judge_model)
+    judge_provider, separator, judge_model_id = judge_model.partition("/")
+    if (
+        request.provider != DEFAULT_SWE_MINI_JUDGE_PROVIDER
+        or not separator
+        or judge_provider != DEFAULT_SWE_MINI_JUDGE_PROVIDER
+        or not judge_model_id
+    ):
+        return {}
+    return {
+        SWE_LEMONADE_BASE_URL_ENV: lemonade_management_base_url(
+            request.openai_base_url
+        ),
+        SWE_CANDIDATE_MODEL_ENV: str(request.model_id),
+        SWE_JUDGE_MODEL_ENV: judge_model_id,
+    }
 
 
 def write_swe_mini_models_json(

@@ -46,6 +46,43 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
             ):
                 openai_api_url(base_url, "/models")
 
+    def test_lemonade_management_url_is_derived_from_openai_base(self):
+        management_url = symbol("lm_eval_webui.lemonade", "lemonade_management_url")
+
+        self.assertEqual(
+            management_url("https://llm.example.test/v1", "/api/v1/load"),
+            "https://llm.example.test/api/v1/load",
+        )
+        self.assertEqual(
+            management_url("https://proxy.example.test/llm/v1", "/internal/pin"),
+            "https://proxy.example.test/llm/internal/pin",
+        )
+
+    def test_lemonade_model_lifecycle_uses_load_and_pin_endpoints(self):
+        load_and_pin_model = symbol("lm_eval_webui.lemonade", "load_and_pin_model")
+        unpin_model = symbol("lm_eval_webui.lemonade", "unpin_model")
+        response = mock.Mock(status_code=200, content=b"{}")
+        response.json.return_value = {}
+        requests_module = types.SimpleNamespace(post=mock.Mock(return_value=response))
+
+        with mock.patch(
+            "lm_eval_webui.lemonade.importlib.import_module",
+            return_value=requests_module,
+        ):
+            load_and_pin_model("https://llm.example.test/v1", "Model-A", 600)
+            unpin_model("https://llm.example.test/v1", "Model-A", 30)
+
+        self.assertEqual(requests_module.post.call_count, 2)
+        load_call, unpin_call = requests_module.post.call_args_list
+        self.assertEqual(load_call.args[0], "https://llm.example.test/api/v1/load")
+        self.assertEqual(
+            load_call.kwargs["json"], {"model_name": "Model-A", "pinned": True}
+        )
+        self.assertEqual(unpin_call.args[0], "https://llm.example.test/internal/pin")
+        self.assertEqual(
+            unpin_call.kwargs["json"], {"model": "Model-A", "pinned": False}
+        )
+
     def test_eval_command_accepts_openai_v1_base_without_duplicate_path(self):
         EvalRequest = symbol("lm_eval_webui.runner", "EvalRequest")
         build_eval_command = symbol("lm_eval_webui.runner", "build_eval_command")
@@ -198,6 +235,30 @@ class SweMiniRunnerTests(unittest.TestCase):
         self.assertEqual(
             model_ids,
             ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
+        )
+
+    def test_swe_mini_lifecycle_env_switches_lemonade_candidate_and_judge(self):
+        SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
+        lifecycle_env = symbol("lm_eval_webui.swe_mini", "swe_mini_model_lifecycle_env")
+
+        env = lifecycle_env(
+            SweMiniRequest(
+                model_id="Candidate-A",
+                task_target="task.json",
+                output_path="results",
+                openai_base_url="https://llm.example.test/v1",
+                provider="lemonade",
+                judge_model="lemonade/Judge-B",
+            )
+        )
+
+        self.assertEqual(
+            env,
+            {
+                "LMEVAL_WEBUI_LEMONADE_BASE_URL": "https://llm.example.test",
+                "LMEVAL_WEBUI_CANDIDATE_MODEL_ID": "Candidate-A",
+                "LMEVAL_WEBUI_JUDGE_MODEL_ID": "Judge-B",
+            },
         )
 
     def test_default_pi_bench_dir_is_repo_submodule(self):
@@ -988,6 +1049,16 @@ class SweMiniWrapperScriptTests(unittest.TestCase):
         self.assertIn("lm-eval-webui.job-id=$JOB_ID", script)
         self.assertIn("trap 'cancel_run 143' TERM", script)
         self.assertIn('docker rm -f "$ACTIVE_CONTAINER"', script)
+
+    def test_wrapper_switches_pin_to_judge_and_restores_candidate(self):
+        script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
+
+        self.assertIn("LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE", script)
+        self.assertIn("switchPinnedCandidateToJudge", script)
+        self.assertIn("restorePinnedCandidate", script)
+        self.assertIn('"/internal/pin"', script)
+        self.assertIn('"/api/v1/load"', script)
+        self.assertIn("MODEL_LIFECYCLE_ENV_ARGS+=(--env", script)
 
 
 class TaskCompatibilityTests(unittest.TestCase):
@@ -1912,6 +1983,113 @@ class JobManagerTelemetryTests(unittest.TestCase):
         self.assertEqual(telemetry["probe_time_to_headers_s"], 9.0)
 
 
+class JobManagerModelProtectionTests(unittest.TestCase):
+    def test_model_is_pinned_across_all_task_batches_and_released_afterward(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        events = []
+
+        def pin_model(base_url, model_id, timeout):
+            events.append(("pin", base_url, model_id, timeout))
+            return {}
+
+        def unpin_model(base_url, model_id, timeout):
+            events.append(("unpin", base_url, model_id, timeout))
+            return {}
+
+        def launcher(command, _env, _log_path):
+            tasks = command[
+                command.index("--tasks") + 1 : command.index("--output_path")
+            ]
+            events.append(("launch", tasks))
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=launcher,
+                run_async=False,
+                protect_models=True,
+                model_pin_loader=pin_model,
+                model_unpinner=unpin_model,
+            )
+
+            created = manager.create_jobs(
+                {
+                    "model_ids": ["Model-A"],
+                    "tasks": ["task_a", "task_b", "task_c"],
+                    "task_batch_size": 1,
+                    "openai_base_url": "https://llm.example.test/v1",
+                }
+            )
+            job = manager.get_job(created[0]["id"])
+
+        self.assertEqual(
+            events[0][:3], ("pin", "https://llm.example.test/v1", "Model-A")
+        )
+        self.assertEqual(
+            [event for event in events if event[0] == "launch"],
+            [
+                ("launch", ["task_a"]),
+                ("launch", ["task_b"]),
+                ("launch", ["task_c"]),
+            ],
+        )
+        self.assertEqual(
+            events[-1][:3], ("unpin", "https://llm.example.test/v1", "Model-A")
+        )
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["model_protection"]["state"], "released")
+
+    def test_restart_releases_a_pin_left_by_an_interrupted_job(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        unpinned = []
+
+        def unpin_model(base_url, model_id, _timeout):
+            unpinned.append((base_url, model_id))
+            return {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            jobs_dir = data_dir / "jobs"
+            jobs_dir.mkdir(parents=True)
+            (jobs_dir / "interrupted.json").write_text(
+                json.dumps(
+                    {
+                        "id": "interrupted",
+                        "model_id": "Model-A",
+                        "tasks": ["gsm8k"],
+                        "status": "running",
+                        "created_at": 1,
+                        "updated_at": 1,
+                        "openai_base_url": "https://llm.example.test/v1",
+                        "output_path": str(data_dir / "runs" / "interrupted"),
+                        "log_path": str(data_dir / "logs" / "interrupted.log"),
+                        "model_protection": {
+                            "state": "pinned",
+                            "model_id": "Model-A",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manager = JobManager(
+                data_dir=data_dir,
+                project_root=Path("/repo"),
+                run_async=False,
+                protect_models=False,
+                model_unpinner=unpin_model,
+            )
+            interrupted = manager.get_job("interrupted")
+
+        self.assertEqual(unpinned, [("https://llm.example.test/v1", "Model-A")])
+        self.assertEqual(interrupted["status"], "failed")
+        self.assertEqual(
+            interrupted["model_protection"]["state"], "released_after_restart"
+        )
+
+
 class JobManagerBatchTests(unittest.TestCase):
     @staticmethod
     def _command_tasks(command: list[str]) -> list[str]:
@@ -1984,6 +2162,48 @@ class JobManagerBatchTests(unittest.TestCase):
             sorted(score["task"] for score in leaderboard[0]["task_scores"]),
             ["task_a", "task_b", "task_c", "task_d", "task_e"],
         )
+
+    def test_lm_eval_running_progress_reports_requests_inside_current_task(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=lambda _command, _env, _log_path: 0,
+                run_async=False,
+            )
+            created = manager._create_job(
+                "Model-A",
+                ["gsm8k", "ifeval", "mmlu"],
+                {"task_batch_size": 1},
+            )
+            job = manager.get_job(created["id"])
+            job["status"] = "running"
+            job["batch_progress"] = {
+                "task_batch_size": 1,
+                "total": 3,
+                "completed": 0,
+                "current": 1,
+                "current_tasks": ["gsm8k"],
+                "failed": None,
+            }
+            manager._write_job(job)
+            Path(job["log_path"]).write_text(
+                "=== lm-eval task batch 1/3 (1 task) ===\n"
+                "Requesting API:  46%|#### | 607/1319 [7:15:24<4:54:20]\r",
+                encoding="utf-8",
+            )
+
+            running = manager.get_job(created["id"])
+
+        self.assertEqual(running["progress"]["current"], 1)
+        self.assertEqual(running["progress"]["total"], 3)
+        self.assertEqual(running["progress"]["completed"], 0)
+        self.assertEqual(running["request_progress"]["current"], 607)
+        self.assertEqual(running["request_progress"]["total"], 1319)
+        self.assertEqual(running["request_progress"]["unit"], "requests")
+        self.assertEqual(running["request_progress"]["batch"], 1)
 
     def test_lm_eval_job_stops_after_failed_task_batch(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
@@ -2080,6 +2300,15 @@ class JobManagerSweMiniTests(unittest.TestCase):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
         commands = []
         envs = []
+        pin_events = []
+
+        def pin_model(base_url, model_id, _timeout):
+            pin_events.append(("pin", base_url, model_id))
+            return {}
+
+        def unpin_model(base_url, model_id, _timeout):
+            pin_events.append(("unpin", base_url, model_id))
+            return {}
 
         def launcher(command, env, _log_path):
             commands.append(command)
@@ -2123,6 +2352,9 @@ class JobManagerSweMiniTests(unittest.TestCase):
                 launcher=launcher,
                 run_async=False,
                 pi_bench_dir=pi_bench_dir,
+                protect_models=True,
+                model_pin_loader=pin_model,
+                model_unpinner=unpin_model,
             )
 
             created = manager.create_jobs(
@@ -2167,6 +2399,38 @@ class JobManagerSweMiniTests(unittest.TestCase):
         self.assertIn("2", commands[0])
         self.assertEqual(envs[0]["PI_BENCH_DIR"], str(pi_bench_dir))
         self.assertEqual(envs[0]["LMEVAL_WEBUI_LAUNCH_CWD"], str(project_root))
+        self.assertEqual(
+            envs[0]["LMEVAL_WEBUI_LEMONADE_BASE_URL"],
+            "https://llm.savagelands.net",
+        )
+        self.assertEqual(
+            envs[0]["LMEVAL_WEBUI_CANDIDATE_MODEL_ID"],
+            "Gemma-4-26B-A4B-it-GGUF",
+        )
+        self.assertEqual(
+            envs[0]["LMEVAL_WEBUI_JUDGE_MODEL_ID"],
+            "gpt-oss-120b-mxfp-GGUF",
+        )
+        self.assertEqual(
+            pin_events,
+            [
+                (
+                    "pin",
+                    "https://llm.savagelands.net",
+                    "Gemma-4-26B-A4B-it-GGUF",
+                ),
+                (
+                    "unpin",
+                    "https://llm.savagelands.net",
+                    "gpt-oss-120b-mxfp-GGUF",
+                ),
+                (
+                    "unpin",
+                    "https://llm.savagelands.net",
+                    "Gemma-4-26B-A4B-it-GGUF",
+                ),
+            ],
+        )
         self.assertEqual(
             models_json["providers"]["lemonade"]["baseUrl"],
             "https://llm.savagelands.net/v1",
@@ -2498,7 +2762,10 @@ class JobManagerCancellationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             manager = JobManager(
-                data_dir=Path(tmp), project_root=Path("/repo"), run_async=True
+                data_dir=Path(tmp),
+                project_root=Path("/repo"),
+                run_async=True,
+                protect_models=False,
             )
             created = manager._create_job("Model-A", ["gsm8k"], {})
             job = manager.get_job(created["id"])
@@ -2594,7 +2861,10 @@ class JobManagerCancellationTests(unittest.TestCase):
                 )
 
             manager = JobManager(
-                data_dir=data_dir, project_root=Path("/repo"), run_async=True
+                data_dir=data_dir,
+                project_root=Path("/repo"),
+                run_async=True,
+                protect_models=False,
             )
             deadline = time.time() + 3
             while time.time() < deadline:
@@ -3311,6 +3581,11 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("taskBatchSize", script)
         self.assertIn("Task batch size", script)
         self.assertIn("batch_progress", script)
+        self.assertIn("request_progress", script)
+        self.assertIn("Current task batch", script)
+        self.assertIn("Current batch requests", script)
+        self.assertIn("Completed task batches", script)
+        self.assertIn("Model protection", script)
         self.assertIn("Lemonade lm-eval Benchmark WebUI", index)
         self.assertNotIn("Local lm-eval Benchmark WebUI", index)
         self.assertIn("OpenAI-compatible base URL", index)

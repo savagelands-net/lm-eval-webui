@@ -1072,8 +1072,7 @@ function progressBadge(job) {
 	badge.textContent = text;
 	return badge;
 }
-function progressText(job) {
-	const progress = job.progress;
+function progressValue(progress) {
 	if (!progress || !progress.total) return "";
 	const current = Number(progress.current || 0),
 		total = Number(progress.total || 0),
@@ -1085,6 +1084,22 @@ function progressText(job) {
 		: "0";
 	return `${current}/${total} (${formattedPercent}%)`;
 }
+
+function progressText(job) {
+	const requestProgress = job.request_progress;
+	const requestValue = progressValue(requestProgress);
+	if (requestValue) return `${requestValue} requests`;
+
+	const progress = job.progress;
+	const value = progressValue(progress);
+	if (!value) return "";
+	const current = Number(progress.current || 0);
+	const completed = Number(progress.completed || 0);
+	if (progress.unit === "batches" && current > completed) {
+		return `Batch ${current}/${Number(progress.total)}`;
+	}
+	return `${value} ${progress.unit || "items"}`;
+}
 function suiteBadge(job) {
 	const badge = document.createElement("span");
 	badge.className = "badge suite";
@@ -1095,17 +1110,35 @@ function jobDetailMeta(job) {
 	const details = div("job-meta");
 	const options = job.swe_options || {};
 	const evalOptions = job.eval_options || {};
+	const progress = job.progress || {};
+	const requestProgress = job.request_progress || {};
 	const batchProgress = job.batch_progress || {};
+	const currentTasks = Array.isArray(batchProgress.current_tasks)
+		? batchProgress.current_tasks
+		: [];
+	const protection = job.model_protection || {};
 	const values = [
 		`Suite: ${suiteLabel(jobSuite(job))}`,
-		progressText(job) ? `Progress: ${progressText(job)}` : null,
+		progress.unit !== "batches" && progressText(job)
+			? `Progress: ${progressText(job)}`
+			: null,
+		batchProgress.current
+			? `Current task batch: ${batchProgress.current}/${batchProgress.total}`
+			: null,
+		currentTasks.length
+			? `Current task${currentTasks.length === 1 ? "" : "s"}: ${currentTasks.join(", ")}`
+			: null,
+		progressValue(requestProgress)
+			? `Current batch requests: ${progressValue(requestProgress)}`
+			: null,
 		job.rerun_of ? `Rerun of: ${job.rerun_of}` : null,
 		evalOptions.task_batch_size
 			? `Task batch size: ${evalOptions.task_batch_size}`
 			: null,
 		batchProgress.total
-			? `Batches: ${batchProgress.completed || 0}/${batchProgress.total}`
+			? `Completed task batches: ${batchProgress.completed || 0}/${batchProgress.total}`
 			: null,
+		protection.state ? `Model protection: ${protection.state}` : null,
 		options.judge_model
 			? `Judge: ${displayJudgeModel(options.judge_model)}`
 			: null,

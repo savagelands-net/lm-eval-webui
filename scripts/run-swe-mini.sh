@@ -82,7 +82,7 @@ if [ "$PI_BENCH_RUN_DIR" != "$PI_BENCH_DIR" ]; then
 	cp -a "$PI_BENCH_DIR/." "$PI_BENCH_RUN_DIR/"
 fi
 
-patch_pi_bench_for_local_judge_models() {
+patch_pi_bench_for_webui() {
 	local index_ts="$PI_BENCH_RUN_DIR/src/index.ts"
 	[ -f "$index_ts" ] || return 0
 	python3 - "$index_ts" <<'PY'
@@ -91,17 +91,16 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-marker = "LMEVAL_WEBUI_LOCAL_JUDGE_MODEL_RESOLUTION"
-if marker in text:
-    raise SystemExit(0)
-old_judge_parse = '''  let judgeModelReq;
+local_judge_marker = "LMEVAL_WEBUI_LOCAL_JUDGE_MODEL_RESOLUTION"
+if local_judge_marker not in text:
+    old_judge_parse = '''  let judgeModelReq;
   if (values["judge-model"]) {
     const parts = values["judge-model"].split("/");
     judgeModelReq = parts.length > 1 ? getModel(parts[0] as any, parts[1]) : undefined;
     if (!judgeModelReq && !values["print-output-dir"]) console.warn(`[WARN] Could not resolve judge model ${values["judge-model"]}. Using default.`);
   }
 '''
-new_judge_parse = '''  let judgeModelReq;
+    new_judge_parse = '''  let judgeModelReq;
   if (values["judge-model"]) {
     const parts = values["judge-model"].split("/");
     if (parts.length > 1) {
@@ -111,14 +110,14 @@ new_judge_parse = '''  let judgeModelReq;
     }
   }
 '''
-if old_judge_parse not in text:
-    raise SystemExit(f"Could not patch {path}: judge parser not found")
-text = text.replace(old_judge_parse, new_judge_parse, 1)
-needle = """    }
+    if old_judge_parse not in text:
+        raise SystemExit(f"Could not patch {path}: judge parser not found")
+    text = text.replace(old_judge_parse, new_judge_parse, 1)
+    needle = """    }
 
     let resolvedAgentModel;
 """
-insert = """    }
+    insert = """    }
 
     // LMEVAL_WEBUI_LOCAL_JUDGE_MODEL_RESOLUTION
     if (judgeModelReq && !judgeModelReq.api) {
@@ -132,13 +131,102 @@ insert = """    }
 
     let resolvedAgentModel;
 """
-if needle not in text:
-    raise SystemExit(f"Could not patch {path}: insertion point not found")
-path.write_text(text.replace(needle, insert, 1), encoding="utf-8")
+    if needle not in text:
+        raise SystemExit(f"Could not patch {path}: insertion point not found")
+    text = text.replace(needle, insert, 1)
+
+model_pin_marker = "LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE"
+if model_pin_marker not in text:
+    run_task = "async function runTask("
+    lifecycle_helpers = '''// LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE
+async function postLemonadeLifecycle(path: string, payload: Record<string, unknown>) {
+  const baseUrl = process.env.LMEVAL_WEBUI_LEMONADE_BASE_URL?.replace(/\\/+$/, "");
+  if (!baseUrl) throw new Error("Lemonade model lifecycle URL is not configured");
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Lemonade model lifecycle request failed (${response.status}): ${body}`);
+  }
+}
+
+async function switchPinnedCandidateToJudge(): Promise<boolean> {
+  const candidate = process.env.LMEVAL_WEBUI_CANDIDATE_MODEL_ID;
+  const judge = process.env.LMEVAL_WEBUI_JUDGE_MODEL_ID;
+  if (!candidate || !judge || candidate === judge) return false;
+  console.log(`[INFO] Model protection: switching pin from ${candidate} to judge ${judge}...`);
+  await postLemonadeLifecycle("/internal/pin", { model: candidate, pinned: false });
+  try {
+    await postLemonadeLifecycle("/api/v1/load", { model_name: judge, pinned: true });
+  } catch (error) {
+    await postLemonadeLifecycle("/api/v1/load", { model_name: candidate, pinned: true });
+    throw error;
+  }
+  return true;
+}
+
+async function restorePinnedCandidate(switched: boolean): Promise<void> {
+  if (!switched) return;
+  const candidate = process.env.LMEVAL_WEBUI_CANDIDATE_MODEL_ID!;
+  const judge = process.env.LMEVAL_WEBUI_JUDGE_MODEL_ID!;
+  console.log(`[INFO] Model protection: restoring pin to candidate ${candidate}...`);
+  await postLemonadeLifecycle("/internal/pin", { model: judge, pinned: false });
+  await postLemonadeLifecycle("/api/v1/load", { model_name: candidate, pinned: true });
+}
+
+'''
+    if run_task not in text:
+        raise SystemExit(f"Could not patch {path}: runTask not found")
+    text = text.replace(run_task, lifecycle_helpers + run_task, 1)
+    old_judge_stream = '''    let judgeOutput = "";
+    const { streamSimple } = await import("@mariozechner/pi-ai");
+    const stream = streamSimple(judgeModel, {
+      systemPrompt: judgeSystemPrompt,
+      messages: [{ role: "user", content: judgePrompt, timestamp: Date.now() }]
+    }, { apiKey: auth.apiKey, headers: auth.headers });
+
+    for await (const chunk of stream) {
+      if (chunk.type === "text_delta") {
+        judgeOutput += chunk.delta;
+      }
+      if (chunk.type === "error") {
+        console.error("[DEBUG] streamSimple error:", chunk.error);
+      }
+    }
+'''
+    new_judge_stream = '''    let judgeOutput = "";
+    const switchedToJudge = await switchPinnedCandidateToJudge();
+    try {
+      const { streamSimple } = await import("@mariozechner/pi-ai");
+      const stream = streamSimple(judgeModel, {
+        systemPrompt: judgeSystemPrompt,
+        messages: [{ role: "user", content: judgePrompt, timestamp: Date.now() }]
+      }, { apiKey: auth.apiKey, headers: auth.headers });
+
+      for await (const chunk of stream) {
+        if (chunk.type === "text_delta") {
+          judgeOutput += chunk.delta;
+        }
+        if (chunk.type === "error") {
+          console.error("[DEBUG] streamSimple error:", chunk.error);
+        }
+      }
+    } finally {
+      await restorePinnedCandidate(switchedToJudge);
+    }
+'''
+    if old_judge_stream not in text:
+        raise SystemExit(f"Could not patch {path}: judge stream not found")
+    text = text.replace(old_judge_stream, new_judge_stream, 1)
+
+path.write_text(text, encoding="utf-8")
 PY
 }
 
-patch_pi_bench_for_local_judge_models
+patch_pi_bench_for_webui
 
 MODEL_DOCKER_ARGS=()
 if [ -n "${PI_BENCH_MODELS_JSON:-}" ]; then
@@ -155,6 +243,16 @@ if [ -f "$REPO_ROOT/.env" ]; then
 elif [ -f "$PI_BENCH_RUN_DIR/.env" ]; then
 	ENV_ARGS=(--env-file "$PI_BENCH_RUN_DIR/.env")
 fi
+
+MODEL_LIFECYCLE_ENV_ARGS=()
+for variable in \
+	LMEVAL_WEBUI_LEMONADE_BASE_URL \
+	LMEVAL_WEBUI_CANDIDATE_MODEL_ID \
+	LMEVAL_WEBUI_JUDGE_MODEL_ID; do
+	if [ -n "${!variable:-}" ]; then
+		MODEL_LIFECYCLE_ENV_ARGS+=(--env "$variable=${!variable}")
+	fi
+done
 
 mkdir -p "$PI_BENCH_RUN_DIR"
 docker volume create pi-bench-bun-cache >/dev/null 2>&1 || true
@@ -269,6 +367,7 @@ PY
 			--name "$CONTAINER_NAME" \
 			--label "lm-eval-webui.job-id=$JOB_ID" \
 			"${ENV_ARGS[@]}" \
+			"${MODEL_LIFECYCLE_ENV_ARGS[@]}" \
 			-v "$PI_BENCH_RUN_DIR:/pi-bench:z" \
 			"${MODEL_DOCKER_ARGS[@]}" \
 			-v "pi-bench-bun-cache:/root/.bun" \

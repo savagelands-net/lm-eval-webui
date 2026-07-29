@@ -18,7 +18,14 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from .lemonade import DEFAULT_OPENAI_BASE_URL
+from .lemonade import (
+    DEFAULT_OPENAI_BASE_URL,
+    MODEL_LOAD_TIMEOUT,
+    MODEL_PIN_TIMEOUT,
+    ModelLifecycleUnsupported,
+    load_and_pin_model,
+    unpin_model,
+)
 from .results import (
     extract_leaderboard_entry,
     extract_result_rows,
@@ -36,6 +43,7 @@ from .swe_mini import (  # type: ignore[reportMissingImports]
     DEFAULT_SWE_MINI_JUDGE_MODEL,
     DEFAULT_SWE_MINI_PLATFORM,
     LAUNCH_CWD_ENV,
+    SWE_JUDGE_MODEL_ENV,
     SWE_MINI_SUITE,
     SweMiniRequest,
     build_swe_mini_command,
@@ -46,6 +54,7 @@ from .swe_mini import (  # type: ignore[reportMissingImports]
     find_swe_mini_result_files,
     materialize_swe_mini_task_target,
     normalize_swe_mini_judge_model,
+    swe_mini_model_lifecycle_env,
     swe_mini_output_path,
 )
 from .telemetry import aggregate_telemetry_file
@@ -53,7 +62,12 @@ from .telemetry import aggregate_telemetry_file
 Launcher = Callable[[list[str], dict[str, str], Path], int]
 TelemetryProbe = Callable[[str, str], dict[str, Any]]
 ModelMetadataProbe = Callable[[str, str], dict[str, Any]]
+ModelPinLoader = Callable[[str, str, int], dict[str, Any]]
+ModelUnpinner = Callable[[str, str, int], dict[str, Any]]
 LLAMACPP_BACKENDS = {"system", "vulkan", "rocm"}
+LM_EVAL_REQUEST_PROGRESS_RE = re.compile(
+    r"Requesting API:[^\r\n]*?\|\s*(\d+)/(\d+)\s*\["
+)
 SWE_MINI_PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\] Task:", re.MULTILINE)
 SWE_MINI_COMPLETE_RE = re.compile(
     r"Tasks:\s*(\d+)\s*\|\s*Succeeded:\s*(\d+)\s*\|\s*Failed:\s*(\d+)"
@@ -106,6 +120,9 @@ class JobManager:
         model_metadata_probe: ModelMetadataProbe | None = None,
         max_concurrent_jobs: int = 1,
         pi_bench_dir: str | Path | None = None,
+        protect_models: bool | None = None,
+        model_pin_loader: ModelPinLoader | None = None,
+        model_unpinner: ModelUnpinner | None = None,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.project_root = Path(project_root) if project_root else Path.cwd()
@@ -117,6 +134,13 @@ class JobManager:
         self.telemetry_probe = telemetry_probe
         self.model_metadata_probe = model_metadata_probe
         self.max_concurrent_jobs = self._int_or_default(max_concurrent_jobs, 1)
+        self.protect_models = (
+            launcher is default_launcher
+            if protect_models is None
+            else bool(protect_models)
+        )
+        self.model_pin_loader = model_pin_loader or load_and_pin_model
+        self.model_unpinner = model_unpinner or unpin_model
         self.pi_bench_dir = (
             Path(pi_bench_dir)
             if pi_bench_dir
@@ -410,6 +434,7 @@ class JobManager:
                 continue
             with suppress(OSError, ValueError):
                 self._discover_result_files(job)
+            self._release_interrupted_model_protection(job)
             job["status"] = "failed"
             job["error"] = "Interrupted by application restart"
             job["interrupted"] = True
@@ -854,6 +879,150 @@ class JobManager:
             options.get("task_target"),
         )
 
+    def _release_interrupted_model_protection(self, job: dict[str, Any]) -> None:
+        raw_protection = job.get("model_protection")
+        if not isinstance(raw_protection, dict) or raw_protection.get("state") not in {
+            "pinning",
+            "pinned",
+            "releasing",
+            "release_failed",
+        }:
+            return
+        model_id = str(job.get("model_id") or "").strip()
+        base_url = str(
+            job.get("openai_base_url")
+            or job.get("lemonade_base_url")
+            or self.openai_base_url
+        )
+        if self._job_suite(job) == SWE_MINI_SUITE:
+            lifecycle_env = swe_mini_model_lifecycle_env(
+                self._swe_request_from_job(job)
+            )
+            judge_model = str(lifecycle_env.get(SWE_JUDGE_MODEL_ENV) or "").strip()
+            if judge_model and judge_model != model_id:
+                with suppress(Exception):
+                    self.model_unpinner(base_url, judge_model, MODEL_PIN_TIMEOUT)
+        try:
+            self.model_unpinner(base_url, model_id, MODEL_PIN_TIMEOUT)
+        except Exception as exc:
+            raw_protection.update(
+                {
+                    "state": "release_failed",
+                    "error": str(exc),
+                    "updated_at": time.time(),
+                }
+            )
+        else:
+            raw_protection.pop("error", None)
+            raw_protection.update(
+                {"state": "released_after_restart", "updated_at": time.time()}
+            )
+
+    def _protect_job_model(self, job: dict[str, Any]) -> bool:
+        if not self.protect_models:
+            return False
+        model_id = str(job.get("model_id") or "").strip()
+        base_url = str(
+            job.get("openai_base_url")
+            or job.get("lemonade_base_url")
+            or self.openai_base_url
+        )
+        if not model_id:
+            return False
+        protection: dict[str, Any] = {
+            "state": "pinning",
+            "model_id": model_id,
+            "updated_at": time.time(),
+        }
+        job["model_protection"] = protection
+        self._write_job(job)
+        self._append_log(
+            Path(job["log_path"]),
+            f"\n[INFO] Loading and pinning benchmark model {model_id}...\n",
+        )
+        try:
+            self.model_pin_loader(base_url, model_id, MODEL_LOAD_TIMEOUT)
+        except ModelLifecycleUnsupported as exc:
+            protection.update(
+                {"state": "unsupported", "warning": str(exc), "updated_at": time.time()}
+            )
+            self._write_job(job)
+            self._append_log(
+                Path(job["log_path"]),
+                f"[WARN] Model pinning is unavailable: {exc}\n",
+            )
+            return False
+        except Exception as exc:
+            protection.update(
+                {"state": "failed", "error": str(exc), "updated_at": time.time()}
+            )
+            self._write_job(job)
+            self._append_log(
+                Path(job["log_path"]),
+                f"[ERROR] Could not pin benchmark model {model_id}: {exc}\n",
+            )
+            raise RuntimeError(
+                f"Could not load and pin benchmark model {model_id}: {exc}"
+            ) from exc
+        protection.update({"state": "pinned", "updated_at": time.time()})
+        self._write_job(job)
+        self._append_log(
+            Path(job["log_path"]),
+            f"[INFO] Benchmark model {model_id} is pinned.\n",
+        )
+        return True
+
+    def _release_job_model(
+        self,
+        job: dict[str, Any],
+        env: dict[str, str],
+        protection_acquired: bool,
+    ) -> None:
+        if not protection_acquired:
+            return
+        model_id = str(job.get("model_id") or "").strip()
+        base_url = str(
+            job.get("openai_base_url")
+            or job.get("lemonade_base_url")
+            or self.openai_base_url
+        )
+        judge_model = str(env.get(SWE_JUDGE_MODEL_ENV) or "").strip()
+        if judge_model and judge_model != model_id:
+            with suppress(Exception):
+                self.model_unpinner(base_url, judge_model, MODEL_PIN_TIMEOUT)
+
+        raw_protection = job.get("model_protection")
+        protection: dict[str, Any]
+        if isinstance(raw_protection, dict):
+            protection = raw_protection
+        else:
+            protection = {"model_id": model_id}
+            job["model_protection"] = protection
+        protection.update({"state": "releasing", "updated_at": time.time()})
+        self._write_job(job)
+        try:
+            self.model_unpinner(base_url, model_id, MODEL_PIN_TIMEOUT)
+        except Exception as exc:  # model results remain valid when cleanup fails
+            protection.update(
+                {
+                    "state": "release_failed",
+                    "error": str(exc),
+                    "updated_at": time.time(),
+                }
+            )
+            self._append_log(
+                Path(job["log_path"]),
+                f"[WARN] Could not unpin benchmark model {model_id}: {exc}\n",
+            )
+        else:
+            protection.pop("error", None)
+            protection.update({"state": "released", "updated_at": time.time()})
+            self._append_log(
+                Path(job["log_path"]),
+                f"[INFO] Benchmark model {model_id} was unpinned.\n",
+            )
+        self._write_job(job)
+
     def _run_job(self, job_id: str) -> None:
         with self._lock:
             job = self._read_job(self.jobs_dir / f"{job_id}.json")
@@ -866,10 +1035,17 @@ class JobManager:
             self._write_job(job)
             return
         env = self._launch_env_for_job(job)
+        protection_acquired = False
         job["status"] = "running"
         job["updated_at"] = time.time()
         self._write_job(job)
         try:
+            protection_acquired = self._protect_job_model(job)
+            self._raise_if_cancelled(job_id)
+            if protection_acquired and self._job_suite(job) == SWE_MINI_SUITE:
+                env.update(
+                    swe_mini_model_lifecycle_env(self._swe_request_from_job(job))
+                )
             if self._job_suite(job) == SWE_MINI_SUITE:
                 returncode = self._launch_command(
                     job_id, job["command"], env, Path(job["log_path"])
@@ -896,6 +1072,7 @@ class JobManager:
             job["error"] = str(exc)
             self._discover_result_files(job)
         finally:
+            self._release_job_model(job, env, protection_acquired)
             self._cleanup_swe_task_target(job)
             if self._job_suite(job) == SWE_MINI_SUITE:
                 progress = self._swe_mini_progress(job)
@@ -920,7 +1097,7 @@ class JobManager:
         batch_size = self._task_batch_size_for_job(job)
         tasks = [str(task) for task in job.get("tasks") or []]
         self._raise_if_cancelled(str(job["id"]))
-        if batch_size is None or len(tasks) <= batch_size:
+        if batch_size is None:
             return self._launch_command(
                 str(job["id"]), job["command"], env, Path(job["log_path"])
             )
@@ -941,6 +1118,7 @@ class JobManager:
             "total": total,
             "completed": 0,
             "current": None,
+            "current_tasks": [],
             "failed": None,
         }
         self._write_job(job)
@@ -958,6 +1136,7 @@ class JobManager:
                 "total": total,
                 "completed": index - 1,
                 "current": index,
+                "current_tasks": list(batch),
                 "failed": None,
             }
             self._write_job(job)
@@ -976,6 +1155,7 @@ class JobManager:
                     "total": total,
                     "completed": index - 1,
                     "current": None,
+                    "current_tasks": list(batch),
                     "failed": index,
                 }
                 self._write_job(job)
@@ -985,6 +1165,7 @@ class JobManager:
                 "total": total,
                 "completed": index,
                 "current": None,
+                "current_tasks": [],
                 "failed": None,
             }
             self._write_job(job)
@@ -1271,6 +1452,9 @@ class JobManager:
         progress = self._job_progress(public_job)
         if progress:
             public_job["progress"] = progress
+        request_progress = self._lm_eval_request_progress(public_job)
+        if request_progress:
+            public_job["request_progress"] = request_progress
         return public_job
 
     def _job_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
@@ -1280,14 +1464,46 @@ class JobManager:
         raw_progress = job.get("batch_progress")
         if not isinstance(raw_progress, dict):
             return None
-        total = self._int_or_default(raw_progress.get("total"), 0)
+        total = self._nonnegative_int(raw_progress.get("total"))
         if total <= 0:
             return None
         current = raw_progress.get("current")
         failed = raw_progress.get("failed")
-        completed = self._int_or_default(raw_progress.get("completed"), 0)
-        display_current = self._int_or_default(current or failed or completed, 0)
-        return self._progress_payload(display_current, total, completed, "batches")
+        completed = self._nonnegative_int(raw_progress.get("completed"))
+        display_current = self._nonnegative_int(current or failed or completed)
+        progress = self._progress_payload(display_current, total, completed, "batches")
+        if progress:
+            progress["percent"] = (completed / total) * 100
+        return progress
+
+    def _lm_eval_request_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        if self._job_suite(job) == SWE_MINI_SUITE:
+            return None
+        if job.get("status") not in {"running", "cancelling"}:
+            return None
+        raw_progress = job.get("batch_progress")
+        if not isinstance(raw_progress, dict):
+            return None
+        current_batch = self._nonnegative_int(raw_progress.get("current"))
+        total_batches = self._nonnegative_int(raw_progress.get("total"))
+        if current_batch <= 0 or total_batches <= 0:
+            return None
+
+        log_tail = self.get_log(str(job.get("id") or ""), max_chars=500000)
+        marker = f"=== lm-eval task batch {current_batch}/{total_batches} "
+        marker_index = log_tail.rfind(marker)
+        if marker_index < 0:
+            return None
+        matches = list(LM_EVAL_REQUEST_PROGRESS_RE.finditer(log_tail[marker_index:]))
+        if not matches:
+            return None
+        match = matches[-1]
+        current = self._nonnegative_int(match.group(1))
+        total = self._nonnegative_int(match.group(2))
+        progress = self._progress_payload(current, total, current, "requests")
+        if progress:
+            progress["batch"] = current_batch
+        return progress
 
     def _swe_mini_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
         total = len(job.get("tasks") or [])
@@ -1311,8 +1527,8 @@ class JobManager:
             progress_matches = list(SWE_MINI_PROGRESS_RE.finditer(log_tail))
             if progress_matches:
                 match = progress_matches[-1]
-                current = self._int_or_default(match.group(1), 0)
-                total = self._int_or_default(match.group(2), total)
+                current = self._nonnegative_int(match.group(1))
+                total = self._nonnegative_int(match.group(2), total)
                 completed = max(0, current - 1)
             elif job.get("status") == "succeeded" and total:
                 current = total
@@ -1457,6 +1673,14 @@ class JobManager:
         except (TypeError, ValueError, OverflowError):
             parsed = default
         return max(1, parsed)
+
+    @staticmethod
+    def _nonnegative_int(value: Any, default: int = 0) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            parsed = default
+        return max(0, parsed)
 
     @staticmethod
     def _optional_bool(value: Any, default: bool) -> bool:

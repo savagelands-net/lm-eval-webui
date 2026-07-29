@@ -159,18 +159,18 @@ cap. Use repeated
 The `gpt-oss-120b-mxfp-GGUF` value in this WebUI is only the default SWE Mini
 judge; selecting or listing it does not send an inference request or preload it.
 Lemonade loads a model when a client asks for that model. With
-`max_loaded_models=1`, unrelated client traffic can evict a benchmark model. On
-the Lemonade host, protect a benchmark run with:
+`max_loaded_models=1`, unrelated client traffic could otherwise evict a
+benchmark model.
 
-```bash
-lemonade pin MODEL_ID
-# run the benchmark
-lemonade unpin MODEL_ID
-```
-
-A competing model request then fails with HTTP 409 instead of evicting the
-pinned model. Alternatively, increase `max_loaded_models` only when the host has
-enough memory for both models.
+WebUI benchmark jobs therefore load and pin their selected model before the
+first request, keep it pinned across every lm-eval task batch, and unpin it when
+the job succeeds, fails, or is cancelled. A competing model request receives
+HTTP 409 instead of evicting the benchmark model. SWE Mini temporarily unpins
+the candidate and pins the configured Lemonade judge while judging each task,
+then restores the candidate pin before continuing. Hosts without Lemonade's
+lifecycle endpoints continue without model protection and record that state in
+the job log. Alternatively, increase `max_loaded_models` only when the host has
+enough memory for every concurrently used model.
 
 ## Notes
 
@@ -181,7 +181,9 @@ enough memory for both models.
   completion backends.
 - For broad/full lm-eval sweeps, **Task batch size** splits selected tasks into
   sequential subprocesses. The default `1` keeps memory lowest because each
-  subprocess exits and releases loaded dataset/task state.
+  subprocess exits and releases loaded dataset/task state. Job cards report
+  completed task batches separately from the live API-request count within the
+  current task.
 - Leaderboard scores use curated primary metrics and category rollups.
 - Job cleanup removes selected job metadata, logs, telemetry, and run outputs.
   Legacy jobs with missing artifact paths are safely ignored instead of treating
