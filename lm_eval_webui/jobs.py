@@ -1036,8 +1036,10 @@ class JobManager:
             return
         env = self._launch_env_for_job(job)
         protection_acquired = False
+        started_at = time.time()
         job["status"] = "running"
-        job["updated_at"] = time.time()
+        job["started_at"] = started_at
+        job["updated_at"] = started_at
         self._write_job(job)
         try:
             protection_acquired = self._protect_job_model(job)
@@ -1098,10 +1100,44 @@ class JobManager:
         tasks = [str(task) for task in job.get("tasks") or []]
         self._raise_if_cancelled(str(job["id"]))
         if batch_size is None:
-            return self._launch_command(
-                str(job["id"]), job["command"], env, Path(job["log_path"])
-            )
+            return self._run_lm_eval_single_process(job, tasks, env)
         return self._run_lm_eval_task_batches(job, tasks, batch_size)
+
+    def _run_lm_eval_single_process(
+        self,
+        job: dict[str, Any],
+        tasks: list[str],
+        env: dict[str, str],
+    ) -> int:
+        job_id = str(job["id"])
+        log_path = Path(job["log_path"])
+        job["batch_progress"] = {
+            "task_batch_size": len(tasks),
+            "total": 1,
+            "completed": 0,
+            "current": 1,
+            "current_tasks": list(tasks),
+            "failed": None,
+        }
+        self._write_job(job)
+        self._append_log(
+            log_path,
+            "\n"
+            f"=== lm-eval task batch 1/1 "
+            f"({len(tasks)} task{'s' if len(tasks) != 1 else ''}) ===\n"
+            f"$ {shlex.join(job['command'])}\n",
+        )
+        returncode = self._launch_command(job_id, job["command"], env, log_path)
+        job["batch_progress"] = {
+            "task_batch_size": len(tasks),
+            "total": 1,
+            "completed": 1 if returncode == 0 else 0,
+            "current": None,
+            "current_tasks": [] if returncode == 0 else list(tasks),
+            "failed": None if returncode == 0 else 1,
+        }
+        self._write_job(job)
+        return returncode
 
     def _run_lm_eval_task_batches(
         self, job: dict[str, Any], tasks: list[str], batch_size: int
@@ -1481,27 +1517,29 @@ class JobManager:
             return None
         if job.get("status") not in {"running", "cancelling"}:
             return None
+
+        current_batch = 0
+        total_batches = 0
         raw_progress = job.get("batch_progress")
-        if not isinstance(raw_progress, dict):
-            return None
-        current_batch = self._nonnegative_int(raw_progress.get("current"))
-        total_batches = self._nonnegative_int(raw_progress.get("total"))
-        if current_batch <= 0 or total_batches <= 0:
-            return None
+        if isinstance(raw_progress, dict):
+            current_batch = self._nonnegative_int(raw_progress.get("current"))
+            total_batches = self._nonnegative_int(raw_progress.get("total"))
 
         log_tail = self.get_log(str(job.get("id") or ""), max_chars=500000)
-        marker = f"=== lm-eval task batch {current_batch}/{total_batches} "
-        marker_index = log_tail.rfind(marker)
-        if marker_index < 0:
-            return None
-        matches = list(LM_EVAL_REQUEST_PROGRESS_RE.finditer(log_tail[marker_index:]))
+        progress_log = log_tail
+        if current_batch > 0 and total_batches > 0:
+            marker = f"=== lm-eval task batch {current_batch}/{total_batches} "
+            marker_index = log_tail.rfind(marker)
+            if marker_index >= 0:
+                progress_log = log_tail[marker_index:]
+        matches = list(LM_EVAL_REQUEST_PROGRESS_RE.finditer(progress_log))
         if not matches:
             return None
         match = matches[-1]
         current = self._nonnegative_int(match.group(1))
         total = self._nonnegative_int(match.group(2))
         progress = self._progress_payload(current, total, current, "requests")
-        if progress:
+        if progress and current_batch > 0:
             progress["batch"] = current_batch
         return progress
 

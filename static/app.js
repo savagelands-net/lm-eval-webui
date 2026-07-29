@@ -674,22 +674,29 @@ async function loadJobLog(jobId, { forceScroll = false } = {}) {
 async function loadExpandedJobLogs({
 	forceScroll = false,
 	includeAll = false,
+	includeActive = false,
 	includeJobIds = new Set(),
 } = {}) {
-	const jobs = state.jobs.filter(
-		(job) =>
-			state.expandedJobs.has(job.id) &&
-			(includeAll ||
-				ACTIVE_JOB_STATUSES.has(job.status) ||
-				includeJobIds.has(job.id)),
-	);
+	const jobs = state.jobs.filter((job) => {
+		const isExpanded = state.expandedJobs.has(job.id);
+		const needsLiveActivity =
+			includeActive && ["running", "cancelling"].includes(job.status);
+		return (
+			needsLiveActivity ||
+			(isExpanded &&
+				(includeAll ||
+					ACTIVE_JOB_STATUSES.has(job.status) ||
+					includeJobIds.has(job.id)))
+		);
+	});
 	await Promise.allSettled(
 		jobs.map((job) => loadJobLog(job.id, { forceScroll })),
 	);
 }
 async function refreshJobsAndLogs() {
 	await loadJobs();
-	await loadExpandedJobLogs({ includeAll: true });
+	await loadExpandedJobLogs({ includeAll: true, includeActive: true });
+	renderJobs();
 }
 function shouldAutoScrollLog(log) {
 	return log.scrollHeight - log.scrollTop - log.clientHeight < 24;
@@ -1068,8 +1075,11 @@ function progressBadge(job) {
 	const text = progressText(job);
 	if (!text) return null;
 	const badge = document.createElement("span");
-	badge.className = "badge progress";
+	badge.className = `badge progress${ACTIVE_JOB_STATUSES.has(job.status) ? " live" : ""}`;
 	badge.textContent = text;
+	if (ACTIVE_JOB_STATUSES.has(job.status)) {
+		badge.title = "Live job activity; refreshed every five seconds";
+	}
 	return badge;
 }
 function progressValue(progress) {
@@ -1085,20 +1095,71 @@ function progressValue(progress) {
 	return `${current}/${total} (${formattedPercent}%)`;
 }
 
+function requestProgressFromLog(job) {
+	if (!["running", "cancelling"].includes(job.status)) return null;
+	const content = state.jobLogs.get(job.id) || "";
+	const pattern = /Requesting API:[^\r\n]*?\|\s*(\d+)\/(\d+)\s*\[/g;
+	let latest = null;
+	for (const match of content.matchAll(pattern)) latest = match;
+	if (!latest) return null;
+	const current = Number(latest[1]);
+	const total = Number(latest[2]);
+	if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) {
+		return null;
+	}
+	return {
+		current,
+		total,
+		completed: current,
+		unit: "requests",
+		percent: (current / total) * 100,
+	};
+}
+
+function activeJobElapsed(job) {
+	if (!ACTIVE_JOB_STATUSES.has(job.status)) return "";
+	const startedAt = Number(job.started_at || job.updated_at || job.created_at);
+	if (!Number.isFinite(startedAt) || startedAt <= 0) return "";
+	const seconds = Math.max(0, Math.floor(Date.now() / 1000 - startedAt));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+	if (hours < 24) return `${hours}h ${remainingMinutes}m`;
+	const days = Math.floor(hours / 24);
+	const remainingHours = hours % 24;
+	return `${days}d ${remainingHours}h`;
+}
+
+function withElapsed(text, elapsed) {
+	return elapsed ? `${text} · ${elapsed}` : text;
+}
+
 function progressText(job) {
-	const requestProgress = job.request_progress;
+	const elapsed = activeJobElapsed(job);
+	const requestProgress =
+		job.request_progress || requestProgressFromLog(job);
 	const requestValue = progressValue(requestProgress);
-	if (requestValue) return `${requestValue} requests`;
+	if (requestValue) return withElapsed(`${requestValue} requests`, elapsed);
 
 	const progress = job.progress;
 	const value = progressValue(progress);
-	if (!value) return "";
-	const current = Number(progress.current || 0);
-	const completed = Number(progress.completed || 0);
-	if (progress.unit === "batches" && current > completed) {
-		return `Batch ${current}/${Number(progress.total)}`;
+	if (value) {
+		const current = Number(progress.current || 0);
+		const completed = Number(progress.completed || 0);
+		if (progress.unit === "batches" && current > completed) {
+			return withElapsed(
+				`Batch ${current}/${Number(progress.total)}`,
+				elapsed,
+			);
+		}
+		return withElapsed(`${value} ${progress.unit || "items"}`, elapsed);
 	}
-	return `${value} ${progress.unit || "items"}`;
+	if (job.status === "running") return withElapsed("Running", elapsed);
+	if (job.status === "queued") return withElapsed("Waiting", elapsed);
+	if (job.status === "cancelling") return withElapsed("Stopping", elapsed);
+	return "";
 }
 function suiteBadge(job) {
 	const badge = document.createElement("span");
@@ -1111,7 +1172,8 @@ function jobDetailMeta(job) {
 	const options = job.swe_options || {};
 	const evalOptions = job.eval_options || {};
 	const progress = job.progress || {};
-	const requestProgress = job.request_progress || {};
+	const requestProgress =
+		job.request_progress || requestProgressFromLog(job) || {};
 	const batchProgress = job.batch_progress || {};
 	const currentTasks = Array.isArray(batchProgress.current_tasks)
 		? batchProgress.current_tasks
@@ -1133,6 +1195,7 @@ function jobDetailMeta(job) {
 		progressValue(requestProgress)
 			? `Current batch requests: ${progressValue(requestProgress)}`
 			: null,
+		activeJobElapsed(job) ? `Elapsed: ${activeJobElapsed(job)}` : null,
 		job.rerun_of ? `Rerun of: ${job.rerun_of}` : null,
 		evalOptions.task_batch_size
 			? `Task batch size: ${evalOptions.task_batch_size}`
@@ -1485,7 +1548,11 @@ async function pollJobs() {
 		);
 		await loadJobs();
 		jobPollFailures = 0;
-		await loadExpandedJobLogs({ includeJobIds: previouslyActive });
+		await loadExpandedJobLogs({
+			includeActive: true,
+			includeJobIds: previouslyActive,
+		});
+		renderJobs();
 	} catch (_error) {
 		jobPollFailures += 1;
 	}
@@ -1504,6 +1571,8 @@ async function bootstrap() {
 		loadTasks(),
 		loadJobs({ refreshResultsOnTransition: false }),
 	]);
+	await loadExpandedJobLogs({ includeActive: true });
+	renderJobs();
 	scheduleJobPoll();
 	void loadResults();
 }

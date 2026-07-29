@@ -2205,6 +2205,71 @@ class JobManagerBatchTests(unittest.TestCase):
         self.assertEqual(running["request_progress"]["unit"], "requests")
         self.assertEqual(running["request_progress"]["batch"], 1)
 
+    def test_lm_eval_request_progress_works_without_task_batching(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=lambda _command, _env, _log_path: 0,
+                run_async=False,
+            )
+            created = manager._create_job(
+                "Model-A",
+                ["gsm8k", "ifeval", "truthfulqa_gen"],
+                {"task_batch_size": None},
+            )
+            job = manager.get_job(created["id"])
+            job["status"] = "running"
+            manager._write_job(job)
+            Path(job["log_path"]).write_text(
+                "Running generate_until requests\n"
+                "Requesting API:  10%|# | 129/1319 [1:12:14<11:00:00]\r",
+                encoding="utf-8",
+            )
+
+            running = manager.get_job(created["id"])
+
+        self.assertNotIn("progress", running)
+        self.assertEqual(running["request_progress"]["current"], 129)
+        self.assertEqual(running["request_progress"]["total"], 1319)
+        self.assertAlmostEqual(running["request_progress"]["percent"], 9.7801, places=3)
+        self.assertNotIn("batch", running["request_progress"])
+
+    def test_lm_eval_job_without_task_batching_tracks_its_single_process(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+
+        def launcher(command, _env, _log_path):
+            commands.append(command)
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                launcher=launcher,
+                run_async=False,
+            )
+            created = manager.create_jobs(
+                {
+                    "model_ids": ["Model-A"],
+                    "tasks": ["gsm8k", "ifeval", "truthfulqa_gen"],
+                    "task_batch_size": None,
+                }
+            )
+            job = manager.get_job(created[0]["id"])
+            log = Path(job["log_path"]).read_text(encoding="utf-8")
+
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["batch_progress"]["total"], 1)
+        self.assertEqual(job["batch_progress"]["completed"], 1)
+        self.assertIsNone(job["batch_progress"]["current"])
+        self.assertEqual(job["batch_progress"]["task_batch_size"], 3)
+        self.assertIn("=== lm-eval task batch 1/1 (3 tasks) ===", log)
+
     def test_lm_eval_job_stops_after_failed_task_batch(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
         commands = []
@@ -2820,6 +2885,12 @@ class JobManagerCancellationTests(unittest.TestCase):
             with self.assertRaises(ActiveJobError):
                 manager.rerun_jobs([job["id"]])
             release.set()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if manager.get_job(job["id"])["status"] == "succeeded":
+                    break
+                time.sleep(0.02)
+            self.assertEqual(manager.get_job(job["id"])["status"], "succeeded")
 
     def test_startup_marks_running_jobs_failed_and_requeues_queued_jobs(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")
@@ -3475,6 +3546,9 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("max-width: 100%", log_rule)
         self.assertIn("min-width: 0", log_rule)
         self.assertIn("overflow-wrap: anywhere", log_rule)
+        self.assertIn(".badge.progress.live::before", styles)
+        self.assertIn("job-activity-pulse", styles)
+        self.assertIn("prefers-reduced-motion: reduce", styles)
 
     def test_static_ui_defaults_to_full_quality_benchmarks(self):
         index = Path("static/index.html").read_text(encoding="utf-8")
@@ -3603,6 +3677,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("job-summary-actions", script)
         self.assertIn("function progressBadge", script)
         self.assertIn("function progressText", script)
+        self.assertIn("function requestProgressFromLog", script)
+        self.assertIn("function activeJobElapsed", script)
+        self.assertIn("includeActive: true", script)
+        self.assertIn("Live job activity", script)
         self.assertIn("summaryActions.append(progress)", script)
         self.assertIn('button("Rerun", "job-rerun")', script)
         self.assertIn("function rerunJobs", script)

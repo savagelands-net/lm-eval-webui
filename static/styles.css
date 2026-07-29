@@ -285,6 +285,33 @@ summary {
 	color: var(--accent);
 	font-variant-numeric: tabular-nums;
 }
+.badge.progress.live::before {
+	display: inline-block;
+	width: 0.5rem;
+	height: 0.5rem;
+	margin-right: 0.4rem;
+	border-radius: 50%;
+	background: currentColor;
+	content: "";
+	animation: job-activity-pulse 1.4s ease-in-out infinite;
+}
+@keyframes job-activity-pulse {
+	0%,
+	100% {
+		opacity: 0.35;
+		transform: scale(0.8);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.badge.progress.live::before {
+		animation: none;
+		opacity: 1;
+	}
+}
 .selected-panel {
 	margin-top: 16px;
 }
