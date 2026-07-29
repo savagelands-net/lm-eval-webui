@@ -1138,8 +1138,7 @@ function withElapsed(text, elapsed) {
 
 function progressText(job) {
 	const elapsed = activeJobElapsed(job);
-	const requestProgress =
-		job.request_progress || requestProgressFromLog(job);
+	const requestProgress = job.request_progress || requestProgressFromLog(job);
 	const requestValue = progressValue(requestProgress);
 	if (requestValue) return withElapsed(`${requestValue} requests`, elapsed);
 
@@ -1149,10 +1148,7 @@ function progressText(job) {
 		const current = Number(progress.current || 0);
 		const completed = Number(progress.completed || 0);
 		if (progress.unit === "batches" && current > completed) {
-			return withElapsed(
-				`Batch ${current}/${Number(progress.total)}`,
-				elapsed,
-			);
+			return withElapsed(`Batch ${current}/${Number(progress.total)}`, elapsed);
 		}
 		return withElapsed(`${value} ${progress.unit || "items"}`, elapsed);
 	}
