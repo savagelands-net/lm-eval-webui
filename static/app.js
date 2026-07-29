@@ -1116,7 +1116,8 @@ function jobDetailMeta(job) {
 	const currentTasks = Array.isArray(batchProgress.current_tasks)
 		? batchProgress.current_tasks
 		: [];
-	const currentTaskLabel = currentTasks.length === 1 ? "Current task" : "Current tasks";
+	const currentTaskLabel =
+		currentTasks.length === 1 ? "Current task" : "Current tasks";
 	const protection = job.model_protection || {};
 	const values = [
 		`Suite: ${suiteLabel(jobSuite(job))}`,
