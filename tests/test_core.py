@@ -3009,6 +3009,12 @@ class ResultSnapshotTests(unittest.TestCase):
             self.assertEqual(load_result.call_count, 2)
             self.assertEqual(len(snapshot["rows"]), 2)
             self.assertEqual(len(snapshot["leaderboard"]), 1)
+            self.assertEqual(snapshot["rows"][0]["profile_id"], "custom")
+            self.assertEqual(
+                snapshot["leaderboard"][0]["benchmark_profile"]["label"],
+                "Custom (legacy)",
+            )
+            self.assertFalse(snapshot["leaderboard"][0]["rank_eligible"])
             self.assertTrue((data_dir / "result-summaries" / "job-1.json").exists())
 
             restarted = JobManager(
@@ -3037,6 +3043,7 @@ class ResultSnapshotTests(unittest.TestCase):
         self.assertNotIn("result_files", summary)
         self.assertEqual(summary["task_count"], 4)
         self.assertEqual(summary["task_preview"], ["a", "b", "c"])
+        self.assertEqual(summary["benchmark_profile"]["label"], "Custom")
 
 
 class JobManagerDeletionTests(unittest.TestCase):
@@ -3112,8 +3119,94 @@ class JobManagerDeletionTests(unittest.TestCase):
             self.assertTrue(Path(by_model["Model-B"]["telemetry_path"]).exists())
 
 
+class BenchmarkProfileTests(unittest.TestCase):
+    def test_balanced_profiles_are_versioned_and_keep_32k_generation_limit(self):
+        lm_eval_profiles = symbol("lm_eval_webui.results", "lm_eval_profiles")
+
+        profiles = lm_eval_profiles()
+
+        self.assertEqual(
+            [profile["id"] for profile in profiles],
+            [
+                "strix-balanced-quick-v1",
+                "strix-balanced-standard-v1",
+                "strix-balanced-full-v1",
+            ],
+        )
+        self.assertEqual(
+            [profile["settings"]["limit"] for profile in profiles],
+            [50, 200, None],
+        )
+        self.assertEqual(
+            [profile["maximum_samples"] for profile in profiles],
+            [400, 1600, None],
+        )
+        self.assertTrue(
+            all(profile["settings"]["max_gen_toks"] == 32768 for profile in profiles)
+        )
+        self.assertTrue(all(len(profile["tasks"]) == 8 for profile in profiles))
+
+    def test_profile_matching_ignores_task_order_and_detects_deviations(self):
+        classify_lm_eval_profile = symbol(
+            "lm_eval_webui.results", "classify_lm_eval_profile"
+        )
+        profile = symbol("lm_eval_webui.results", "lm_eval_profiles")()[0]
+
+        matched = classify_lm_eval_profile(
+            list(reversed(profile["tasks"])),
+            {**profile["settings"], "limit": "50"},
+        )
+        changed = classify_lm_eval_profile(
+            profile["tasks"],
+            {**profile["settings"], "num_concurrent": 4},
+        )
+
+        self.assertEqual(matched["id"], "strix-balanced-quick-v1")
+        self.assertFalse(matched["custom"])
+        self.assertEqual(changed["id"], "custom")
+        self.assertTrue(changed["custom"])
+
+    def test_job_persists_server_verified_profile(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        profile = symbol("lm_eval_webui.results", "lm_eval_profiles")()[1]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp), project_root=Path("/repo"), run_async=False
+            )
+            created = manager._create_job(
+                "Model-A", profile["tasks"], profile["settings"]
+            )
+            loaded = manager.get_job(created["id"])
+
+        self.assertEqual(
+            loaded["benchmark_profile"]["id"],
+            "strix-balanced-standard-v1",
+        )
+        self.assertEqual(loaded["max_concurrent_jobs"], 1)
+
+    def test_result_rows_include_profile_identity(self):
+        extract_result_rows = symbol("lm_eval_webui.results", "extract_result_rows")
+        profile = {
+            "id": "strix-balanced-quick-v1",
+            "label": "Quick Screen",
+            "version": 1,
+            "custom": False,
+        }
+
+        rows = extract_result_rows(
+            "job-1",
+            {"model_name": "Model-A", "results": {"gsm8k": {"acc,none": 1}}},
+            benchmark_profile=profile,
+        )
+
+        self.assertEqual(rows[0]["profile_id"], "strix-balanced-quick-v1")
+        self.assertEqual(rows[0]["profile_label"], "Quick Screen")
+        self.assertEqual(rows[0]["profile_version"], 1)
+
+
 class LeaderboardScoringTests(unittest.TestCase):
-    def test_gsm8k_score_averages_strict_and_flexible_extract_metrics(self):
+    def test_gsm8k_score_uses_flexible_extract_metric(self):
         extract_leaderboard_entry = symbol(
             "lm_eval_webui.results", "extract_leaderboard_entry"
         )
@@ -3134,14 +3227,109 @@ class LeaderboardScoringTests(unittest.TestCase):
 
         entry = extract_leaderboard_entry(job, result_json)
 
-        self.assertEqual(entry["overall_score"], 50.0)
-        self.assertEqual(entry["task_scores"][0]["score"], 50.0)
+        self.assertEqual(entry["overall_score"], 100.0)
+        self.assertEqual(entry["task_scores"][0]["score"], 100.0)
         self.assertEqual(
             entry["task_scores"][0]["metrics"],
-            ["exact_match,strict-match", "exact_match,flexible-extract"],
+            ["exact_match,flexible-extract"],
         )
         self.assertEqual(entry["category_scores"][0]["category"], "Math")
-        self.assertEqual(entry["category_scores"][0]["score"], 50.0)
+        self.assertEqual(entry["category_scores"][0]["score"], 100.0)
+
+    def test_balanced_overall_equally_weights_categories(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+        entry = extract_leaderboard_entry(
+            {"id": "job-1", "model_id": "Model-A", "status": "succeeded"},
+            {
+                "model_name": "Model-A",
+                "results": {
+                    "mmlu_pro_biology": {"exact_match,none": 1.0},
+                    "arc_challenge_chat": {"exact_match,remove_whitespace": 1.0},
+                    "gsm8k": {"exact_match,flexible-extract": 0.0},
+                    "ifeval": {"prompt_level_strict_acc,none": 0.5},
+                },
+            },
+        )
+
+        self.assertEqual(entry["overall_score"], 50.0)
+        self.assertEqual(entry["score_method"], "category-balanced-v1")
+
+    def test_builtin_profile_uses_canonical_metrics_and_is_rank_eligible(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+        classify_lm_eval_profile = symbol(
+            "lm_eval_webui.results", "classify_lm_eval_profile"
+        )
+        profile_definition = symbol("lm_eval_webui.results", "lm_eval_profiles")()[0]
+        benchmark_profile = classify_lm_eval_profile(
+            profile_definition["tasks"], profile_definition["settings"]
+        )
+        results = {
+            "ifeval": {
+                "prompt_level_strict_acc,none": 0.4,
+                "prompt_level_loose_acc,none": 1.0,
+            },
+            "gsm8k": {
+                "exact_match,strict-match": 0.0,
+                "exact_match,flexible-extract": 0.8,
+            },
+            "minerva_math500": {
+                "exact_match,none": 0.0,
+                "math_verify,none": 0.6,
+            },
+            "mmlu_pro_computer_science": {"exact_match,custom-extract": 0.9},
+            "mmlu_pro_engineering": {"exact_match,custom-extract": 0.7},
+            "bbh_cot_zeroshot_logical_deduction_five_objects": {
+                "exact_match,flexible-extract": 0.5
+            },
+            "arc_challenge_chat": {"exact_match,remove_whitespace": 0.7},
+            "jsonschema_bench_easy": {
+                "json_validity,none": 0.0,
+                "schema_compliance,none": 1.0,
+            },
+        }
+        job = {
+            "id": "job-1",
+            "model_id": "Model-A",
+            "status": "succeeded",
+            "tasks": profile_definition["tasks"],
+            "benchmark_profile": benchmark_profile,
+        }
+
+        entry = extract_leaderboard_entry(
+            job, {"model_name": "Model-A", "results": results}
+        )
+
+        category_scores = {
+            category["category"]: category["score"]
+            for category in entry["category_scores"]
+        }
+        self.assertEqual(category_scores["Reasoning"], 70.0)
+        self.assertEqual(category_scores["Math"], 70.0)
+        self.assertEqual(category_scores["Instruction Following"], 40.0)
+        self.assertEqual(category_scores["Coding / Structured Output"], 100.0)
+        self.assertEqual(entry["overall_score"], 70.0)
+        self.assertTrue(entry["profile_complete"])
+        self.assertTrue(entry["rank_eligible"])
+        self.assertFalse(entry["partial"])
+        by_task = {task["task"]: task for task in entry["task_scores"]}
+        self.assertEqual(by_task["ifeval"]["metrics"], ["prompt_level_strict_acc,none"])
+        self.assertEqual(
+            by_task["jsonschema_bench_easy"]["metrics"],
+            ["schema_compliance,none"],
+        )
+
+        del results["jsonschema_bench_easy"]
+        incomplete = extract_leaderboard_entry(
+            job, {"model_name": "Model-A", "results": results}
+        )
+        self.assertIsNone(incomplete["overall_score"])
+        self.assertFalse(incomplete["profile_complete"])
+        self.assertFalse(incomplete["rank_eligible"])
+        self.assertTrue(incomplete["partial"])
 
     def test_failed_leaderboard_score_reports_partial_task_coverage(self):
         extract_leaderboard_entry = symbol(
@@ -3565,6 +3753,27 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="timeout" type="number" value="7200"', index)
         self.assertIn("Limit (blank = all)", index)
         self.assertIn("Few-shot (blank = task default)", index)
+
+    def test_static_ui_exposes_balanced_profile_controls_and_results(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+        server = Path("lm_eval_webui/server.py").read_text(encoding="utf-8")
+
+        self.assertIn('id="lmEvalProfilePicker"', index)
+        self.assertIn('id="lmEvalProfileButtons"', index)
+        self.assertIn('id="activeBenchmarkProfile"', index)
+        self.assertIn('id="resultProfileFilter"', index)
+        self.assertIn("Balanced Overall", index)
+        self.assertIn("function applyBenchmarkProfile", script)
+        self.assertIn("function activeBenchmarkProfile", script)
+        self.assertIn("function renderResultProfileFilter", script)
+        self.assertIn('"Balanced Overall"', script)
+        self.assertIn('"Profile"', script)
+        self.assertIn("rank_eligible", script)
+        self.assertIn(".profile-picker", styles)
+        self.assertIn(".badge.profile", styles)
+        self.assertIn('"benchmark_profiles": lm_eval_profiles()', server)
 
     def test_task_catalog_request_uses_extended_timeout(self):
         script = Path("static/app.js").read_text(encoding="utf-8")

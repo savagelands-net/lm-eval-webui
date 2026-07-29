@@ -25,6 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .jobs import ActiveJobError, JobManager
 from .lemonade import DEFAULT_OPENAI_BASE_URL, fetch_loaded_model_metadata, fetch_models
+from .results import lm_eval_profiles
 from .runner import find_lm_eval_python
 from .swe_mini import find_swe_mini_tasks  # type: ignore[reportMissingImports]
 from .telemetry import probe_lemonade_chat_telemetry
@@ -564,7 +565,14 @@ def bounded_query_int(
 def compact_created_job(job: dict[str, Any]) -> dict[str, Any]:
     return {
         key: job.get(key)
-        for key in ("id", "model_id", "rerun_of", "status", "suite")
+        for key in (
+            "id",
+            "model_id",
+            "rerun_of",
+            "status",
+            "suite",
+            "benchmark_profile",
+        )
         if job.get(key) is not None
     }
 
@@ -992,7 +1000,12 @@ def make_handler(
                     }
                 )
             elif parsed.path == "/api/config":
-                self._json({"openai_base_url": openai_base_url})
+                self._json(
+                    {
+                        "openai_base_url": openai_base_url,
+                        "benchmark_profiles": lm_eval_profiles(),
+                    }
+                )
             elif parsed.path == "/api/models":
                 self._handle_models(parsed.query)
             elif parsed.path == "/api/tasks":

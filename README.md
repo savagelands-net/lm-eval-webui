@@ -128,6 +128,34 @@ The relevant read APIs are:
 - `GET /api/leaderboard` — compact leaderboard entries
 - `GET /api/results?offset=0&limit=1000&suite=lm_eval` — paginated rows
 
+## Balanced lm-eval profiles and scoring
+
+The lm-eval task picker includes three versioned **Strix Balanced** profiles.
+They use the same eight generation-compatible tasks and the same 32,768-token
+reasoning budget so results remain comparable; only the number of examples per
+task changes:
+
+- **Quick Screen** — up to 50 examples per task (up to 400 requests per model)
+- **Standard Compare** — up to 200 examples per task (up to 1,600 requests)
+- **Full Validation** — every example from every profile task
+
+The shared task set covers IFEval, GSM8K, MATH-500, MMLU-Pro computer science
+and engineering, BBH logical deduction, ARC Challenge Chat, and JSON Schema
+Bench. Applying a profile also selects task-default few-shot settings, batch size
+1, request concurrency 2, a 7,200-second timeout, task batches of 4, chat
+templating, sample logging, and one concurrent job. Changing any profile task or
+setting marks the job as **Custom**. The backend verifies and persists the
+profile rather than trusting a label sent by the browser, and older jobs are
+shown as **Custom (legacy)**.
+
+Leaderboard ranking is kept separate by profile. **Balanced Overall** is the
+equal-weight mean of four category scores—Reasoning, Math, Instruction
+Following, and Coding / Structured Output—so categories with more tasks do not
+silently dominate. Recognized profile runs are ranked only after every required
+task produced its canonical score. Custom and incomplete runs retain their
+metrics but are not assigned a profile rank. Generation throughput and TTFT stay
+separate from the quality percentage.
+
 ## Thinking models and quality preflight
 
 Normal benchmark jobs are unlimited by default and preserve each task's own
@@ -184,7 +212,8 @@ enough memory for every concurrently used model.
   subprocess exits and releases loaded dataset/task state. Job cards report
   completed task batches separately from the live API-request count within the
   current task.
-- Leaderboard scores use curated primary metrics and category rollups.
+- Leaderboard scores use canonical primary metrics and equal-weight category
+  rollups; use the profile filter when comparing models.
 - Job cleanup removes selected job metadata, logs, telemetry, and run outputs.
   Legacy jobs with missing artifact paths are safely ignored instead of treating
   an empty path as `.`.

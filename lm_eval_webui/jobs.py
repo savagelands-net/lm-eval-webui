@@ -27,6 +27,8 @@ from .lemonade import (
     unpin_model,
 )
 from .results import (
+    benchmark_profile_for_job,
+    classify_lm_eval_profile,
     extract_leaderboard_entry,
     extract_result_rows,
     find_result_files,
@@ -74,7 +76,7 @@ SWE_MINI_COMPLETE_RE = re.compile(
 )
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancelling"}
 TERMINAL_JOB_STATUSES = {"cancelled", "failed", "succeeded"}
-RESULT_SUMMARY_VERSION = 1
+RESULT_SUMMARY_VERSION = 2
 CANCEL_GRACE_SECONDS = 10.0
 
 
@@ -503,6 +505,7 @@ class JobManager:
             else [Path(str(path)) for path in job.get("result_files", [])]
         )
         result_jsons: list[dict[str, Any]] = []
+        benchmark_profile = benchmark_profile_for_job(job)
         for result_file in result_files:
             try:
                 result_json = load_result_file(result_file)
@@ -512,7 +515,13 @@ class JobManager:
                 rows.extend(extract_swe_mini_result_rows(job, result_json))
                 entries.append(extract_swe_mini_leaderboard_entry(job, result_json))
             else:
-                rows.extend(extract_result_rows(str(job["id"]), result_json))
+                rows.extend(
+                    extract_result_rows(
+                        str(job["id"]),
+                        result_json,
+                        benchmark_profile=benchmark_profile,
+                    )
+                )
                 result_jsons.append(result_json)
         if result_jsons:
             merged = (
@@ -541,6 +550,7 @@ class JobManager:
             "result_files": job.get("result_files") or [],
             "telemetry": job.get("telemetry") or {},
             "model_metadata": job.get("model_metadata") or {},
+            "benchmark_profile": benchmark_profile_for_job(job),
         }
         return json.dumps(relevant, sort_keys=True, separators=(",", ":"))
 
@@ -588,6 +598,14 @@ class JobManager:
         command, env = build_eval_command(request, self.project_root)
         now = time.time()
         eval_options = self._eval_options(request, task_batch_size=task_batch_size)
+        max_concurrent_jobs = self.max_concurrent_jobs
+        benchmark_profile = classify_lm_eval_profile(
+            tasks,
+            {
+                **eval_options,
+                "max_concurrent_jobs": max_concurrent_jobs,
+            },
+        )
         job = {
             "id": job_id,
             "model_id": model_id,
@@ -603,6 +621,8 @@ class JobManager:
             "lemonade_base_url": str(openai_base_url).rstrip("/"),
             "backend": backend,
             "eval_options": eval_options,
+            "max_concurrent_jobs": max_concurrent_jobs,
+            "benchmark_profile": benchmark_profile,
             "telemetry": {},
             "result_files": [],
             "returncode": None,
@@ -1481,6 +1501,8 @@ class JobManager:
         )
         if llamacpp_backend:
             payload["llamacpp_backend"] = llamacpp_backend
+        if job.get("max_concurrent_jobs") is not None:
+            payload["max_concurrent_jobs"] = job["max_concurrent_jobs"]
         return payload
 
     def _with_progress(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -1681,7 +1703,12 @@ class JobManager:
 
     @staticmethod
     def _public_job(job: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in job.items() if not key.startswith("_")}
+        public_job = {
+            key: value for key, value in job.items() if not key.startswith("_")
+        }
+        if JobManager._job_suite(job) != SWE_MINI_SUITE:
+            public_job["benchmark_profile"] = benchmark_profile_for_job(job)
+        return public_job
 
     def _task_batch_size_for_job(self, job: dict[str, Any]) -> int | None:
         raw_options = job.get("eval_options")

@@ -54,6 +54,24 @@
                 SWE Mini tasks
               </button>
             </div>
+            <div id="lmEvalProfilePicker" class="profile-picker">
+              <div class="row between profile-picker-header">
+                <div>
+                  <h3>Balanced benchmark profiles</h3>
+                  <p class="hint">
+                    Apply a repeatable task set and benchmark recipe without
+                    changing the selected models or runtime backend.
+                  </p>
+                </div>
+                <span
+                  id="activeBenchmarkProfile"
+                  class="badge profile custom"
+                  aria-live="polite"
+                  >Profile: Custom</span
+                >
+              </div>
+              <div id="lmEvalProfileButtons" class="row profile-buttons"></div>
+            </div>
             <div class="row between list-header">
               <h3 id="taskPanelTitle">lm-eval tasks</h3>
               <div class="row list-actions">
@@ -167,7 +185,7 @@
               <input id="numFewshot" type="number" placeholder="Task default"
             /></label>
             <label
-              >Minimum generation tokens
+              >Generation token limit
               <input id="maxGenToks" type="number" value="32768" min="1"
             /></label>
             <label
@@ -238,10 +256,17 @@
           <div>
             <h2>Leaderboard</h2>
             <p>
-              Rolled-up benchmark scores by model. Overall is the average
-              primary task score.
+              Balanced Overall gives equal weight to reasoning, math,
+              instruction following, and structured output. Rankings are kept
+              separate by profile.
             </p>
           </div>
+          <label id="resultProfileControl" class="profile-filter"
+            >Profile
+            <select id="resultProfileFilter">
+              <option value="all">All profiles</option>
+            </select></label
+          >
         </div>
         <div class="suite-tabs" role="tablist" aria-label="Leaderboard suite">
           <button

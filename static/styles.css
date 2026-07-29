@@ -117,6 +117,36 @@ main {
 	background: #1f3b61;
 	color: var(--accent-2);
 }
+.profile-picker {
+	margin-bottom: 14px;
+	padding: 12px;
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: rgb(255 255 255 / 3%);
+}
+.profile-picker-header {
+	align-items: start;
+	gap: 16px;
+}
+.profile-picker-header h3 {
+	margin-bottom: 4px;
+}
+.profile-buttons {
+	margin-top: 12px;
+	flex-wrap: wrap;
+}
+.profile-buttons button {
+	padding: 8px 12px;
+	font-size: 0.9rem;
+}
+.profile-buttons button.active {
+	border-color: var(--accent);
+	background: #1f3b61;
+	color: var(--accent-2);
+}
+.profile-filter {
+	min-width: 220px;
+}
 .task-view-mode {
 	display: flex;
 	align-items: center;
@@ -281,6 +311,13 @@ summary {
 .badge.suite {
 	color: var(--good);
 }
+.badge.profile {
+	color: var(--good);
+	white-space: nowrap;
+}
+.badge.profile.custom {
+	color: var(--warn);
+}
 .badge.progress {
 	color: var(--accent);
 	font-variant-numeric: tabular-nums;
@@ -352,6 +389,7 @@ summary {
 	align-items: center;
 	justify-content: flex-end;
 	gap: 10px;
+	flex-wrap: wrap;
 }
 .job-summary-actions .job-select {
 	margin: 0;
@@ -448,7 +486,7 @@ summary {
 	overflow: auto;
 }
 .leaderboard-table {
-	min-width: 1050px;
+	min-width: 1250px;
 	white-space: nowrap;
 }
 .leaderboard-table tbody tr:hover {
@@ -463,6 +501,9 @@ summary {
 	max-width: 360px;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+.profile-cell {
+	color: var(--accent-2);
 }
 .score-cell {
 	font-variant-numeric: tabular-nums;
@@ -509,8 +550,12 @@ th {
 	.grid.four {
 		grid-template-columns: 1fr;
 	}
-	header {
+	header,
+	.profile-picker-header {
 		align-items: start;
 		flex-direction: column;
+	}
+	.profile-filter {
+		width: 100%;
 	}
 }

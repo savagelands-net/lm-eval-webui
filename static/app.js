@@ -4,6 +4,8 @@ const state = {
 	jobs: [],
 	rows: [],
 	leaderboard: [],
+	benchmarkProfiles: [],
+	resultProfile: "all",
 	selectedJobs: new Set(),
 	expandedJobs: new Set(),
 	jobDetails: new Map(),
@@ -32,6 +34,33 @@ const LEADERBOARD_CATEGORIES = [
 	"Instruction Following",
 	"Other",
 ];
+const PROFILE_OPTION_CONTROLS = {
+	limit: "limit",
+	num_fewshot: "numFewshot",
+	batch_size: "batchSize",
+	max_gen_toks: "maxGenToks",
+	num_concurrent: "numConcurrent",
+	timeout: "timeout",
+	apply_chat_template: "applyChatTemplate",
+	fewshot_as_multiturn: "fewshotAsMultiturn",
+	log_samples: "logSamples",
+	task_batch_size: "taskBatchSize",
+	max_concurrent_jobs: "maxConcurrentJobs",
+};
+const PROFILE_BOOLEAN_OPTIONS = new Set([
+	"apply_chat_template",
+	"fewshot_as_multiturn",
+	"log_samples",
+]);
+const PROFILE_NUMERIC_OPTIONS = new Set([
+	"limit",
+	"num_fewshot",
+	"max_gen_toks",
+	"num_concurrent",
+	"timeout",
+	"task_batch_size",
+	"max_concurrent_jobs",
+]);
 const TASK_CATEGORY_FILTERS = [
 	{ id: "taskCategoryReasoning", category: "Reasoning" },
 	{ id: "taskCategoryMath", category: "Math" },
@@ -106,9 +135,145 @@ async function loadConfig() {
 		if (payload.openai_base_url) {
 			$("openaiBaseUrl").value = payload.openai_base_url;
 		}
+		state.benchmarkProfiles = payload.benchmark_profiles || [];
+		renderBenchmarkProfiles();
 	} catch (_error) {
 		// Keep the static localhost fallback if config cannot be loaded.
 	}
+}
+
+function profileDisplayLabel(profile) {
+	if (!profile) return "Custom";
+	if (profile.custom || !profile.version) return profile.label || "Custom";
+	return `${profile.label} v${profile.version}`;
+}
+
+function benchmarkProfileForRecord(record) {
+	if (record?.benchmark_profile) return record.benchmark_profile;
+	if (record?.profile_id) {
+		return {
+			id: record.profile_id,
+			label: record.profile_label || record.profile_id,
+			version: record.profile_version,
+			custom: record.profile_id === "custom",
+		};
+	}
+	return {
+		id: "custom",
+		label: "Custom (legacy)",
+		version: null,
+		custom: true,
+	};
+}
+
+function recordProfileId(record) {
+	if (recordSuite(record) === "swe_mini") return "swe_mini";
+	return benchmarkProfileForRecord(record).id || "custom";
+}
+
+function recordProfileLabel(record) {
+	if (recordSuite(record) === "swe_mini") return "SWE Mini";
+	return profileDisplayLabel(benchmarkProfileForRecord(record));
+}
+
+function normalizeProfileOption(key, value) {
+	if (PROFILE_BOOLEAN_OPTIONS.has(key)) return Boolean(value);
+	if (PROFILE_NUMERIC_OPTIONS.has(key)) {
+		if (value === "" || value === null || value === undefined) return null;
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : String(value);
+	}
+	if (key === "batch_size") return String(value || "1");
+	if (key === "predict_only") return Boolean(value);
+	return value;
+}
+
+function currentProfileSettings() {
+	const settings = { predict_only: false };
+	for (const [key, controlId] of Object.entries(PROFILE_OPTION_CONTROLS)) {
+		const control = $(controlId);
+		const value = PROFILE_BOOLEAN_OPTIONS.has(key)
+			? control.checked
+			: control.value;
+		settings[key] = normalizeProfileOption(key, value);
+	}
+	return settings;
+}
+
+function activeBenchmarkProfile() {
+	if (state.activeSuite !== "lm_eval") return null;
+	const selectedTasks = [...state.selectedTasks].sort();
+	const currentSettings = currentProfileSettings();
+	return (
+		state.benchmarkProfiles.find((profile) => {
+			const expectedTasks = [...(profile.tasks || [])].sort();
+			if (JSON.stringify(selectedTasks) !== JSON.stringify(expectedTasks)) {
+				return false;
+			}
+			const expectedSettings = profile.settings || {};
+			return Object.keys(expectedSettings).every(
+				(key) =>
+					normalizeProfileOption(key, currentSettings[key]) ===
+					normalizeProfileOption(key, expectedSettings[key]),
+			);
+		}) || null
+	);
+}
+
+function updateBenchmarkProfileIndicator() {
+	const profile = activeBenchmarkProfile();
+	const indicator = $("activeBenchmarkProfile");
+	indicator.textContent = `Profile: ${profileDisplayLabel(profile)}`;
+	indicator.classList.toggle("custom", !profile);
+	for (const profileButton of $("lmEvalProfileButtons").querySelectorAll(
+		"button[data-profile-id]",
+	)) {
+		const isActive = profileButton.dataset.profileId === profile?.id;
+		profileButton.classList.toggle("active", isActive);
+		profileButton.setAttribute("aria-pressed", String(isActive));
+	}
+}
+
+function applyBenchmarkProfile(profile) {
+	if (profile.warning && !window.confirm(profile.warning)) return;
+	state.selectedTasks = new Set(profile.tasks || []);
+	state.hasAutoSelectedTask = true;
+	$("taskViewMode").value = "leaves";
+	for (const [key, expected] of Object.entries(profile.settings || {})) {
+		const controlId = PROFILE_OPTION_CONTROLS[key];
+		if (!controlId) continue;
+		const control = $(controlId);
+		if (PROFILE_BOOLEAN_OPTIONS.has(key)) {
+			control.checked = Boolean(expected);
+		} else {
+			control.value =
+				expected === null || expected === undefined ? "" : String(expected);
+		}
+	}
+	state.taskPage = 0;
+	renderTasks();
+	$("setupMessage").textContent =
+		`Applied ${profileDisplayLabel(profile)}: ${(profile.tasks || []).length} tasks`;
+}
+
+function renderBenchmarkProfiles() {
+	const container = $("lmEvalProfileButtons");
+	container.replaceChildren();
+	state.benchmarkProfiles.forEach((profile) => {
+		const limit = profile.settings?.limit;
+		const suffix = limit ? `${limit}/task` : "all samples";
+		const profileButton = button(`${profile.label} · ${suffix}`);
+		profileButton.dataset.profileId = profile.id;
+		profileButton.setAttribute("aria-pressed", "false");
+		profileButton.title = [profile.description, profile.warning]
+			.filter(Boolean)
+			.join(" ");
+		profileButton.addEventListener("click", () =>
+			applyBenchmarkProfile(profile),
+		);
+		container.append(profileButton);
+	});
+	updateBenchmarkProfileIndicator();
 }
 
 async function loadModels() {
@@ -425,6 +590,7 @@ function renderSelectedTasks() {
 	$("selectedTaskCount").textContent =
 		`${selected.length.toLocaleString()} selected`;
 	list.replaceChildren();
+	updateBenchmarkProfileIndicator();
 	if (!selected.length) return setText(list, "No tasks selected.");
 	selected.forEach((taskName) => {
 		const chip = document.createElement("button");
@@ -518,12 +684,10 @@ function renderJobs() {
 			event.stopPropagation();
 			void rerunJobs([job.id]);
 		});
-		summaryActions.append(
-			rerunButton,
-			suiteBadge(job),
-			statusBadge(job),
-			checkbox,
-		);
+		summaryActions.append(rerunButton);
+		const profile = benchmarkProfileBadge(job);
+		if (profile) summaryActions.append(profile);
+		summaryActions.append(suiteBadge(job), statusBadge(job), checkbox);
 		summary.append(
 			summaryBlock(
 				job.model_id,
@@ -705,16 +869,46 @@ function scrollLogToBottom(log) {
 	log.scrollTop = log.scrollHeight;
 }
 
+function renderResultProfileFilter(entries) {
+	const select = $("resultProfileFilter");
+	const available = new Map(
+		state.benchmarkProfiles.map((profile) => [
+			profile.id,
+			profileDisplayLabel(profile),
+		]),
+	);
+	entries.forEach((entry) =>
+		available.set(recordProfileId(entry), recordProfileLabel(entry)),
+	);
+	select.replaceChildren(new Option("All profiles", "all"));
+	for (const [profileId, label] of available) {
+		select.append(new Option(label, profileId));
+	}
+	if ([...select.options].some((option) => option.value === state.resultProfile)) {
+		select.value = state.resultProfile;
+	} else {
+		state.resultProfile = "all";
+		select.value = "all";
+	}
+}
+
 function renderLeaderboard() {
 	const list = $("leaderboard");
 	list.replaceChildren();
-	const entries = state.leaderboard.filter(
+	const suiteEntries = state.leaderboard.filter(
 		(entry) => recordSuite(entry) === state.resultSuite,
 	);
+	renderResultProfileFilter(suiteEntries);
+	const entries =
+		state.resultSuite === "lm_eval" && state.resultProfile !== "all"
+			? suiteEntries.filter(
+					(entry) => recordProfileId(entry) === state.resultProfile,
+				)
+			: suiteEntries;
 	if (!entries.length)
 		return setText(
 			list,
-			`No ${suiteLabel(state.resultSuite)} leaderboard results yet.`,
+			`No ${suiteLabel(state.resultSuite)} leaderboard results for this profile.`,
 		);
 	if (state.resultSuite === "swe_mini") {
 		renderSweMiniLeaderboard(list, entries);
@@ -724,6 +918,15 @@ function renderLeaderboard() {
 }
 
 function renderLmEvalLeaderboard(list, entries) {
+	const profileOrder = new Map(
+		state.benchmarkProfiles.map((profile, index) => [profile.id, index]),
+	);
+	const orderedEntries = [...entries].sort((left, right) => {
+		const leftOrder = profileOrder.get(recordProfileId(left)) ?? 999;
+		const rightOrder = profileOrder.get(recordProfileId(right)) ?? 999;
+		if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+		return Number(right.overall_score || 0) - Number(left.overall_score || 0);
+	});
 	const table = document.createElement("table");
 	table.className = "leaderboard-table";
 	const thead = document.createElement("thead");
@@ -731,13 +934,14 @@ function renderLmEvalLeaderboard(list, entries) {
 	[
 		"#",
 		"Model",
+		"Profile",
 		"Status",
 		"Tasks",
 		"Runtime backend",
 		"Context",
 		"Tok/s",
 		"TTFT",
-		"Overall",
+		"Balanced Overall",
 		...LEADERBOARD_CATEGORIES,
 	].forEach((name) => {
 		const th = document.createElement("th");
@@ -746,14 +950,28 @@ function renderLmEvalLeaderboard(list, entries) {
 	});
 	thead.append(header);
 	const tbody = document.createElement("tbody");
-	entries.forEach((entry, index) => {
+	const profileRanks = new Map();
+	orderedEntries.forEach((entry) => {
 		const model = modelForEntry(entry);
 		const modelName = entry.model || entry.model_id || "unknown model";
+		const profile = benchmarkProfileForRecord(entry);
+		const eligible = Boolean(entry.rank_eligible);
+		let rank = "—";
+		if (eligible) {
+			const nextRank = (profileRanks.get(profile.id) || 0) + 1;
+			profileRanks.set(profile.id, nextRank);
+			rank = `#${nextRank}`;
+		}
 		const tr = document.createElement("tr");
 		tr.append(
-			leaderboardCell(`#${index + 1}`, "rank-cell"),
+			leaderboardCell(rank, "rank-cell"),
 			leaderboardCell(modelName, "model-cell", modelName),
-			leaderboardCell(entry.status || (entry.partial ? "partial" : "—")),
+			leaderboardCell(
+				profileDisplayLabel(profile),
+				"profile-cell",
+				profile.id,
+			),
+			leaderboardCell(leaderboardStatus(entry)),
 			leaderboardCell(formatTaskCoverage(entry)),
 			leaderboardCell(modelBackendLabel(entry, model)),
 			leaderboardCell(
@@ -764,6 +982,7 @@ function renderLmEvalLeaderboard(list, entries) {
 			leaderboardCell(
 				formatScore(entry.overall_score),
 				"score-cell overall-score",
+				"Equal-weight mean of reasoning, math, instruction following, and structured output",
 			),
 		);
 		LEADERBOARD_CATEGORIES.forEach((category) => {
@@ -780,6 +999,11 @@ function renderLmEvalLeaderboard(list, entries) {
 	});
 	table.append(thead, tbody);
 	list.append(table);
+}
+
+function leaderboardStatus(entry) {
+	if (entry.partial && entry.status === "succeeded") return "incomplete";
+	return entry.status || (entry.partial ? "partial" : "—");
 }
 
 function formatTaskCoverage(entry) {
@@ -836,7 +1060,11 @@ function renderSweMiniLeaderboard(list, entries) {
 function renderResults() {
 	renderLeaderboard();
 	const suiteRows = state.rows.filter(
-		(row) => recordSuite(row) === state.resultSuite,
+		(row) =>
+			recordSuite(row) === state.resultSuite &&
+			(state.resultSuite !== "lm_eval" ||
+				state.resultProfile === "all" ||
+				recordProfileId(row) === state.resultProfile),
 	);
 	const metrics = [...new Set(suiteRows.map((row) => row.metric))].sort();
 	const metricSelect = $("metricSelect");
@@ -870,7 +1098,12 @@ function renderChart(rows, metric) {
 		const y = 30 + index * rowHeight;
 		const barWidth = Math.max(2, (Math.abs(row.value) / maxValue) * 650);
 		svg.append(
-			svgText(10, y + 16, `${row.model} · ${row.task}`, "bar-label"),
+			svgText(
+				10,
+				y + 16,
+				`${row.model} · ${recordProfileLabel(row)} · ${row.task}`,
+				"bar-label",
+			),
 			svgRect(290, y, barWidth, 24),
 			svgText(300 + barWidth, y + 16, formatValue(row.value), "axis-label"),
 		);
@@ -884,7 +1117,7 @@ function renderTable(rows) {
 	const table = document.createElement("table");
 	const thead = document.createElement("thead");
 	const header = document.createElement("tr");
-	["Model", "Task", "Metric", "Value", "Samples", "Job"].forEach((name) => {
+	["Model", "Profile", "Task", "Metric", "Value", "Samples", "Job"].forEach((name) => {
 		const th = document.createElement("th");
 		th.textContent = name;
 		header.append(th);
@@ -895,6 +1128,7 @@ function renderTable(rows) {
 		const tr = document.createElement("tr");
 		[
 			row.model,
+			recordProfileLabel(row),
 			row.task,
 			row.metric,
 			formatValue(row.value),
@@ -1157,6 +1391,15 @@ function progressText(job) {
 	if (job.status === "cancelling") return withElapsed("Stopping", elapsed);
 	return "";
 }
+function benchmarkProfileBadge(job) {
+	if (jobSuite(job) !== "lm_eval") return null;
+	const profile = benchmarkProfileForRecord(job);
+	const badge = document.createElement("span");
+	badge.className = `badge profile${profile.custom ? " custom" : ""}`;
+	badge.textContent = profileDisplayLabel(profile);
+	badge.title = profile.id || "custom";
+	return badge;
+}
 function suiteBadge(job) {
 	const badge = document.createElement("span");
 	badge.className = "badge suite";
@@ -1179,6 +1422,9 @@ function jobDetailMeta(job) {
 	const protection = job.model_protection || {};
 	const values = [
 		`Suite: ${suiteLabel(jobSuite(job))}`,
+		jobSuite(job) === "lm_eval"
+			? `Profile: ${recordProfileLabel(job)}`
+			: null,
 		progress.unit !== "batches" && progressText(job)
 			? `Progress: ${progressText(job)}`
 			: null,
@@ -1423,11 +1669,13 @@ function updateSuiteUi() {
 		? "Type to search SWE Mini tasks or repos"
 		: "Type to search 14k+ tasks";
 	$("taskViewModeControl").hidden = isSweMini;
+	$("lmEvalProfilePicker").hidden = isSweMini;
 	$("lmEvalCategoryFilters").hidden = isSweMini;
 	$("lmEvalCompatibilityFilters").hidden = isSweMini;
 	$("lmEvalBenchmarkOptions").hidden = isSweMini;
 	$("sweMiniBenchmarkOptions").hidden = !isSweMini;
 	$("sweMiniJudgeHint").hidden = !isSweMini;
+	$("resultProfileControl").hidden = state.resultSuite === "swe_mini";
 	$("taskHint").textContent = isSweMini
 		? "SWE Mini tasks run in Docker SWE-bench containers and are judged by the selected judge model."
 		: "OpenAI-compatible chat backends are generation oriented. Use generate_until tasks first.";
@@ -1437,6 +1685,7 @@ function updateSuiteUi() {
 			button.dataset.suite === state.activeSuite,
 		);
 	}
+	updateBenchmarkProfileIndicator();
 	for (const button of [$("leaderboardLmEval"), $("leaderboardSweMini")]) {
 		button.classList.toggle(
 			"active",
@@ -1506,6 +1755,15 @@ TASK_CATEGORY_FILTERS.forEach(({ id }) =>
 $("taskPrev").addEventListener("click", () => changeTaskPage(-1));
 $("taskNext").addEventListener("click", () => changeTaskPage(1));
 $("metricSelect").addEventListener("change", renderResults);
+$("resultProfileFilter").addEventListener("change", () => {
+	state.resultProfile = $("resultProfileFilter").value;
+	renderResults();
+});
+Object.values(PROFILE_OPTION_CONTROLS).forEach((controlId) => {
+	const control = $(controlId);
+	control.addEventListener("input", updateBenchmarkProfileIndicator);
+	control.addEventListener("change", updateBenchmarkProfileIndicator);
+});
 $("suiteLmEval").addEventListener("click", () =>
 	selectBenchmarkSuite("lm_eval"),
 );
