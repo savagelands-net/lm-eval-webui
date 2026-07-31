@@ -32,6 +32,7 @@ from .results import (
     extract_leaderboard_entry,
     extract_result_rows,
     find_result_files,
+    job_runtime_seconds,
     load_result_file,
     merge_result_jsons,
 )
@@ -76,7 +77,7 @@ SWE_MINI_COMPLETE_RE = re.compile(
 )
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancelling"}
 TERMINAL_JOB_STATUSES = {"cancelled", "failed", "succeeded"}
-RESULT_SUMMARY_VERSION = 2
+RESULT_SUMMARY_VERSION = 3
 CANCEL_GRACE_SECONDS = 10.0
 
 
@@ -440,7 +441,12 @@ class JobManager:
             job["status"] = "failed"
             job["error"] = "Interrupted by application restart"
             job["interrupted"] = True
-            job["updated_at"] = time.time()
+            finished_at = time.time()
+            job["finished_at"] = finished_at
+            started_at = job.get("started_at")
+            if isinstance(started_at, (int, float)) and started_at > 0:
+                job["runtime_seconds"] = max(0.0, finished_at - started_at)
+            job["updated_at"] = finished_at
             self._write_job(job)
             interrupted = True
         if interrupted:
@@ -506,6 +512,7 @@ class JobManager:
         )
         result_jsons: list[dict[str, Any]] = []
         benchmark_profile = benchmark_profile_for_job(job)
+        runtime_seconds = job_runtime_seconds(job)
         for result_file in result_files:
             try:
                 result_json = load_result_file(result_file)
@@ -520,6 +527,7 @@ class JobManager:
                         str(job["id"]),
                         result_json,
                         benchmark_profile=benchmark_profile,
+                        runtime_seconds=runtime_seconds,
                     )
                 )
                 result_jsons.append(result_json)
@@ -551,6 +559,7 @@ class JobManager:
             "telemetry": job.get("telemetry") or {},
             "model_metadata": job.get("model_metadata") or {},
             "benchmark_profile": benchmark_profile_for_job(job),
+            "runtime_seconds": job_runtime_seconds(job),
         }
         return json.dumps(relevant, sort_keys=True, separators=(",", ":"))
 
@@ -1100,7 +1109,10 @@ class JobManager:
                 progress = self._swe_mini_progress(job)
                 if progress:
                     job["swe_progress"] = progress
-            job["updated_at"] = time.time()
+            finished_at = time.time()
+            job["finished_at"] = finished_at
+            job["runtime_seconds"] = max(0.0, finished_at - started_at)
+            job["updated_at"] = finished_at
             self._write_job(job)
             if job.get("status") in TERMINAL_JOB_STATUSES:
                 with suppress(OSError, ValueError, json.JSONDecodeError):

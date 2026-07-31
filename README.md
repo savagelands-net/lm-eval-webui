@@ -154,7 +154,10 @@ Following, and Coding / Structured Output—so categories with more tasks do not
 silently dominate. Recognized profile runs are ranked only after every required
 task produced its canonical score. Custom and incomplete runs retain their
 metrics but are not assigned a profile rank. Generation throughput and TTFT stay
-separate from the quality percentage.
+separate from the quality percentage. Result tables also show each job's
+wall-clock runtime from start through final cleanup, and completed job cards keep
+that duration visible in a runtime badge. Legacy results fall back to lm-eval's
+recorded evaluation time when full job timestamps are unavailable.
 
 ## Thinking models and quality preflight
 

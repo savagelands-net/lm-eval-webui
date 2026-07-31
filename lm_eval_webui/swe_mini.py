@@ -325,15 +325,32 @@ def extract_swe_mini_result_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     model = str(job.get("model_id") or "unknown")
+    runtime_seconds = _swe_job_runtime_seconds(job, summary_json)
     for result in _summary_results(summary_json):
         task = str(result.get("task") or "unknown")
         score = _finite_float(result.get("judgeScore"))
         if score is not None:
-            rows.append(_swe_row(job, model, task, "judge_score", score))
+            rows.append(
+                _swe_row(
+                    job,
+                    model,
+                    task,
+                    "judge_score",
+                    score,
+                    runtime_seconds=runtime_seconds,
+                )
+            )
         duration_ms = _finite_float(result.get("durationMs"))
         if duration_ms is not None:
             rows.append(
-                _swe_row(job, model, task, "duration_seconds", duration_ms / 1000)
+                _swe_row(
+                    job,
+                    model,
+                    task,
+                    "duration_seconds",
+                    duration_ms / 1000,
+                    runtime_seconds=runtime_seconds,
+                )
             )
     return rows
 
@@ -377,6 +394,7 @@ def extract_swe_mini_leaderboard_entry(
         "pass_rate": pass_rate,
         "average_duration_ms": summary_json.get("averageDurationMs"),
         "total_duration_ms": summary_json.get("totalDurationMs"),
+        "runtime_seconds": _swe_job_runtime_seconds(job, summary_json),
         "judge_model": swe_options.get("judge_model"),
         "platform": swe_options.get("platform"),
         "pass_count": swe_options.get("pass_count"),
@@ -456,8 +474,26 @@ def _int_or_len(value: Any, results: list[dict[str, Any]]) -> int:
     return int_value if int_value is not None else len(results)
 
 
+def _swe_job_runtime_seconds(
+    job: dict[str, Any], summary_json: dict[str, Any]
+) -> float | None:
+    persisted = _finite_float(job.get("runtime_seconds"))
+    if persisted is not None and persisted >= 0:
+        return persisted
+    total_duration_ms = _finite_float(summary_json.get("totalDurationMs"))
+    if total_duration_ms is not None and total_duration_ms >= 0:
+        return total_duration_ms / 1000
+    return None
+
+
 def _swe_row(
-    job: dict[str, Any], model: str, task: str, metric: str, value: float
+    job: dict[str, Any],
+    model: str,
+    task: str,
+    metric: str,
+    value: float,
+    *,
+    runtime_seconds: float | None = None,
 ) -> dict[str, Any]:
     return {
         "suite": SWE_MINI_SUITE,
@@ -468,6 +504,7 @@ def _swe_row(
         "value": value,
         "samples": 1,
         "limit": None,
+        "runtime_seconds": runtime_seconds,
     }
 
 

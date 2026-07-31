@@ -312,15 +312,44 @@ def _finite_float(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) else None
 
 
+def job_runtime_seconds(
+    job: dict[str, Any], result_json: dict[str, Any] | None = None
+) -> float | None:
+    """Return full job wall time, falling back to lm-eval's measured runtime."""
+
+    persisted = _finite_float(job.get("runtime_seconds"))
+    if persisted is not None and persisted >= 0:
+        return persisted
+    started_at = _finite_float(job.get("started_at"))
+    finished_at = _finite_float(job.get("finished_at"))
+    if finished_at is None and job.get("status") in {
+        "cancelled",
+        "failed",
+        "succeeded",
+    }:
+        finished_at = _finite_float(job.get("updated_at"))
+    if started_at is not None and finished_at is not None:
+        return max(0.0, finished_at - started_at)
+    if result_json is not None:
+        measured = _finite_float(result_json.get("total_evaluation_time_seconds"))
+        if measured is not None and measured >= 0:
+            return measured
+    return None
+
+
 def extract_result_rows(
     job_id: str,
     result_json: dict[str, Any],
     *,
     benchmark_profile: dict[str, Any] | None = None,
+    runtime_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     model = _model_name(result_json)
     limit = (result_json.get("config") or {}).get("limit")
     profile = benchmark_profile or custom_profile(legacy=True)
+    row_runtime = _finite_float(runtime_seconds)
+    if row_runtime is None:
+        row_runtime = _finite_float(result_json.get("total_evaluation_time_seconds"))
     rows: list[dict[str, Any]] = []
     for task, metrics in (result_json.get("results") or {}).items():
         if not isinstance(metrics, dict):
@@ -342,6 +371,7 @@ def extract_result_rows(
                     "profile_id": profile.get("id"),
                     "profile_label": profile.get("label"),
                     "profile_version": profile.get("version"),
+                    "runtime_seconds": row_runtime,
                 }
             )
     return rows
@@ -460,6 +490,7 @@ def extract_leaderboard_entry(
         "total_evaluation_time_seconds": result_json.get(
             "total_evaluation_time_seconds"
         ),
+        "runtime_seconds": job_runtime_seconds(job, result_json),
         "generation_tok_s": telemetry.get("generation_tok_s")
         or telemetry.get("probe_generation_tok_s"),
         "prompt_tok_s": telemetry.get("prompt_tok_s")

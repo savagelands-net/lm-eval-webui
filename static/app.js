@@ -884,7 +884,9 @@ function renderResultProfileFilter(entries) {
 	for (const [profileId, label] of available) {
 		select.append(new Option(label, profileId));
 	}
-	if ([...select.options].some((option) => option.value === state.resultProfile)) {
+	if (
+		[...select.options].some((option) => option.value === state.resultProfile)
+	) {
 		select.value = state.resultProfile;
 	} else {
 		state.resultProfile = "all";
@@ -937,6 +939,7 @@ function renderLmEvalLeaderboard(list, entries) {
 		"Profile",
 		"Status",
 		"Tasks",
+		"Runtime",
 		"Runtime backend",
 		"Context",
 		"Tok/s",
@@ -966,13 +969,13 @@ function renderLmEvalLeaderboard(list, entries) {
 		tr.append(
 			leaderboardCell(rank, "rank-cell"),
 			leaderboardCell(modelName, "model-cell", modelName),
-			leaderboardCell(
-				profileDisplayLabel(profile),
-				"profile-cell",
-				profile.id,
-			),
+			leaderboardCell(profileDisplayLabel(profile), "profile-cell", profile.id),
 			leaderboardCell(leaderboardStatus(entry)),
 			leaderboardCell(formatTaskCoverage(entry)),
+			leaderboardCell(
+				formatRuntimeSeconds(resultRuntimeSeconds(entry)),
+				"runtime-cell",
+			),
 			leaderboardCell(modelBackendLabel(entry, model)),
 			leaderboardCell(
 				formatContext(entry.context_window || model?.context_window),
@@ -1026,6 +1029,7 @@ function renderSweMiniLeaderboard(list, entries) {
 		"Runtime backend",
 		"Judge",
 		"Passed",
+		"Runtime",
 		"Success",
 		"Avg duration",
 	].forEach((name) => {
@@ -1045,6 +1049,10 @@ function renderSweMiniLeaderboard(list, entries) {
 			leaderboardCell(modelBackendLabel(entry, model)),
 			leaderboardCell(displayJudgeModel(entry.judge_model)),
 			leaderboardCell(`${entry.passed_tasks ?? 0}/${entry.total_tasks ?? 0}`),
+			leaderboardCell(
+				formatRuntimeSeconds(resultRuntimeSeconds(entry)),
+				"runtime-cell",
+			),
 			leaderboardCell(
 				formatScore(entry.overall_score),
 				"score-cell overall-score",
@@ -1117,11 +1125,22 @@ function renderTable(rows) {
 	const table = document.createElement("table");
 	const thead = document.createElement("thead");
 	const header = document.createElement("tr");
-	["Model", "Profile", "Task", "Metric", "Value", "Samples", "Job"].forEach((name) => {
-		const th = document.createElement("th");
-		th.textContent = name;
-		header.append(th);
-	});
+	[
+		"Model",
+		"Profile",
+		"Task",
+		"Metric",
+		"Value",
+		"Samples",
+		"Runtime",
+		"Job",
+	].forEach(
+		(name) => {
+			const th = document.createElement("th");
+			th.textContent = name;
+			header.append(th);
+		},
+	);
 	thead.append(header);
 	const tbody = document.createElement("tbody");
 	rows.forEach((row) => {
@@ -1133,6 +1152,7 @@ function renderTable(rows) {
 			row.metric,
 			formatValue(row.value),
 			row.samples ?? "",
+			formatRuntimeSeconds(resultRuntimeSeconds(row)),
 			row.job_id,
 		].forEach((value) => {
 			const td = document.createElement("td");
@@ -1350,11 +1370,11 @@ function requestProgressFromLog(job) {
 	};
 }
 
-function activeJobElapsed(job) {
-	if (!ACTIVE_JOB_STATUSES.has(job.status)) return "";
-	const startedAt = Number(job.started_at || job.updated_at || job.created_at);
-	if (!Number.isFinite(startedAt) || startedAt <= 0) return "";
-	const seconds = Math.max(0, Math.floor(Date.now() / 1000 - startedAt));
+function durationText(value) {
+	if (value === null || value === undefined || value === "") return "";
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed < 0) return "";
+	const seconds = Math.floor(parsed);
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
 	if (minutes < 60) return `${minutes}m`;
@@ -1366,11 +1386,36 @@ function activeJobElapsed(job) {
 	return `${days}d ${remainingHours}h`;
 }
 
+function activeJobElapsed(job) {
+	if (!ACTIVE_JOB_STATUSES.has(job.status)) return "";
+	const startedAt = Number(job.started_at || job.updated_at || job.created_at);
+	if (!Number.isFinite(startedAt) || startedAt <= 0) return "";
+	return durationText(Date.now() / 1000 - startedAt);
+}
+
+function completedJobRuntime(job) {
+	if (!TERMINAL_JOB_STATUSES.has(job.status)) return "";
+	const persisted = durationText(job.runtime_seconds);
+	if (persisted) return persisted;
+	const startedAt = Number(job.started_at);
+	const finishedAt = Number(job.finished_at || job.updated_at);
+	if (
+		!Number.isFinite(startedAt) ||
+		startedAt <= 0 ||
+		!Number.isFinite(finishedAt) ||
+		finishedAt < startedAt
+	)
+		return "";
+	return durationText(finishedAt - startedAt);
+}
+
 function withElapsed(text, elapsed) {
 	return elapsed ? `${text} · ${elapsed}` : text;
 }
 
 function progressText(job) {
+	const runtime = completedJobRuntime(job);
+	if (runtime) return `Runtime ${runtime}`;
 	const elapsed = activeJobElapsed(job);
 	const requestProgress = job.request_progress || requestProgressFromLog(job);
 	const requestValue = progressValue(requestProgress);
@@ -1422,10 +1467,10 @@ function jobDetailMeta(job) {
 	const protection = job.model_protection || {};
 	const values = [
 		`Suite: ${suiteLabel(jobSuite(job))}`,
-		jobSuite(job) === "lm_eval"
-			? `Profile: ${recordProfileLabel(job)}`
-			: null,
-		progress.unit !== "batches" && progressText(job)
+		jobSuite(job) === "lm_eval" ? `Profile: ${recordProfileLabel(job)}` : null,
+		ACTIVE_JOB_STATUSES.has(job.status) &&
+		progress.unit !== "batches" &&
+		progressText(job)
 			? `Progress: ${progressText(job)}`
 			: null,
 		batchProgress.current
@@ -1438,6 +1483,9 @@ function jobDetailMeta(job) {
 			? `Current batch requests: ${progressValue(requestProgress)}`
 			: null,
 		activeJobElapsed(job) ? `Elapsed: ${activeJobElapsed(job)}` : null,
+		completedJobRuntime(job)
+			? `Runtime: ${completedJobRuntime(job)}`
+			: null,
 		job.rerun_of ? `Rerun of: ${job.rerun_of}` : null,
 		evalOptions.task_batch_size
 			? `Task batch size: ${evalOptions.task_batch_size}`
@@ -1626,6 +1674,38 @@ function formatScore(value) {
 	return value === null || value === undefined || Number.isNaN(Number(value))
 		? "—"
 		: `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+}
+function resultRuntimeSeconds(record) {
+	const rawRuntime = record?.runtime_seconds;
+	const runtime = Number(rawRuntime);
+	if (
+		rawRuntime !== null &&
+		rawRuntime !== undefined &&
+		Number.isFinite(runtime) &&
+		runtime >= 0
+	)
+		return runtime;
+	const rawEvaluationRuntime = record?.total_evaluation_time_seconds;
+	const evaluationRuntime = Number(rawEvaluationRuntime);
+	if (
+		rawEvaluationRuntime !== null &&
+		rawEvaluationRuntime !== undefined &&
+		Number.isFinite(evaluationRuntime) &&
+		evaluationRuntime >= 0
+	) {
+		return evaluationRuntime;
+	}
+	const rawSweRuntimeMs = record?.total_duration_ms;
+	const sweRuntimeMs = Number(rawSweRuntimeMs);
+	return rawSweRuntimeMs !== null &&
+		rawSweRuntimeMs !== undefined &&
+		Number.isFinite(sweRuntimeMs) &&
+		sweRuntimeMs >= 0
+		? sweRuntimeMs / 1000
+		: null;
+}
+function formatRuntimeSeconds(value) {
+	return durationText(value) || "—";
 }
 function formatRate(value) {
 	return value === null || value === undefined || Number.isNaN(Number(value))

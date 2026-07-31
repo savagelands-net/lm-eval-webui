@@ -381,6 +381,7 @@ class SweMiniRunnerTests(unittest.TestCase):
             "suite": "swe_mini",
             "model_id": "Model-A",
             "status": "succeeded",
+            "runtime_seconds": 12.5,
             "provider_backend": "rocm",
             "swe_options": {
                 "judge_model": "lemonade/gpt-oss-120b-mxfp-GGUF",
@@ -402,7 +403,9 @@ class SweMiniRunnerTests(unittest.TestCase):
             ],
         )
         self.assertTrue(all(row["suite"] == "swe_mini" for row in rows))
+        self.assertTrue(all(row["runtime_seconds"] == 12.5 for row in rows))
         self.assertEqual(entry["suite"], "swe_mini")
+        self.assertEqual(entry["runtime_seconds"], 12.5)
         self.assertEqual(entry["overall_score"], 50.0)
         self.assertEqual(entry["total_tasks"], 2)
         self.assertEqual(entry["passed_tasks"], 1)
@@ -2157,7 +2160,10 @@ class JobManagerBatchTests(unittest.TestCase):
         self.assertEqual(job["batch_progress"]["total"], 3)
         self.assertEqual(job["batch_progress"]["completed"], 3)
         self.assertEqual(len(job["result_files"]), 3)
+        self.assertGreaterEqual(job["finished_at"], job["started_at"])
+        self.assertGreaterEqual(job["runtime_seconds"], 0)
         self.assertEqual(len(leaderboard), 1)
+        self.assertEqual(leaderboard[0]["runtime_seconds"], job["runtime_seconds"])
         self.assertEqual(
             sorted(score["task"] for score in leaderboard[0]["task_scores"]),
             ["task_a", "task_b", "task_c", "task_d", "task_e"],
@@ -2858,6 +2864,8 @@ class JobManagerCancellationTests(unittest.TestCase):
 
         self.assertEqual(cancelled["status"], "cancelled")
         self.assertEqual(cancelled["returncode"], -15)
+        self.assertGreaterEqual(cancelled["finished_at"], cancelled["started_at"])
+        self.assertGreaterEqual(cancelled["runtime_seconds"], 0)
 
     def test_active_job_cannot_be_cleared_or_rerun(self):
         ActiveJobError = symbol("lm_eval_webui.jobs", "ActiveJobError")
@@ -3198,11 +3206,13 @@ class BenchmarkProfileTests(unittest.TestCase):
             "job-1",
             {"model_name": "Model-A", "results": {"gsm8k": {"acc,none": 1}}},
             benchmark_profile=profile,
+            runtime_seconds=125.5,
         )
 
         self.assertEqual(rows[0]["profile_id"], "strix-balanced-quick-v1")
         self.assertEqual(rows[0]["profile_label"], "Quick Screen")
         self.assertEqual(rows[0]["profile_version"], 1)
+        self.assertEqual(rows[0]["runtime_seconds"], 125.5)
 
 
 class LeaderboardScoringTests(unittest.TestCase):
@@ -3255,6 +3265,34 @@ class LeaderboardScoringTests(unittest.TestCase):
 
         self.assertEqual(entry["overall_score"], 50.0)
         self.assertEqual(entry["score_method"], "category-balanced-v1")
+
+    def test_result_runtime_prefers_job_wall_time_and_falls_back_to_eval_time(self):
+        extract_leaderboard_entry = symbol(
+            "lm_eval_webui.results", "extract_leaderboard_entry"
+        )
+        result_json = {
+            "model_name": "Model-A",
+            "total_evaluation_time_seconds": 100,
+            "results": {"gsm8k": {"exact_match,flexible-extract": 1.0}},
+        }
+
+        timed = extract_leaderboard_entry(
+            {
+                "id": "job-1",
+                "model_id": "Model-A",
+                "status": "succeeded",
+                "started_at": 1000,
+                "finished_at": 1125.5,
+            },
+            result_json,
+        )
+        fallback = extract_leaderboard_entry(
+            {"id": "legacy", "model_id": "Model-A", "status": "succeeded"},
+            result_json,
+        )
+
+        self.assertEqual(timed["runtime_seconds"], 125.5)
+        self.assertEqual(fallback["runtime_seconds"], 100.0)
 
     def test_builtin_profile_uses_canonical_metrics_and_is_rank_eligible(self):
         extract_leaderboard_entry = symbol(
@@ -3771,7 +3809,12 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('"Balanced Overall"', script)
         self.assertIn('"Profile"', script)
         self.assertIn("rank_eligible", script)
+        self.assertIn('"Runtime"', script)
+        self.assertIn("function completedJobRuntime", script)
+        self.assertIn("function formatRuntimeSeconds", script)
+        self.assertIn("Runtime ${runtime}", script)
         self.assertIn(".profile-picker", styles)
+        self.assertIn(".runtime-cell", styles)
         self.assertIn(".badge.profile", styles)
         self.assertIn('"benchmark_profiles": lm_eval_profiles()', server)
 

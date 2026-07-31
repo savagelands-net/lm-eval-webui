@@ -486,7 +486,7 @@ summary {
 	overflow: auto;
 }
 .leaderboard-table {
-	min-width: 1250px;
+	min-width: 1350px;
 	white-space: nowrap;
 }
 .leaderboard-table tbody tr:hover {
@@ -504,6 +504,10 @@ summary {
 }
 .profile-cell {
 	color: var(--accent-2);
+}
+.runtime-cell {
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 .score-cell {
 	font-variant-numeric: tabular-nums;
