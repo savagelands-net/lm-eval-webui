@@ -3821,7 +3821,7 @@ class SmokeTests(unittest.TestCase):
     def test_static_ui_uses_centered_overflow_safe_page_layout(self):
         styles = Path("static/styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("--page-content-width: 1400px", styles)
+        self.assertIn("--page-content-width: 2000px", styles)
         self.assertIn("--page-gutter: 16px", styles)
         self.assertIn("overflow-x: clip", styles)
         self.assertIn("margin-inline: auto", styles)
