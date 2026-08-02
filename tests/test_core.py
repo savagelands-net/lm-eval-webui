@@ -3818,6 +3818,20 @@ class SmokeTests(unittest.TestCase):
         self.assertIn(".badge.profile", styles)
         self.assertIn('"benchmark_profiles": lm_eval_profiles()', server)
 
+    def test_static_ui_uses_centered_overflow_safe_page_layout(self):
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("--page-content-width: 1400px", styles)
+        self.assertIn("--page-gutter: 16px", styles)
+        self.assertIn("overflow-x: clip", styles)
+        self.assertIn("margin-inline: auto", styles)
+        self.assertIn("padding-inline: var(--page-gutter)", styles)
+        self.assertIn("main > *,\n.card {\n\tmin-width: 0", styles)
+        self.assertIn(
+            ".leaderboard,\n.table-wrap {\n\tmax-width: 100%;\n\tmin-width: 0",
+            styles,
+        )
+
     def test_task_catalog_request_uses_extended_timeout(self):
         script = Path("static/app.js").read_text(encoding="utf-8")
 

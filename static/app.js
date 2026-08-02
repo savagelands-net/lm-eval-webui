@@ -1134,13 +1134,11 @@ function renderTable(rows) {
 		"Samples",
 		"Runtime",
 		"Job",
-	].forEach(
-		(name) => {
-			const th = document.createElement("th");
-			th.textContent = name;
-			header.append(th);
-		},
-	);
+	].forEach((name) => {
+		const th = document.createElement("th");
+		th.textContent = name;
+		header.append(th);
+	});
 	thead.append(header);
 	const tbody = document.createElement("tbody");
 	rows.forEach((row) => {
@@ -1483,9 +1481,7 @@ function jobDetailMeta(job) {
 			? `Current batch requests: ${progressValue(requestProgress)}`
 			: null,
 		activeJobElapsed(job) ? `Elapsed: ${activeJobElapsed(job)}` : null,
-		completedJobRuntime(job)
-			? `Runtime: ${completedJobRuntime(job)}`
-			: null,
+		completedJobRuntime(job) ? `Runtime: ${completedJobRuntime(job)}` : null,
 		job.rerun_of ? `Rerun of: ${job.rerun_of}` : null,
 		evalOptions.task_batch_size
 			? `Task batch size: ${evalOptions.task_batch_size}`

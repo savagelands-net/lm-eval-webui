@@ -11,9 +11,14 @@
 	--good: #7ee787;
 	--warn: #f2cc60;
 	--border: #30394c;
+	--page-content-width: 1400px;
+	--page-gutter: 16px;
 }
 * {
 	box-sizing: border-box;
+}
+html {
+	overflow-x: clip;
 }
 body {
 	margin: 0;
@@ -25,15 +30,20 @@ body {
 }
 header,
 main {
-	width: min(1400px, calc(100% - 32px));
-	margin: 0 auto;
+	width: 100%;
+	max-width: calc(
+		var(--page-content-width) + var(--page-gutter) + var(--page-gutter)
+	);
+	min-width: 0;
+	margin-inline: auto;
+	padding-inline: var(--page-gutter);
 }
 header {
 	display: flex;
 	justify-content: space-between;
 	gap: 1rem;
 	align-items: center;
-	padding: 28px 0 18px;
+	padding-block: 28px 18px;
 }
 h1,
 h2,
@@ -60,7 +70,13 @@ main {
 	gap: 18px;
 	padding-bottom: 40px;
 }
+main > *,
 .card {
+	min-width: 0;
+	max-width: 100%;
+}
+.card {
+	width: 100%;
 	background: color-mix(in srgb, var(--panel), transparent 5%);
 	border: 1px solid var(--border);
 	border-radius: 18px;
@@ -483,6 +499,8 @@ summary {
 }
 .leaderboard,
 .table-wrap {
+	max-width: 100%;
+	min-width: 0;
 	overflow: auto;
 }
 .leaderboard-table {
