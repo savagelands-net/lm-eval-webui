@@ -1094,29 +1094,56 @@ function renderChart(rows, metric) {
 	const chart = $("chart");
 	chart.replaceChildren();
 	if (!rows.length) return setText(chart, "No numeric results yet.");
-	const width = 1000,
-		rowHeight = 42,
-		height = Math.max(240, rows.length * rowHeight + 50);
+	const rowHeight = 42;
+	const height = Math.max(260, rows.length * rowHeight + 50);
+	const visibleWidth = Math.max(600, Math.floor(chart.clientWidth || 1000));
 	const maxValue = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
 	const svg = document.createElementNS(SVG_NS, "svg");
-	svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+	svg.setAttribute("viewBox", `0 0 ${visibleWidth} ${height}`);
 	svg.setAttribute("role", "img");
 	svg.setAttribute("aria-label", `${metric || "selected metric"} chart`);
-	rows.forEach((row, index) => {
-		const y = 30 + index * rowHeight;
-		const barWidth = Math.max(2, (Math.abs(row.value) / maxValue) * 650);
-		svg.append(
-			svgText(
-				10,
-				y + 16,
-				`${row.model} · ${recordProfileLabel(row)} · ${row.task}`,
-				"bar-label",
-			),
-			svgRect(290, y, barWidth, 24),
-			svgText(300 + barWidth, y + 16, formatValue(row.value), "axis-label"),
+	const labels = rows.map((row, index) => {
+		const label = svgText(
+			10,
+			30 + index * rowHeight + 16,
+			`${row.model} · ${recordProfileLabel(row)} · ${row.task}`,
+			"bar-label",
 		);
+		svg.append(label);
+		return label;
 	});
 	chart.append(svg);
+
+	const longestLabelWidth = Math.max(...labels.map(svgTextWidth));
+	const barStart = Math.ceil(10 + longestLabelWidth + 24);
+	const valueSpace = 90;
+	const minimumPlotWidth = 300;
+	const width = Math.max(
+		visibleWidth,
+		barStart + minimumPlotWidth + valueSpace,
+	);
+	const maximumBarWidth = width - barStart - valueSpace;
+	svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+	svg.setAttribute("width", String(width));
+	svg.setAttribute("height", String(height));
+	svg.style.width = `${width}px`;
+
+	rows.forEach((row, index) => {
+		const y = 30 + index * rowHeight;
+		const barWidth = Math.max(
+			2,
+			(Math.abs(row.value) / maxValue) * maximumBarWidth,
+		);
+		svg.append(
+			svgRect(barStart, y, barWidth, 24),
+			svgText(
+				barStart + barWidth + 10,
+				y + 16,
+				formatValue(row.value),
+				"axis-label",
+			),
+		);
+	});
 }
 function renderTable(rows) {
 	const wrap = $("resultTable");
@@ -1658,6 +1685,17 @@ function svgText(x, y, value, className) {
 	text.setAttribute("class", className);
 	text.textContent = value;
 	return text;
+}
+function svgTextWidth(text) {
+	if (typeof text.getComputedTextLength === "function") {
+		try {
+			const measured = text.getComputedTextLength();
+			if (Number.isFinite(measured) && measured > 0) return measured;
+		} catch (_error) {
+			// Detached or synthetic SVG implementations may not support measurement.
+		}
+	}
+	return String(text.textContent || "").length * 7.5;
 }
 function setText(node, value) {
 	node.replaceChildren();

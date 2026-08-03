@@ -4049,6 +4049,21 @@ class SmokeTests(unittest.TestCase):
             styles,
         )
 
+    def test_detailed_chart_measures_labels_before_drawing_bars(self):
+        script = Path("static/app.js").read_text(encoding="utf-8")
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("function svgTextWidth", script)
+        self.assertIn("text.getComputedTextLength()", script)
+        self.assertIn("const longestLabelWidth", script)
+        self.assertIn("const barStart = Math.ceil(10 + longestLabelWidth + 24)", script)
+        self.assertIn("svgRect(barStart", script)
+        self.assertIn("svg.style.width = `${width}px`", script)
+        self.assertIn(".chart {\n\tmax-width: 100%;\n\toverflow-x: auto", styles)
+        self.assertIn("font-family: inherit", styles)
+        self.assertIn("font-size: 0.86rem", styles)
+        self.assertIn("overflow-x: auto", styles)
+
     def test_task_catalog_request_uses_extended_timeout(self):
         script = Path("static/app.js").read_text(encoding="utf-8")
 

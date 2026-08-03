@@ -544,17 +544,24 @@ summary {
 	margin-top: 16px;
 	margin-bottom: 12px;
 }
+.chart {
+	max-width: 100%;
+	overflow-x: auto;
+}
 .chart svg {
-	width: 100%;
+	display: block;
 	min-height: 260px;
+}
+.chart text {
+	font-family: inherit;
 }
 .bar-label {
 	fill: var(--text);
-	font-size: 12px;
+	font-size: 0.86rem;
 }
 .axis-label {
 	fill: var(--muted);
-	font-size: 11px;
+	font-size: 0.8rem;
 }
 table {
 	width: 100%;
