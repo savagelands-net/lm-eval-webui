@@ -1,3 +1,4 @@
+import asyncio
 import json
 import math
 import os
@@ -652,6 +653,161 @@ class LemonadeModelTests(unittest.TestCase):
 
         self.assertNotIn("llamacpp_backend", payload)
 
+    def test_streaming_usage_preserves_options_and_requests_final_usage(self):
+        enable_streaming_usage = symbol(
+            "lm_eval_webui.lemonade_model", "enable_streaming_usage"
+        )
+        payload = {"stream_options": {"continuous_usage_stats": True}}
+
+        enabled = enable_streaming_usage(payload)
+
+        self.assertIs(enabled, payload)
+        self.assertTrue(payload["stream"])
+        self.assertEqual(
+            payload["stream_options"],
+            {"continuous_usage_stats": True, "include_usage": True},
+        )
+
+    def test_stream_model_call_records_telemetry_before_parsing(self):
+        completion = self.completion()
+        completion._stream_responses = True
+        completion._telemetry_path = None
+        completion._seed = 0
+        completion._llamacpp_backend = None
+        completion.base_url = "http://example.test/v1/chat/completions"
+        completion.verify_certificate = True
+        completion.timeout = 30
+        completion.__dict__["header"] = {}
+        completion.__dict__["eos_string"] = None
+        completion.create_message = lambda messages: messages
+        completion._create_payload = lambda *_args, **_kwargs: {"model": "Model-A"}
+        posted_payloads = []
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def iter_lines(self, decode_unicode=False):
+                lines = [
+                    'data: {"model":"Model-A","choices":[{"index":0,"delta":{"reasoning":"work"}}]}',
+                    'data: {"choices":[{"index":0,"delta":{"content":"42"},"finish_reason":"stop"}]}',
+                    'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}',
+                    "data: [DONE]",
+                ]
+                return lines if decode_unicode else [line.encode() for line in lines]
+
+        def post(_url, *, json, **_kwargs):
+            posted_payloads.append(json)
+            return Response()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            telemetry_path = Path(tmp) / "vllm.jsonl"
+            completion._telemetry_path = str(telemetry_path)
+            with mock.patch(
+                "lm_eval_webui.lemonade_model.importlib.import_module",
+                return_value=types.SimpleNamespace(post=post),
+            ):
+                output = completion.model_call(
+                    [{"role": "user", "content": "question"}], gen_kwargs={}
+                )
+
+            self.assertIsInstance(output, dict)
+            self.assertEqual(
+                len(telemetry_path.read_text(encoding="utf-8").splitlines()), 1
+            )
+            self.assertEqual(completion.parse_generations(output), ["42"])
+            self.assertEqual(
+                len(telemetry_path.read_text(encoding="utf-8").splitlines()), 1
+            )
+
+        self.assertTrue(posted_payloads[0]["stream"])
+        self.assertEqual(posted_payloads[0]["stream_options"], {"include_usage": True})
+
+    def test_async_stream_model_call_records_vllm_usage_and_rate(self):
+        aggregate_telemetry_file = symbol(
+            "lm_eval_webui.telemetry", "aggregate_telemetry_file"
+        )
+        completion = self.completion()
+        completion._stream_responses = True
+        completion._seed = 0
+        completion._llamacpp_backend = None
+        completion.base_url = "http://example.test/v1/chat/completions"
+        completion.__dict__["header"] = {}
+        completion.create_message = lambda messages: messages
+        completion._create_payload = lambda *_args, **_kwargs: {"model": "Model-A"}
+
+        class Content:
+            def __init__(self):
+                self.lines = iter(
+                    [
+                        b'data: {"model":"Model-A","choices":[{"index":0,"delta":{"reasoning":"work"}}]}\n',
+                        b'data: {"choices":[{"index":0,"delta":{"content":"42"},"finish_reason":"stop"}]}\n',
+                        b'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n',
+                        b"data: [DONE]\n",
+                    ]
+                )
+
+            async def readline(self):
+                await asyncio.sleep(0.001)
+                return next(self.lines, b"")
+
+        class Response:
+            def __init__(self):
+                self.content = Content()
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+        class Session:
+            def __init__(self):
+                self.payloads = []
+
+            def post(self, _url, *, json, **_kwargs):
+                self.payloads.append(json)
+                return Response()
+
+        class Semaphore:
+            released = False
+
+            async def acquire(self):
+                return True
+
+            def release(self):
+                self.released = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            telemetry_path = Path(tmp) / "vllm-async.jsonl"
+            completion._telemetry_path = str(telemetry_path)
+            session = Session()
+            semaphore = Semaphore()
+
+            answers = asyncio.run(
+                completion.amodel_call(
+                    session,
+                    semaphore,
+                    [[{"role": "user", "content": "question"}]],
+                    gen_kwargs={},
+                )
+            )
+            telemetry = aggregate_telemetry_file(telemetry_path)
+            event = json.loads(telemetry_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(answers, ["42"])
+        self.assertTrue(semaphore.released)
+        self.assertEqual(session.payloads[0]["stream_options"], {"include_usage": True})
+        self.assertEqual(event["timings"]["generation_timing_source"], "client_stream")
+        self.assertEqual(event["timings"]["predicted_n"], 2)
+        self.assertGreater(event["timings"]["predicted_ms"], 0)
+        self.assertEqual(telemetry["request_count"], 1)
+        self.assertEqual(telemetry["generated_tokens"], 2)
+        self.assertGreater(telemetry["generation_tok_s"], 0)
+
     def test_create_payload_defers_stops_and_floors_generation_budget(self):
         completion_type = symbol(
             "lm_eval_webui.lemonade_model", "OpenAICompatibleChatCompletion"
@@ -834,6 +990,8 @@ class LemonadeModelTests(unittest.TestCase):
 
         self.assertEqual(output["model"], "Model-A")
         self.assertEqual(output["choices"][0]["message"]["content"], "red blue")
+        self.assertEqual(output["timings"]["request_elapsed_s"], 5.0)
+        self.assertEqual(output["timings"]["generation_elapsed_s"], 2.0)
         self.assertEqual(output["timings"]["time_to_headers_s"], 1.0)
         self.assertEqual(output["timings"]["time_to_first_event_s"], 2.0)
         self.assertEqual(output["timings"]["ttft_s"], 3.0)
@@ -915,7 +1073,7 @@ class LemonadeModelTests(unittest.TestCase):
         aggregate = aggregate_telemetry_events(
             [
                 {
-                    "timings": {"ttft_s": 1.0},
+                    "timings": {"ttft_s": 1.0, "generation_elapsed_s": 1.0},
                     "usage": {"completion_tokens": 10, "prompt_tokens": 5},
                     "response": {
                         "has_final_content": True,
@@ -923,7 +1081,7 @@ class LemonadeModelTests(unittest.TestCase):
                     },
                 },
                 {
-                    "timings": {"ttft_s": 2.0},
+                    "timings": {"ttft_s": 2.0, "generation_elapsed_s": 2.0},
                     "usage": {"completion_tokens": 20, "prompt_tokens": 7},
                     "response": {
                         "has_final_content": False,
@@ -940,7 +1098,27 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(aggregate["empty_response_count"], 1)
         self.assertEqual(aggregate["generation_limited_response_count"], 1)
         self.assertEqual(aggregate["generated_tokens"], 30)
+        self.assertEqual(aggregate["generation_tok_s"], 10.0)
         self.assertEqual(aggregate["prompt_tokens"], 12)
+
+    def test_normalize_models_extracts_vllm_context_from_recipe_options(self):
+        normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
+
+        models = normalize_models(
+            {
+                "data": [
+                    {
+                        "id": "Model-vLLM",
+                        "downloaded": True,
+                        "recipe": "vllm",
+                        "recipe_options": {"ctx_size": 131072},
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(models[0]["context_window"], 131072)
+        self.assertEqual(models[0]["runtime_backend"], "vllm")
 
     def test_normalize_models_extracts_llamacpp_runtime_backend(self):
         normalize_models = symbol("lm_eval_webui.lemonade", "normalize_models")
@@ -993,6 +1171,7 @@ class LemonadeModelTests(unittest.TestCase):
                         "model_name": "Gemma-4-31B-it-GGUF",
                         "checkpoint": "unsloth/gemma-4-31B-it-GGUF:Q4_K_M",
                         "device": "gpu",
+                        "max_context_window": 131072,
                         "recipe": "llamacpp",
                         "recipe_options": {"llamacpp_backend": "rocm"},
                     }
@@ -1004,6 +1183,7 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(metadata["recipe"], "llamacpp")
         self.assertEqual(metadata["llamacpp_backend"], "rocm")
         self.assertEqual(metadata["runtime_backend"], "rocm")
+        self.assertEqual(metadata["context_window"], 131072)
         self.assertEqual(metadata["device"], "gpu")
 
     def test_health_metadata_reports_system_for_llamacpp_without_explicit_backend(self):
@@ -1952,6 +2132,43 @@ class JobManagerTelemetryTests(unittest.TestCase):
         self.assertFalse(probe_called)
         self.assertNotIn("probe_ttft_s", telemetry)
         self.assertNotIn("error", telemetry)
+
+    def test_probe_rate_is_used_when_benchmark_has_ttft_but_no_rate(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            telemetry_path = Path(tmp) / "telemetry.jsonl"
+            telemetry_path.write_text(
+                json.dumps(
+                    {
+                        "timings": {"ttft_s": 0.25},
+                        "usage": {"completion_tokens": 2},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=Path("/repo"),
+                run_async=False,
+                telemetry_probe=lambda _base_url, _model_id: {
+                    "ttft_s": 10.0,
+                    "generation_tok_s": 12.5,
+                },
+            )
+
+            telemetry = manager._collect_telemetry(
+                {
+                    "telemetry_path": str(telemetry_path),
+                    "openai_base_url": "http://example.test",
+                    "model_id": "Model-A",
+                },
+                0,
+            )
+
+        self.assertEqual(telemetry["ttft_s"], 0.25)
+        self.assertEqual(telemetry["probe_generation_tok_s"], 12.5)
 
     def test_probe_ttft_is_used_when_benchmark_ttft_is_missing(self):
         JobManager = symbol("lm_eval_webui.jobs", "JobManager")

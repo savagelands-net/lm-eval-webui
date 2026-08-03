@@ -170,6 +170,14 @@ fields used by current vLLM, llama.cpp, and other compatible providers. Only
 final `content` is scored; an unfinished reasoning trace is never treated as an
 answer.
 
+For performance telemetry, streaming requests ask OpenAI-compatible providers
+for the final usage chunk. Native server timings are preferred; when vLLM does
+not emit them, output tokens per second is calculated from completion-token
+usage and the client-observed generation interval. Model context comes from the
+advertised maximum or, for vLLM registry entries, the effective `ctx_size`
+recipe setting. Runs completed before this telemetry was captured cannot be
+reliably backfilled with tokens-per-second data.
+
 A full run without **Limit** can be extremely expensive. Before starting one,
 dry-run the all-model preflight:
 

@@ -61,6 +61,17 @@ def truthy(value: Any) -> bool:
     return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+def enable_streaming_usage(payload: dict[str, Any]) -> dict[str, Any]:
+    """Request the final OpenAI usage chunk needed for client-side throughput."""
+
+    payload["stream"] = True
+    raw_options = payload.get("stream_options")
+    stream_options = dict(raw_options) if isinstance(raw_options, dict) else {}
+    stream_options["include_usage"] = True
+    payload["stream_options"] = stream_options
+    return payload
+
+
 def add_runtime_options(
     payload: dict[str, Any], llamacpp_backend: Any = None
 ) -> dict[str, Any]:
@@ -206,6 +217,7 @@ def stream_response_json(
     """Consume an OpenAI-compatible SSE response and return chat JSON + timings."""
 
     first_headers = clock()
+    ended = first_headers
     first_event = first_token = None
     first_token_source = None
     model = None
@@ -214,6 +226,7 @@ def stream_response_json(
     choices: dict[int, dict[str, Any]] = {}
     for raw_line in response.iter_lines(decode_unicode=True):
         now = clock()
+        ended = now
         line = (
             raw_line.decode("utf-8", "replace")
             if isinstance(raw_line, bytes)
@@ -270,6 +283,10 @@ def stream_response_json(
                 stored["finish_reason"] = choice.get("finish_reason")
     timings.update(
         {
+            "request_elapsed_s": ended - started,
+            "generation_elapsed_s": None
+            if first_token is None
+            else ended - first_token,
             "time_to_headers_s": first_headers - started,
             "time_to_first_event_s": None
             if first_event is None
@@ -282,6 +299,17 @@ def stream_response_json(
         timings["ttft_source"] = "first_event_no_content"
     elif timings["ttft_s"] is not None:
         timings["ttft_source"] = first_token_source
+    client_timing = False
+    if usage is not None and timings.get("predicted_n") is None:
+        completion_tokens = usage.get("completion_tokens")
+        if completion_tokens is not None:
+            timings["predicted_n"] = completion_tokens
+            client_timing = True
+    if first_token is not None and timings.get("predicted_ms") is None:
+        timings["predicted_ms"] = max(0.0, ended - first_token) * 1000.0
+        client_timing = True
+    if client_timing:
+        timings["generation_timing_source"] = "client_stream"
     ordered_choices = [choices[index] for index in sorted(choices)]
     output: dict[str, Any] = {
         "choices": ordered_choices,
@@ -293,6 +321,39 @@ def stream_response_json(
     if usage is not None:
         output["usage"] = usage
     return output
+
+
+async def astream_response_json(
+    response: Any,
+    started: float,
+    clock: Callable[[], float] = time.perf_counter,
+) -> dict[str, Any]:
+    """Capture asynchronous SSE line arrival times and normalize the response."""
+
+    first_headers = clock()
+    lines: list[bytes] = []
+    arrival_times: list[float] = []
+    while True:
+        raw_line = await response.content.readline()
+        if not raw_line:
+            break
+        lines.append(raw_line)
+        arrival_times.append(clock())
+
+    class BufferedResponse:
+        @staticmethod
+        def iter_lines(decode_unicode: bool = False) -> list[Any]:
+            if decode_unicode:
+                return [line.decode("utf-8", "replace") for line in lines]
+            return lines
+
+    fallback_time = arrival_times[-1] if arrival_times else first_headers
+    observed_times = iter([first_headers, *arrival_times])
+    return stream_response_json(
+        BufferedResponse(),
+        started,
+        clock=lambda: next(observed_times, fallback_time),
+    )
 
 
 @register_model("openai-compatible-chat-completions", "lemonade-chat-completions")
@@ -307,9 +368,10 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
     ) -> None:
         self._stream_responses = truthy(stream_responses)
         self._llamacpp_backend = llamacpp_backend
+        self._telemetry_path = str(telemetry_path) if telemetry_path else None
         super().__init__(*args, **kwargs)
         global _CURRENT_TELEMETRY_PATH
-        _CURRENT_TELEMETRY_PATH = str(telemetry_path) if telemetry_path else None
+        _CURRENT_TELEMETRY_PATH = self._telemetry_path
 
     @cached_property
     def header(self) -> dict[str, str]:
@@ -359,7 +421,7 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
             eos=self.eos_string,
             **kwargs,
         )
-        payload["stream"] = True
+        enable_streaming_usage(payload)
         requests_module = importlib.import_module("requests")
 
         started = time.perf_counter()
@@ -373,16 +435,78 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
         )
         response.raise_for_status()
         output = stream_response_json(response, started)
-        return record_stop_sequences(output, stop_sequences)
+        record_stop_sequences(output, stop_sequences)
+        append_timing_events(self._telemetry_path, output)
+        output["_lm_eval_telemetry_recorded"] = True
+        return output
+
+    async def amodel_call(
+        self,
+        session: Any,
+        sem: Any,
+        messages: Any,
+        *,
+        generate: bool = True,
+        cache_keys: list[Any] | None = None,
+        ctxlens: list[int] | None = None,
+        gen_kwargs: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        if not generate or not self._stream_responses:
+            return await LocalChatCompletionBase.amodel_call(
+                self,
+                session,
+                sem,
+                messages,
+                generate=generate,
+                cache_keys=cache_keys,
+                ctxlens=ctxlens,
+                gen_kwargs=gen_kwargs,
+                **kwargs,
+            )
+
+        stop_sequences = normalize_stop_sequences((gen_kwargs or {}).get("until"))
+        payload = self._create_payload(
+            self.create_message(messages),
+            generate=True,
+            gen_kwargs=copy.deepcopy(gen_kwargs),
+            seed=self._seed,
+            **kwargs,
+        )
+        enable_streaming_usage(payload)
+        acquired = await sem.acquire()
+        try:
+            started = time.perf_counter()
+            async with session.post(
+                self.base_url,
+                json=payload,
+                headers=self.header,
+            ) as response:
+                response.raise_for_status()
+                output = await astream_response_json(response, started)
+            record_stop_sequences(output, stop_sequences)
+            append_timing_events(self._telemetry_path, output)
+            output["_lm_eval_telemetry_recorded"] = True
+            answers = self.parse_generations(output)
+            if cache_keys:
+                for answer, cache_key in zip(answers, cache_keys, strict=False):
+                    self.cache_hook.add_partial("generate_until", cache_key, answer)
+            return answers
+        finally:
+            if acquired:
+                sem.release()
 
     def parse_generations(self, outputs: Any, **_kwargs: Any) -> list[str]:
         if not isinstance(outputs, list):
             outputs = [outputs]
         generations: list[str] = []
+        unrecorded_outputs: list[dict[str, Any]] = []
         for output in outputs:
             if not isinstance(output, dict):
                 generations.append("")
                 continue
+            if not output.pop("_lm_eval_telemetry_recorded", False):
+                unrecorded_outputs.append(output)
             choices = sorted(output.get("choices", []), key=itemgetter("index"))
             stop_sequences = (
                 normalize_stop_sequences(output.get("_lm_eval_stop_sequences"))
@@ -396,7 +520,8 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
             for choice in choices:
                 message = choice.get("message") or {}
                 generations.append(final_answer_text(message, stop_sequences))
-        append_timing_events(_CURRENT_TELEMETRY_PATH, outputs)
+        telemetry_path = getattr(self, "_telemetry_path", _CURRENT_TELEMETRY_PATH)
+        append_timing_events(telemetry_path, unrecorded_outputs)
         return generations
 
 

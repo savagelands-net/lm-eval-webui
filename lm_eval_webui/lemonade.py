@@ -66,6 +66,32 @@ def _runtime_backend(recipe: str, recipe_options: dict[str, Any]) -> str:
     return "system" if recipe == "llamacpp" else recipe
 
 
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _context_window(
+    metadata: dict[str, Any], recipe_options: dict[str, Any]
+) -> int | None:
+    for value in (
+        metadata.get("max_context_window"),
+        metadata.get("context_window"),
+        metadata.get("max_model_len"),
+        recipe_options.get("ctx_size"),
+        recipe_options.get("max_model_len"),
+    ):
+        context_window = _positive_int(value)
+        if context_window is not None:
+            return context_window
+    return None
+
+
 def loaded_model_metadata_from_health(
     health_payload: dict[str, Any], model_id: str
 ) -> dict[str, Any]:
@@ -77,13 +103,17 @@ def loaded_model_metadata_from_health(
         if model_name != requested:
             continue
         recipe = str(loaded.get("recipe") or "")
-        recipe_options = loaded.get("recipe_options") or {}
+        raw_recipe_options = loaded.get("recipe_options") or {}
+        recipe_options = (
+            raw_recipe_options if isinstance(raw_recipe_options, dict) else {}
+        )
         runtime_backend = _runtime_backend(recipe, recipe_options)
         return {
             "model_name": model_name,
             "recipe": recipe,
             "llamacpp_backend": runtime_backend if recipe == "llamacpp" else None,
             "runtime_backend": runtime_backend,
+            "context_window": _context_window(loaded, recipe_options),
             "device": loaded.get("device"),
             "checkpoint": loaded.get("checkpoint", ""),
             "backend_url": loaded.get("backend_url", ""),
@@ -179,7 +209,10 @@ def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         labels = item.get("labels") or []
         recipe = str(item.get("recipe", ""))
-        recipe_options = item.get("recipe_options") or {}
+        raw_recipe_options = item.get("recipe_options") or {}
+        recipe_options = (
+            raw_recipe_options if isinstance(raw_recipe_options, dict) else {}
+        )
         runtime_backend = _runtime_backend(recipe, recipe_options)
         normalized.append(
             {
@@ -187,7 +220,7 @@ def normalize_models(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "name": model_id,
                 "labels": [str(label) for label in labels if label is not None],
                 "size_gb": item.get("size"),
-                "context_window": item.get("max_context_window"),
+                "context_window": _context_window(item, recipe_options),
                 "recipe": recipe,
                 "llamacpp_backend": runtime_backend if recipe == "llamacpp" else None,
                 "runtime_backend": runtime_backend,
@@ -219,6 +252,8 @@ def enrich_models_from_health(
                 **model,
                 "llamacpp_backend": backend.get("llamacpp_backend"),
                 "runtime_backend": backend.get("runtime_backend"),
+                "context_window": backend.get("context_window")
+                or model.get("context_window"),
             }
         enriched.append(model)
     return enriched

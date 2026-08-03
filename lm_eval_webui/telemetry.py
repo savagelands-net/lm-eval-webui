@@ -62,7 +62,8 @@ def load_telemetry_events(telemetry_path: str | Path | None) -> list[dict[str, A
 
 
 def aggregate_telemetry_events(events: list[dict[str, Any]]) -> dict[str, Any]:
-    generated_tokens = generated_ms = prompt_tokens = prompt_ms = 0.0
+    generated_tokens = prompt_tokens = prompt_ms = 0.0
+    generated_rate_tokens = generation_seconds = 0.0
     response_metadata_count = final_content_count = reasoning_count = 0
     generation_limit_count = 0
     ttft_values: list[float] = []
@@ -91,7 +92,17 @@ def aggregate_telemetry_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         if prompt_count is None:
             prompt_count = _number(usage.get("prompt_tokens"))
         generated_tokens += generated_count or 0.0
-        generated_ms += _number(timings.get("predicted_ms")) or 0.0
+        generated_duration_s = None
+        generated_ms = _number(timings.get("predicted_ms"))
+        if generated_ms is not None and generated_ms > 0:
+            generated_duration_s = generated_ms / 1000.0
+        else:
+            client_elapsed = _number(timings.get("generation_elapsed_s"))
+            if client_elapsed is not None and client_elapsed > 0:
+                generated_duration_s = client_elapsed
+        if generated_count is not None and generated_duration_s is not None:
+            generated_rate_tokens += generated_count
+            generation_seconds += generated_duration_s
         prompt_tokens += prompt_count or 0.0
         prompt_ms += _number(timings.get("prompt_ms")) or 0.0
         ttft = _number(timings.get("ttft_s") or timings.get("time_to_first_token_s"))
@@ -110,8 +121,8 @@ def aggregate_telemetry_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         )
     if generated_tokens:
         aggregate["generated_tokens"] = _integer(generated_tokens)
-    if generated_tokens and generated_ms:
-        aggregate["generation_tok_s"] = generated_tokens / (generated_ms / 1000.0)
+    if generated_rate_tokens and generation_seconds:
+        aggregate["generation_tok_s"] = generated_rate_tokens / generation_seconds
     if prompt_tokens:
         aggregate["prompt_tokens"] = _integer(prompt_tokens)
     if prompt_tokens and prompt_ms:
@@ -131,6 +142,7 @@ def probe_lemonade_chat_telemetry(
     started = time.perf_counter()
     first_headers = first_event = first_content = None
     final_timings: dict[str, Any] | None = None
+    usage: dict[str, Any] | None = None
     payload = {
         "model": model_id,
         "messages": [
@@ -139,6 +151,7 @@ def probe_lemonade_chat_telemetry(
         "max_tokens": 16,
         "temperature": 0,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
     request = urllib.request.Request(
         openai_api_url(base_url, "/chat/completions"),
@@ -168,6 +181,8 @@ def probe_lemonade_chat_telemetry(
                     continue
                 if isinstance(chunk.get("timings"), dict):
                     final_timings = chunk["timings"]
+                if isinstance(chunk.get("usage"), dict):
+                    usage = chunk["usage"]
                 for choice in chunk.get("choices") or []:
                     if not isinstance(choice, dict):
                         continue
@@ -197,8 +212,13 @@ def probe_lemonade_chat_telemetry(
         result["ttft_source"] = "first_event_no_content"
     elif first_content is not None:
         result["ttft_source"] = "first_content"
-    if final_timings:
-        rates = aggregate_telemetry_events([{"timings": final_timings}])
+    combined_timings = dict(final_timings or {})
+    if first_content is not None:
+        combined_timings["generation_elapsed_s"] = ended - first_content
+    if combined_timings or usage:
+        rates = aggregate_telemetry_events(
+            [{"timings": combined_timings, "usage": usage}]
+        )
         for key in (
             "generated_tokens",
             "generation_tok_s",

@@ -498,7 +498,7 @@ class JobManager:
                 ):
                     return summary
             except (OSError, ValueError, json.JSONDecodeError):
-                pass
+                return self._write_job_result_summary(job)
         return self._write_job_result_summary(job)
 
     def _write_job_result_summary(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -1340,7 +1340,7 @@ class JobManager:
         if (
             returncode == 0
             and self.telemetry_probe is not None
-            and "ttft_s" not in telemetry
+            and ("ttft_s" not in telemetry or "generation_tok_s" not in telemetry)
         ):
             try:
                 probe = self.telemetry_probe(
