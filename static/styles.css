@@ -512,6 +512,36 @@ summary {
 .leaderboard-table tbody tr:hover {
 	background: rgb(255 255 255 / 4%);
 }
+.leaderboard-sort {
+	align-items: center;
+	appearance: none;
+	background: transparent;
+	border: 0;
+	color: inherit;
+	cursor: pointer;
+	display: inline-flex;
+	font: inherit;
+	font-weight: inherit;
+	gap: 6px;
+	padding: 0;
+	white-space: nowrap;
+}
+.leaderboard-sort:hover {
+	color: var(--text);
+}
+.leaderboard-sort:focus-visible {
+	border-radius: 3px;
+	outline: 2px solid var(--accent);
+	outline-offset: 4px;
+}
+.leaderboard-sort-indicator {
+	color: var(--muted);
+	font-size: 0.7em;
+	min-width: 1em;
+}
+th[aria-sort] .leaderboard-sort-indicator {
+	color: var(--accent-2);
+}
 .rank-cell {
 	color: var(--accent-2);
 	font-weight: 800;

@@ -4,6 +4,7 @@ const state = {
 	jobs: [],
 	rows: [],
 	leaderboard: [],
+	leaderboardSort: {},
 	benchmarkProfiles: [],
 	resultProfile: "all",
 	selectedJobs: new Set(),
@@ -929,79 +930,240 @@ function renderLmEvalLeaderboard(list, entries) {
 		if (leftOrder !== rightOrder) return leftOrder - rightOrder;
 		return Number(right.overall_score || 0) - Number(left.overall_score || 0);
 	});
-	const table = document.createElement("table");
-	table.className = "leaderboard-table";
-	const thead = document.createElement("thead");
-	const header = document.createElement("tr");
-	[
-		"#",
-		"Model",
-		"Profile",
-		"Status",
-		"Tasks",
-		"Runtime",
-		"Runtime backend",
-		"Context",
-		"Tok/s",
-		"TTFT",
-		"Balanced Overall",
-		...LEADERBOARD_CATEGORIES,
-	].forEach((name) => {
-		const th = document.createElement("th");
-		th.textContent = name;
-		header.append(th);
-	});
-	thead.append(header);
-	const tbody = document.createElement("tbody");
 	const profileRanks = new Map();
-	orderedEntries.forEach((entry) => {
+	const rows = orderedEntries.map((entry) => {
 		const model = modelForEntry(entry);
 		const modelName = entry.model || entry.model_id || "unknown model";
 		const profile = benchmarkProfileForRecord(entry);
-		const eligible = Boolean(entry.rank_eligible);
-		let rank = "—";
-		if (eligible) {
-			const nextRank = (profileRanks.get(profile.id) || 0) + 1;
-			profileRanks.set(profile.id, nextRank);
-			rank = `#${nextRank}`;
+		let rankNumber = null;
+		if (entry.rank_eligible) {
+			rankNumber = (profileRanks.get(profile.id) || 0) + 1;
+			profileRanks.set(profile.id, rankNumber);
 		}
-		const tr = document.createElement("tr");
-		tr.append(
-			leaderboardCell(rank, "rank-cell"),
-			leaderboardCell(modelName, "model-cell", modelName),
-			leaderboardCell(profileDisplayLabel(profile), "profile-cell", profile.id),
-			leaderboardCell(leaderboardStatus(entry)),
-			leaderboardCell(formatTaskCoverage(entry)),
-			leaderboardCell(
-				formatRuntimeSeconds(resultRuntimeSeconds(entry)),
-				"runtime-cell",
-			),
-			leaderboardCell(modelBackendLabel(entry, model)),
-			leaderboardCell(
-				formatContext(entry.context_window || model?.context_window),
-			),
-			leaderboardCell(formatRate(entry.generation_tok_s)),
-			leaderboardCell(formatSeconds(entry.ttft_s)),
-			leaderboardCell(
-				formatScore(entry.overall_score),
-				"score-cell overall-score",
-				"Equal-weight mean of reasoning, math, instruction following, and structured output",
-			),
-		);
-		LEADERBOARD_CATEGORIES.forEach((category) => {
-			const categoryScore = categoryScoreFor(entry, category);
-			const cell = leaderboardCell(
-				formatScore(categoryScore?.score),
-				"score-cell category-score",
-			);
-			if (categoryScore?.tasks?.length)
-				cell.title = categoryScore.tasks.join(", ");
-			tr.append(cell);
-		});
-		tbody.append(tr);
+		return { entry, model, modelName, profile, rankNumber };
 	});
-	table.append(thead, tbody);
+	const columns = [
+		{
+			key: "rank",
+			label: "#",
+			sortLabel: "rank",
+			sortValue: (row) => row.rankNumber,
+			cell: (row) =>
+				leaderboardCell(
+					row.rankNumber === null ? "—" : `#${row.rankNumber}`,
+					"rank-cell",
+				),
+		},
+		{
+			key: "model",
+			label: "Model",
+			sortValue: (row) => row.modelName,
+			cell: (row) =>
+				leaderboardCell(row.modelName, "model-cell", row.modelName),
+		},
+		{
+			key: "profile",
+			label: "Profile",
+			sortValue: (row) => profileDisplayLabel(row.profile),
+			cell: (row) =>
+				leaderboardCell(
+					profileDisplayLabel(row.profile),
+					"profile-cell",
+					row.profile.id,
+				),
+		},
+		{
+			key: "status",
+			label: "Status",
+			sortValue: (row) => leaderboardStatus(row.entry),
+			cell: (row) => leaderboardCell(leaderboardStatus(row.entry)),
+		},
+		{
+			key: "tasks",
+			label: "Tasks",
+			sortValue: (row) => numberOrNull(row.entry.result_task_count),
+			cell: (row) => leaderboardCell(formatTaskCoverage(row.entry)),
+		},
+		{
+			key: "runtime",
+			label: "Runtime",
+			sortValue: (row) => resultRuntimeSeconds(row.entry),
+			cell: (row) =>
+				leaderboardCell(
+					formatRuntimeSeconds(resultRuntimeSeconds(row.entry)),
+					"runtime-cell",
+				),
+		},
+		{
+			key: "runtime-backend",
+			label: "Runtime backend",
+			sortValue: (row) => modelBackendLabel(row.entry, row.model),
+			cell: (row) => leaderboardCell(modelBackendLabel(row.entry, row.model)),
+		},
+		{
+			key: "context",
+			label: "Context",
+			sortValue: (row) =>
+				numberOrNull(row.entry.context_window || row.model?.context_window),
+			cell: (row) =>
+				leaderboardCell(
+					formatContext(row.entry.context_window || row.model?.context_window),
+				),
+		},
+		{
+			key: "generation-rate",
+			label: "Tok/s",
+			sortValue: (row) => numberOrNull(row.entry.generation_tok_s),
+			cell: (row) => leaderboardCell(formatRate(row.entry.generation_tok_s)),
+		},
+		{
+			key: "ttft",
+			label: "TTFT",
+			sortValue: (row) => numberOrNull(row.entry.ttft_s),
+			cell: (row) => leaderboardCell(formatSeconds(row.entry.ttft_s)),
+		},
+		{
+			key: "overall-score",
+			label: "Balanced Overall",
+			sortValue: (row) => numberOrNull(row.entry.overall_score),
+			cell: (row) =>
+				leaderboardCell(
+					formatScore(row.entry.overall_score),
+					"score-cell overall-score",
+					"Equal-weight mean of reasoning, math, instruction following, and structured output",
+				),
+		},
+	];
+	LEADERBOARD_CATEGORIES.forEach((category, index) => {
+		columns.push({
+			key: `category-${index}`,
+			label: category,
+			sortValue: (row) => categoryScoreFor(row.entry, category)?.score,
+			cell: (row) => {
+				const categoryScore = categoryScoreFor(row.entry, category);
+				const cell = leaderboardCell(
+					formatScore(categoryScore?.score),
+					"score-cell category-score",
+				);
+				if (categoryScore?.tasks?.length)
+					cell.title = categoryScore.tasks.join(", ");
+				return cell;
+			},
+		});
+	});
+	renderLeaderboardTable(list, rows, columns, "lm_eval");
+}
+
+function renderLeaderboardTable(list, rows, columns, suite) {
+	const table = document.createElement("table");
+	table.className = "leaderboard-table";
+	const tbody = document.createElement("tbody");
+	for (const row of sortLeaderboardRows(rows, columns, suite)) {
+		const tr = document.createElement("tr");
+		tr.append(...columns.map((column) => column.cell(row)));
+		tbody.append(tr);
+	}
+	table.append(leaderboardTableHead(columns, suite), tbody);
 	list.append(table);
+}
+
+function leaderboardTableHead(columns, suite) {
+	const thead = document.createElement("thead");
+	const header = document.createElement("tr");
+	const currentSort = state.leaderboardSort[suite];
+	for (const column of columns) {
+		const active = currentSort?.key === column.key;
+		const th = document.createElement("th");
+		th.scope = "col";
+		if (active) {
+			th.setAttribute(
+				"aria-sort",
+				currentSort.direction === "asc" ? "ascending" : "descending",
+			);
+		}
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "leaderboard-sort";
+		button.dataset.sortKey = column.key;
+		const sortLabel = column.sortLabel || column.label;
+		const nextDirection =
+			active && currentSort.direction === "asc" ? "descending" : "ascending";
+		button.setAttribute("aria-label", `Sort by ${sortLabel}, ${nextDirection}`);
+		button.title = `Sort by ${sortLabel} (${nextDirection})`;
+		const label = document.createElement("span");
+		label.textContent = column.label;
+		const indicator = document.createElement("span");
+		indicator.className = "leaderboard-sort-indicator";
+		indicator.setAttribute("aria-hidden", "true");
+		let indicatorText = "↕";
+		if (active) indicatorText = currentSort.direction === "asc" ? "▲" : "▼";
+		indicator.textContent = indicatorText;
+		button.append(label, indicator);
+		button.addEventListener("click", () => setLeaderboardSort(suite, column));
+		th.append(button);
+		header.append(th);
+	}
+	thead.append(header);
+	return thead;
+}
+
+function setLeaderboardSort(suite, column) {
+	const currentSort = state.leaderboardSort[suite];
+	const direction =
+		currentSort?.key === column.key && currentSort.direction === "asc"
+			? "desc"
+			: "asc";
+	state.leaderboardSort[suite] = { key: column.key, direction };
+	renderLeaderboard();
+	for (const button of $("leaderboard").querySelectorAll(".leaderboard-sort")) {
+		if (button.dataset.sortKey !== column.key) continue;
+		button.focus();
+		break;
+	}
+}
+
+function sortLeaderboardRows(rows, columns, suite) {
+	const currentSort = state.leaderboardSort[suite];
+	const column = columns.find(
+		(candidate) => candidate.key === currentSort?.key,
+	);
+	if (!column) return rows;
+	return rows
+		.map((row, index) => ({ row, index }))
+		.sort((left, right) => {
+			const comparison = compareLeaderboardValues(
+				column.sortValue(left.row),
+				column.sortValue(right.row),
+				currentSort.direction,
+			);
+			return comparison || left.index - right.index;
+		})
+		.map(({ row }) => row);
+}
+
+function compareLeaderboardValues(left, right, direction) {
+	const leftMissing = isMissingLeaderboardValue(left);
+	const rightMissing = isMissingLeaderboardValue(right);
+	if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+	if (leftMissing) return 0;
+	const comparison =
+		typeof left === "number" && typeof right === "number"
+			? left - right
+			: String(left).localeCompare(String(right), undefined, {
+					numeric: true,
+					sensitivity: "base",
+				});
+	return direction === "desc" ? -comparison : comparison;
+}
+
+function isMissingLeaderboardValue(value) {
+	return (
+		value === null ||
+		value === undefined ||
+		value === "" ||
+		value === "—" ||
+		(typeof value === "number" && !Number.isFinite(value))
+	);
 }
 
 function leaderboardStatus(entry) {
@@ -1019,50 +1181,77 @@ function formatTaskCoverage(entry) {
 }
 
 function renderSweMiniLeaderboard(list, entries) {
-	const table = document.createElement("table");
-	table.className = "leaderboard-table";
-	const thead = document.createElement("thead");
-	const header = document.createElement("tr");
-	[
-		"#",
-		"Model",
-		"Runtime backend",
-		"Judge",
-		"Passed",
-		"Runtime",
-		"Success",
-		"Avg duration",
-	].forEach((name) => {
-		const th = document.createElement("th");
-		th.textContent = name;
-		header.append(th);
-	});
-	thead.append(header);
-	const tbody = document.createElement("tbody");
-	entries.forEach((entry, index) => {
-		const model = modelForEntry(entry);
-		const modelName = entry.model || entry.model_id || "unknown model";
-		const tr = document.createElement("tr");
-		tr.append(
-			leaderboardCell(`#${index + 1}`, "rank-cell"),
-			leaderboardCell(modelName, "model-cell", modelName),
-			leaderboardCell(modelBackendLabel(entry, model)),
-			leaderboardCell(displayJudgeModel(entry.judge_model)),
-			leaderboardCell(`${entry.passed_tasks ?? 0}/${entry.total_tasks ?? 0}`),
-			leaderboardCell(
-				formatRuntimeSeconds(resultRuntimeSeconds(entry)),
-				"runtime-cell",
-			),
-			leaderboardCell(
-				formatScore(entry.overall_score),
-				"score-cell overall-score",
-			),
-			leaderboardCell(formatDurationMs(entry.average_duration_ms)),
-		);
-		tbody.append(tr);
-	});
-	table.append(thead, tbody);
-	list.append(table);
+	const rows = entries.map((entry, index) => ({
+		entry,
+		model: modelForEntry(entry),
+		modelName: entry.model || entry.model_id || "unknown model",
+		rankNumber: index + 1,
+	}));
+	const columns = [
+		{
+			key: "rank",
+			label: "#",
+			sortLabel: "rank",
+			sortValue: (row) => row.rankNumber,
+			cell: (row) => leaderboardCell(`#${row.rankNumber}`, "rank-cell"),
+		},
+		{
+			key: "model",
+			label: "Model",
+			sortValue: (row) => row.modelName,
+			cell: (row) =>
+				leaderboardCell(row.modelName, "model-cell", row.modelName),
+		},
+		{
+			key: "runtime-backend",
+			label: "Runtime backend",
+			sortValue: (row) => modelBackendLabel(row.entry, row.model),
+			cell: (row) => leaderboardCell(modelBackendLabel(row.entry, row.model)),
+		},
+		{
+			key: "judge",
+			label: "Judge",
+			sortValue: (row) => displayJudgeModel(row.entry.judge_model),
+			cell: (row) => leaderboardCell(displayJudgeModel(row.entry.judge_model)),
+		},
+		{
+			key: "passed",
+			label: "Passed",
+			sortValue: (row) => numberOrNull(row.entry.passed_tasks),
+			cell: (row) =>
+				leaderboardCell(
+					`${row.entry.passed_tasks ?? 0}/${row.entry.total_tasks ?? 0}`,
+				),
+		},
+		{
+			key: "runtime",
+			label: "Runtime",
+			sortValue: (row) => resultRuntimeSeconds(row.entry),
+			cell: (row) =>
+				leaderboardCell(
+					formatRuntimeSeconds(resultRuntimeSeconds(row.entry)),
+					"runtime-cell",
+				),
+		},
+		{
+			key: "success",
+			label: "Success",
+			sortValue: (row) => numberOrNull(row.entry.overall_score),
+			cell: (row) =>
+				leaderboardCell(
+					formatScore(row.entry.overall_score),
+					"score-cell overall-score",
+				),
+		},
+		{
+			key: "average-duration",
+			label: "Avg duration",
+			sortValue: (row) => numberOrNull(row.entry.average_duration_ms),
+			cell: (row) =>
+				leaderboardCell(formatDurationMs(row.entry.average_duration_ms)),
+		},
+	];
+	renderLeaderboardTable(list, rows, columns, "swe_mini");
 }
 
 function renderResults() {

@@ -4035,6 +4035,23 @@ class SmokeTests(unittest.TestCase):
         self.assertIn(".badge.profile", styles)
         self.assertIn('"benchmark_profiles": lm_eval_profiles()', server)
 
+    def test_leaderboard_columns_are_sortable(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+
+        self.assertIn("Select any column heading to sort", index)
+        self.assertIn("leaderboardSort: {}", script)
+        self.assertIn("function renderLeaderboardTable", script)
+        self.assertIn("function sortLeaderboardRows", script)
+        self.assertIn("function compareLeaderboardValues", script)
+        self.assertIn('button.className = "leaderboard-sort"', script)
+        self.assertIn('"aria-sort"', script)
+        self.assertIn('renderLeaderboardTable(list, rows, columns, "lm_eval")', script)
+        self.assertIn('renderLeaderboardTable(list, rows, columns, "swe_mini")', script)
+        self.assertIn(".leaderboard-sort {", styles)
+        self.assertIn(".leaderboard-sort:focus-visible", styles)
+
     def test_static_ui_uses_centered_overflow_safe_page_layout(self):
         styles = Path("static/styles.css").read_text(encoding="utf-8")
 
@@ -4182,9 +4199,11 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("summaryActions.append(progress)", script)
         self.assertIn('button("Rerun", "job-rerun")', script)
         self.assertIn("function rerunJobs", script)
-        self.assertIn("displayJudgeModel(entry.judge_model)", script)
+        self.assertIn("displayJudgeModel(row.entry.judge_model)", script)
         self.assertIn('replace(/^lemonade\\//, "")', script)
-        self.assertIn('leaderboardCell(modelName, "model-cell", modelName)', script)
+        self.assertIn(
+            'leaderboardCell(row.modelName, "model-cell", row.modelName)', script
+        )
         self.assertIn("summaryActions.append(", script)
         self.assertIn('checkbox.addEventListener("click"', script)
         self.assertIn("job-details", script)
