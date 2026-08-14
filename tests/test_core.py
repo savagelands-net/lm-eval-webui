@@ -723,13 +723,14 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertTrue(posted_payloads[0]["stream"])
         self.assertEqual(posted_payloads[0]["stream_options"], {"include_usage": True})
 
-    def test_async_stream_model_call_records_vllm_usage_and_rate(self):
+    def test_async_stream_model_call_uses_idle_timeout_and_records_telemetry(self):
         aggregate_telemetry_file = symbol(
             "lm_eval_webui.telemetry", "aggregate_telemetry_file"
         )
         completion = self.completion()
         completion._stream_responses = True
         completion._seed = 0
+        completion.timeout = 7200
         completion._llamacpp_backend = None
         completion.base_url = "http://example.test/v1/chat/completions"
         completion.__dict__["header"] = {}
@@ -767,9 +768,11 @@ class LemonadeModelTests(unittest.TestCase):
         class Session:
             def __init__(self):
                 self.payloads = []
+                self.request_options = []
 
-            def post(self, _url, *, json, **_kwargs):
+            def post(self, _url, *, json, **kwargs):
                 self.payloads.append(json)
+                self.request_options.append(kwargs)
                 return Response()
 
         class Semaphore:
@@ -801,6 +804,11 @@ class LemonadeModelTests(unittest.TestCase):
         self.assertEqual(answers, ["42"])
         self.assertTrue(semaphore.released)
         self.assertEqual(session.payloads[0]["stream_options"], {"include_usage": True})
+        request_timeout = session.request_options[0]["timeout"]
+        self.assertIsNone(request_timeout.total)
+        self.assertEqual(request_timeout.connect, 60.0)
+        self.assertEqual(request_timeout.sock_connect, 60.0)
+        self.assertEqual(request_timeout.sock_read, 7200.0)
         self.assertEqual(event["timings"]["generation_timing_source"], "client_stream")
         self.assertEqual(event["timings"]["predicted_n"], 2)
         self.assertGreater(event["timings"]["predicted_ms"], 0)

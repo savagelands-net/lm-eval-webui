@@ -72,6 +72,25 @@ def enable_streaming_usage(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def streaming_request_timeout(timeout: Any) -> Any:
+    """Bound SSE inactivity without limiting the total response duration."""
+
+    idle_timeout = None
+    if timeout is not None:
+        try:
+            idle_timeout = float(timeout)
+        except (TypeError, ValueError) as error:
+            raise ValueError("streaming timeout must be numeric") from error
+    connect_timeout = 60.0 if idle_timeout is None else min(60.0, idle_timeout)
+    aiohttp_module = importlib.import_module("aiohttp")
+    return aiohttp_module.ClientTimeout(
+        total=None,
+        connect=connect_timeout,
+        sock_connect=connect_timeout,
+        sock_read=idle_timeout,
+    )
+
+
 def add_runtime_options(
     payload: dict[str, Any], llamacpp_backend: Any = None
 ) -> dict[str, Any]:
@@ -481,6 +500,7 @@ class OpenAICompatibleChatCompletion(LocalChatCompletionBase):
                 self.base_url,
                 json=payload,
                 headers=self.header,
+                timeout=streaming_request_timeout(self.timeout),
             ) as response:
                 response.raise_for_status()
                 output = await astream_response_json(response, started)
