@@ -4057,6 +4057,12 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('"aria-sort"', script)
         self.assertIn('renderLeaderboardTable(list, rows, columns, "lm_eval")', script)
         self.assertIn('renderLeaderboardTable(list, rows, columns, "swe_mini")', script)
+        prompt_rate_column = script.index('key: "prompt-rate"')
+        generation_rate_column = script.index('key: "generation-rate"')
+        self.assertLess(prompt_rate_column, generation_rate_column)
+        self.assertIn('label: "Prompt tok/s"', script)
+        self.assertIn("numberOrNull(row.entry.prompt_tok_s)", script)
+        self.assertIn("formatRate(row.entry.prompt_tok_s)", script)
         self.assertIn(".leaderboard-sort {", styles)
         self.assertIn(".leaderboard-sort:focus-visible", styles)
 

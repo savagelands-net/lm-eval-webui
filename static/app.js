@@ -1011,6 +1011,12 @@ function renderLmEvalLeaderboard(list, entries) {
 				),
 		},
 		{
+			key: "prompt-rate",
+			label: "Prompt tok/s",
+			sortValue: (row) => numberOrNull(row.entry.prompt_tok_s),
+			cell: (row) => leaderboardCell(formatRate(row.entry.prompt_tok_s)),
+		},
+		{
 			key: "generation-rate",
 			label: "Tok/s",
 			sortValue: (row) => numberOrNull(row.entry.generation_tok_s),
