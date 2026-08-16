@@ -4063,6 +4063,15 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('label: "Prompt tok/s"', script)
         self.assertIn("numberOrNull(row.entry.prompt_tok_s)", script)
         self.assertIn("formatRate(row.entry.prompt_tok_s)", script)
+        self.assertEqual(script.count('label: "Backend"'), 2)
+        self.assertEqual(script.count('sortLabel: "Runtime backend"'), 2)
+        self.assertIn('label: "Overall"', script)
+        self.assertIn('sortLabel: "Balanced Overall"', script)
+        self.assertIn(
+            'label: category === "Coding / Structured Output" ? "Coding" : category',
+            script,
+        )
+        self.assertIn("sortLabel: category", script)
         self.assertIn(".leaderboard-sort {", styles)
         self.assertIn(".leaderboard-sort:focus-visible", styles)
 

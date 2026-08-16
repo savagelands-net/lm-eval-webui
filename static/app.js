@@ -996,7 +996,8 @@ function renderLmEvalLeaderboard(list, entries) {
 		},
 		{
 			key: "runtime-backend",
-			label: "Runtime backend",
+			label: "Backend",
+			sortLabel: "Runtime backend",
 			sortValue: (row) => modelBackendLabel(row.entry, row.model),
 			cell: (row) => leaderboardCell(modelBackendLabel(row.entry, row.model)),
 		},
@@ -1030,7 +1031,8 @@ function renderLmEvalLeaderboard(list, entries) {
 		},
 		{
 			key: "overall-score",
-			label: "Balanced Overall",
+			label: "Overall",
+			sortLabel: "Balanced Overall",
 			sortValue: (row) => numberOrNull(row.entry.overall_score),
 			cell: (row) =>
 				leaderboardCell(
@@ -1043,7 +1045,8 @@ function renderLmEvalLeaderboard(list, entries) {
 	LEADERBOARD_CATEGORIES.forEach((category, index) => {
 		columns.push({
 			key: `category-${index}`,
-			label: category,
+			label: category === "Coding / Structured Output" ? "Coding" : category,
+			sortLabel: category,
 			sortValue: (row) => categoryScoreFor(row.entry, category)?.score,
 			cell: (row) => {
 				const categoryScore = categoryScoreFor(row.entry, category);
@@ -1210,7 +1213,8 @@ function renderSweMiniLeaderboard(list, entries) {
 		},
 		{
 			key: "runtime-backend",
-			label: "Runtime backend",
+			label: "Backend",
+			sortLabel: "Runtime backend",
 			sortValue: (row) => modelBackendLabel(row.entry, row.model),
 			cell: (row) => leaderboardCell(modelBackendLabel(row.entry, row.model)),
 		},
