@@ -290,12 +290,42 @@
       <section class="card">
         <details id="resultDetails">
           <summary>Detailed metric comparison</summary>
-          <div class="row between detail-header">
+          <div class="detail-header detail-results-header">
             <h2>Detailed results</h2>
-            <label class="metric-picker"
-              >Metric
-              <select id="metricSelect"></select
-            ></label>
+            <div
+              class="detail-filter-grid"
+              aria-label="Detailed result filters"
+            >
+              <details class="detail-filter" data-detail-filter="models">
+                <summary><span id="detailModelSummary">Models: All</span></summary>
+                <div
+                  id="detailModelOptions"
+                  class="detail-filter-menu"
+                  role="group"
+                  aria-label="Models tested"
+                ></div>
+              </details>
+              <details class="detail-filter" data-detail-filter="tasks">
+                <summary><span id="detailTaskSummary">Tasks: All</span></summary>
+                <div
+                  id="detailTaskOptions"
+                  class="detail-filter-menu"
+                  role="group"
+                  aria-label="Tasks run"
+                ></div>
+              </details>
+              <details class="detail-filter" data-detail-filter="metrics">
+                <summary>
+                  <span id="detailMetricSummary">Metrics: First available</span>
+                </summary>
+                <div
+                  id="detailMetricOptions"
+                  class="detail-filter-menu"
+                  role="group"
+                  aria-label="Metrics for selected tasks"
+                ></div>
+              </details>
+            </div>
           </div>
           <div id="chart" class="chart empty">No numeric results yet.</div>
           <div id="resultTable" class="table-wrap"></div>

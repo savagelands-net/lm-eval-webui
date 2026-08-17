@@ -23,6 +23,7 @@ const state = {
 	taskLoadToken: 0,
 	activeSuite: "lm_eval",
 	resultSuite: "lm_eval",
+	detailFilters: new Map(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -76,6 +77,26 @@ const CLIENT_BACKENDS = new Set([
 const SUITES = {
 	lm_eval: "lm-eval",
 	swe_mini: "SWE Mini",
+};
+const DETAIL_FILTER_CONFIG = {
+	models: {
+		label: "Models",
+		allLabel: "All models",
+		optionsId: "detailModelOptions",
+		summaryId: "detailModelSummary",
+	},
+	tasks: {
+		label: "Tasks",
+		allLabel: "All tasks",
+		optionsId: "detailTaskOptions",
+		summaryId: "detailTaskSummary",
+	},
+	metrics: {
+		label: "Metrics",
+		allLabel: "All metrics",
+		optionsId: "detailMetricOptions",
+		summaryId: "detailMetricSummary",
+	},
 };
 const DEFAULT_SWE_JUDGE_MODEL = "gpt-oss-120b-mxfp-GGUF";
 const DEFAULT_SWE_TIMEOUT_MINUTES = 60;
@@ -1265,6 +1286,126 @@ function renderSweMiniLeaderboard(list, entries) {
 	renderLeaderboardTable(list, rows, columns, "swe_mini");
 }
 
+function detailFilterState() {
+	const profile = state.resultSuite === "lm_eval" ? state.resultProfile : "all";
+	const contextKey = `${state.resultSuite}:${profile}`;
+	if (!state.detailFilters.has(contextKey)) {
+		state.detailFilters.set(contextKey, {
+			models: new Set(),
+			tasks: new Set(),
+			metrics: new Set(),
+			metricsInitialized: false,
+			selectAll: { models: true, tasks: true, metrics: false },
+		});
+	}
+	return state.detailFilters.get(contextKey);
+}
+function detailFilterValues(rows, key) {
+	return [
+		...new Set(
+			rows.map((row) => String(row[key] ?? "")).filter((value) => value),
+		),
+	].sort((left, right) =>
+		left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
+	);
+}
+function syncDetailFilterSelection(filterState, kind, values) {
+	if (!filterState.selectAll[kind]) return;
+	filterState[kind].clear();
+	values.forEach((value) => filterState[kind].add(value));
+}
+function createDetailFilterOption(kind, value, labelText, checked, selectAll) {
+	const option = document.createElement("label");
+	option.className = `detail-filter-option${selectAll ? " all" : ""}`;
+	option.title = labelText;
+	const checkbox = document.createElement("input");
+	checkbox.type = "checkbox";
+	checkbox.value = value;
+	checkbox.checked = checked;
+	checkbox.dataset.detailFilterKind = kind;
+	if (selectAll) checkbox.dataset.selectAll = "true";
+	const label = document.createElement("span");
+	label.textContent = labelText;
+	option.append(checkbox, label);
+	return { option, checkbox };
+}
+function renderDetailFilter(kind, values, filterState) {
+	const config = DETAIL_FILTER_CONFIG[kind];
+	const container = $(config.optionsId);
+	const summary = $(config.summaryId);
+	const selectedValues = values.filter((value) => filterState[kind].has(value));
+	const allSelected =
+		values.length > 0 && selectedValues.length === values.length;
+	container.replaceChildren();
+
+	const allOption = createDetailFilterOption(
+		kind,
+		"",
+		config.allLabel,
+		allSelected,
+		true,
+	);
+	allOption.checkbox.indeterminate =
+		selectedValues.length > 0 && !allSelected;
+	allOption.checkbox.disabled = values.length === 0;
+	container.append(allOption.option);
+
+	values.forEach((value) => {
+		container.append(
+			createDetailFilterOption(
+				kind,
+				value,
+				value,
+				filterState[kind].has(value),
+				false,
+			).option,
+		);
+	});
+
+	if (!values.length) {
+		summary.textContent = `${config.label}: None available`;
+		summary.title = "";
+	} else if (allSelected) {
+		summary.textContent = `${config.label}: All (${values.length})`;
+		summary.title = selectedValues.join(", ");
+	} else if (selectedValues.length === 1) {
+		summary.textContent = `${config.label}: ${selectedValues[0]}`;
+		summary.title = selectedValues[0];
+	} else {
+		summary.textContent = `${config.label}: ${selectedValues.length} of ${values.length}`;
+		summary.title = selectedValues.join(", ");
+	}
+}
+function handleDetailFilterChange(event) {
+	const checkbox = event.target;
+	if (!(checkbox instanceof HTMLInputElement)) return;
+	const kind = checkbox.dataset.detailFilterKind;
+	const config = DETAIL_FILTER_CONFIG[kind];
+	if (!config) return;
+	const filterState = detailFilterState();
+	if (kind === "metrics") filterState.metricsInitialized = true;
+	const selection = filterState[kind];
+	const optionInputs = [
+		...$(config.optionsId).querySelectorAll(
+			`input[data-detail-filter-kind="${kind}"]:not([data-select-all])`,
+		),
+	];
+	if (checkbox.dataset.selectAll === "true") {
+		checkbox.indeterminate = false;
+		filterState.selectAll[kind] = checkbox.checked;
+		optionInputs.forEach((option) => {
+			option.checked = checkbox.checked;
+			if (checkbox.checked) selection.add(option.value);
+			else selection.delete(option.value);
+		});
+	} else {
+		if (checkbox.checked) selection.add(checkbox.value);
+		else selection.delete(checkbox.value);
+		filterState.selectAll[kind] =
+			optionInputs.length > 0 && optionInputs.every((option) => option.checked);
+	}
+	renderResults();
+}
 function renderResults() {
 	renderLeaderboard();
 	const suiteRows = state.rows.filter(
@@ -1274,34 +1415,74 @@ function renderResults() {
 				state.resultProfile === "all" ||
 				recordProfileId(row) === state.resultProfile),
 	);
-	const metrics = [...new Set(suiteRows.map((row) => row.metric))].sort();
-	const metricSelect = $("metricSelect");
-	const previous = metricSelect.value;
-	metricSelect.replaceChildren();
-	metrics.forEach((metric) => {
-		const option = document.createElement("option");
-		option.value = metric;
-		option.textContent = metric;
-		metricSelect.append(option);
-	});
-	if (metrics.includes(previous)) metricSelect.value = previous;
-	const metric = metricSelect.value || metrics[0];
-	const rows = suiteRows.filter((row) => row.metric === metric);
-	renderChart(rows, metric);
+	const filterState = detailFilterState();
+	const models = detailFilterValues(suiteRows, "model");
+	const tasks = detailFilterValues(suiteRows, "task");
+	syncDetailFilterSelection(filterState, "models", models);
+	syncDetailFilterSelection(filterState, "tasks", tasks);
+	const metricRows = suiteRows.filter((row) =>
+		filterState.tasks.has(String(row.task)),
+	);
+	const metrics = detailFilterValues(metricRows, "metric");
+	if (!filterState.metricsInitialized && metrics.length) {
+		filterState.metrics.add(metrics[0]);
+		filterState.metricsInitialized = true;
+	}
+	syncDetailFilterSelection(filterState, "metrics", metrics);
+	renderDetailFilter("models", models, filterState);
+	renderDetailFilter("tasks", tasks, filterState);
+	renderDetailFilter("metrics", metrics, filterState);
+
+	const selectedMetrics = metrics.filter((metric) =>
+		filterState.metrics.has(metric),
+	);
+	const rows = suiteRows.filter(
+		(row) =>
+			filterState.models.has(String(row.model)) &&
+			filterState.tasks.has(String(row.task)) &&
+			filterState.metrics.has(String(row.metric)),
+	);
+	renderChart(rows, selectedMetrics);
 	renderTable(rows);
 }
-function renderChart(rows, metric) {
+function renderChart(rows, metrics) {
 	const chart = $("chart");
 	chart.replaceChildren();
-	if (!rows.length) return setText(chart, "No numeric results yet.");
+	const metricsWithRows = metrics.filter((metric) =>
+		rows.some((row) => row.metric === metric),
+	);
+	if (!metricsWithRows.length)
+		return setText(chart, "No numeric results match the selected filters.");
+	metricsWithRows.forEach((metric) => {
+		appendMetricChart(
+			chart,
+			rows.filter((row) => row.metric === metric),
+			metric,
+		);
+	});
+}
+function appendMetricChart(chart, rows, metric) {
+	const group = document.createElement("section");
+	group.className = "metric-chart";
+	const heading = document.createElement("h3");
+	heading.className = "metric-chart-title";
+	heading.textContent = metric;
+	const canvas = document.createElement("div");
+	canvas.className = "metric-chart-canvas";
 	const rowHeight = 42;
 	const height = Math.max(260, rows.length * rowHeight + 50);
-	const visibleWidth = Math.max(600, Math.floor(chart.clientWidth || 1000));
+	const visibleWidth = Math.max(
+		600,
+		Math.floor(canvas.clientWidth || chart.clientWidth || 1000),
+	);
 	const maxValue = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
 	const svg = document.createElementNS(SVG_NS, "svg");
 	svg.setAttribute("viewBox", `0 0 ${visibleWidth} ${height}`);
 	svg.setAttribute("role", "img");
-	svg.setAttribute("aria-label", `${metric || "selected metric"} chart`);
+	svg.setAttribute("aria-label", `${metric} chart`);
+	canvas.append(svg);
+	group.append(heading, canvas);
+	chart.append(group);
 	const labels = rows.map((row, index) => {
 		const label = svgText(
 			10,
@@ -1312,16 +1493,12 @@ function renderChart(rows, metric) {
 		svg.append(label);
 		return label;
 	});
-	chart.append(svg);
 
 	const longestLabelWidth = Math.max(...labels.map(svgTextWidth));
 	const barStart = Math.ceil(10 + longestLabelWidth + 24);
 	const valueSpace = 90;
 	const minimumPlotWidth = 300;
-	const width = Math.max(
-		visibleWidth,
-		barStart + minimumPlotWidth + valueSpace,
-	);
+	const width = Math.max(visibleWidth, barStart + minimumPlotWidth + valueSpace);
 	const maximumBarWidth = width - barStart - valueSpace;
 	svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
 	svg.setAttribute("width", String(width));
@@ -2070,7 +2247,9 @@ TASK_CATEGORY_FILTERS.forEach(({ id }) =>
 );
 $("taskPrev").addEventListener("click", () => changeTaskPage(-1));
 $("taskNext").addEventListener("click", () => changeTaskPage(1));
-$("metricSelect").addEventListener("change", renderResults);
+Object.values(DETAIL_FILTER_CONFIG).forEach(({ optionsId }) =>
+	$(optionsId).addEventListener("change", handleDetailFilterChange),
+);
 $("resultProfileFilter").addEventListener("change", () => {
 	state.resultProfile = $("resultProfileFilter").value;
 	renderResults();

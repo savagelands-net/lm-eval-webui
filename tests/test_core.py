@@ -4192,6 +4192,42 @@ class SmokeTests(unittest.TestCase):
             styles,
         )
 
+    def test_detailed_results_have_cascading_multi_select_filters(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+
+        for control_id in (
+            "detailModelSummary",
+            "detailModelOptions",
+            "detailTaskSummary",
+            "detailTaskOptions",
+            "detailMetricSummary",
+            "detailMetricOptions",
+        ):
+            self.assertIn(f'id="{control_id}"', index)
+        self.assertIn('aria-label="Models tested"', index)
+        self.assertIn('aria-label="Tasks run"', index)
+        self.assertIn('aria-label="Metrics for selected tasks"', index)
+        self.assertNotIn('id="metricSelect"', index)
+        self.assertIn("detailFilters: new Map()", script)
+        self.assertIn("function handleDetailFilterChange", script)
+        self.assertIn("function renderDetailFilter", script)
+        self.assertIn('allLabel: "All models"', script)
+        self.assertIn('allLabel: "All tasks"', script)
+        self.assertIn('allLabel: "All metrics"', script)
+        self.assertIn("metricsInitialized: false", script)
+        self.assertIn('checkbox.dataset.selectAll = "true"', script)
+        self.assertIn("const metricRows = suiteRows.filter", script)
+        self.assertIn("filterState.tasks.has(String(row.task))", script)
+        self.assertIn("filterState.models.has(String(row.model))", script)
+        self.assertIn("filterState.metrics.has(String(row.metric))", script)
+        self.assertIn("function appendMetricChart", script)
+        self.assertNotIn('$("metricSelect")', script)
+        self.assertIn(".detail-filter-grid {", styles)
+        self.assertIn(".detail-filter-menu {", styles)
+        self.assertIn(".detail-filter-option.all {", styles)
+
     def test_detailed_chart_measures_labels_before_drawing_bars(self):
         script = Path("static/app.js").read_text(encoding="utf-8")
         styles = Path("static/styles.css").read_text(encoding="utf-8")

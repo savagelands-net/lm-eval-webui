@@ -574,7 +574,119 @@ th[aria-sort] .leaderboard-sort-indicator {
 	margin-top: 16px;
 	margin-bottom: 12px;
 }
+.detail-results-header {
+	display: grid;
+	gap: 12px;
+}
+.detail-results-header h2 {
+	margin-bottom: 0;
+}
+.detail-filter-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 12px;
+}
+.detail-filter {
+	position: relative;
+	min-width: 0;
+}
+.detail-filter > summary {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	min-width: 0;
+	margin: 0;
+	padding: 10px 12px;
+	list-style: none;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--panel-2);
+	color: var(--text);
+}
+.detail-filter > summary::-webkit-details-marker {
+	display: none;
+}
+.detail-filter > summary::after {
+	content: "▾";
+	flex: 0 0 auto;
+	color: var(--muted);
+}
+.detail-filter[open] > summary {
+	border-color: var(--accent);
+}
+.detail-filter[open] > summary::after {
+	content: "▴";
+}
+.detail-filter > summary span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.detail-filter-menu {
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 0;
+	z-index: 20;
+	display: grid;
+	width: max-content;
+	min-width: 100%;
+	max-width: min(440px, calc(100vw - 64px));
+	max-height: 320px;
+	overflow: auto;
+	padding: 8px;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--panel-2);
+	box-shadow: 0 14px 36px rgb(0 0 0 / 36%);
+}
+.detail-filter:last-child .detail-filter-menu {
+	right: 0;
+	left: auto;
+}
+.detail-filter-option {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	min-width: 0;
+	padding: 8px;
+	border-radius: 7px;
+	color: var(--text);
+	cursor: pointer;
+}
+.detail-filter-option:hover {
+	background: rgb(255 255 255 / 6%);
+}
+.detail-filter-option.all {
+	margin-bottom: 4px;
+	border-bottom: 1px solid var(--border);
+	border-radius: 7px 7px 0 0;
+	font-weight: 700;
+}
+.detail-filter-option input {
+	flex: 0 0 auto;
+	margin: 0;
+	padding: 0;
+}
+.detail-filter-option span {
+	overflow-wrap: anywhere;
+}
 .chart {
+	max-width: 100%;
+	overflow-x: auto;
+	display: grid;
+	gap: 18px;
+}
+.metric-chart + .metric-chart {
+	padding-top: 18px;
+	border-top: 1px solid var(--border);
+}
+.metric-chart-title {
+	margin-bottom: 8px;
+	font-size: 1rem;
+	color: var(--accent-2);
+}
+.metric-chart-canvas {
 	max-width: 100%;
 	overflow-x: auto;
 }
@@ -608,8 +720,15 @@ th {
 }
 @media (max-width: 900px) {
 	.grid.two,
-	.grid.four {
+	.grid.four,
+	.detail-filter-grid {
 		grid-template-columns: 1fr;
+	}
+	.detail-filter-menu {
+		position: static;
+		width: 100%;
+		max-width: none;
+		margin-top: 6px;
 	}
 	header,
 	.profile-picker-header {
