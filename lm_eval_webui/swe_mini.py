@@ -28,6 +28,7 @@ def default_pi_bench_dir(project_root: str | Path | None = None) -> Path:
 
 DEFAULT_PI_BENCH_DIR = default_pi_bench_dir()
 DEFAULT_SWE_MINI_PLATFORM = "lemonade-swe"
+DEFAULT_SWE_MINI_TIMEOUT_MINUTES = 60
 DEFAULT_SWE_MINI_JUDGE_PROVIDER = "lemonade"
 DEFAULT_SWE_MINI_JUDGE_MODEL_ID = "gpt-oss-120b-mxfp-GGUF"
 DEFAULT_SWE_MINI_JUDGE_MODEL = (
@@ -80,7 +81,7 @@ class SweMiniRequest:
     judge_model: str = DEFAULT_SWE_MINI_JUDGE_MODEL
     platform: str = DEFAULT_SWE_MINI_PLATFORM
     model_tag: str | None = None
-    timeout_minutes: int = 30
+    timeout_minutes: int = DEFAULT_SWE_MINI_TIMEOUT_MINUTES
     pass_count: int = 1
     context_window: int | None = None
     extra_args: list[str] | None = None
@@ -216,7 +217,16 @@ def build_swe_mini_command(request: SweMiniRequest) -> tuple[list[str], dict[str
         command.extend(["--platform", request.platform])
     if request.model_tag:
         command.extend(["--model-tag", request.model_tag])
-    command.extend(["--timeout", str(_positive_int(request.timeout_minutes, 30))])
+    command.extend(
+        [
+            "--timeout",
+            str(
+                _positive_int(
+                    request.timeout_minutes, DEFAULT_SWE_MINI_TIMEOUT_MINUTES
+                )
+            ),
+        ]
+    )
     command.extend(["--pass", str(_positive_int(request.pass_count, 1))])
     if request.context_window:
         command.extend(["--context", str(_positive_int(request.context_window, 1))])

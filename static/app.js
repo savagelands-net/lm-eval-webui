@@ -78,6 +78,7 @@ const SUITES = {
 	swe_mini: "SWE Mini",
 };
 const DEFAULT_SWE_JUDGE_MODEL = "gpt-oss-120b-mxfp-GGUF";
+const DEFAULT_SWE_TIMEOUT_MINUTES = 60;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const TERMINAL_JOB_STATUSES = new Set(["cancelled", "failed", "succeeded"]);
 const RESULT_PAGE_SIZE = 2000;
@@ -1508,7 +1509,9 @@ async function startJobs() {
 	if (suite === "swe_mini") {
 		Object.assign(body, {
 			judge_model: $("sweJudgeModel").value.trim() || DEFAULT_SWE_JUDGE_MODEL,
-			swe_timeout: Number($("sweTimeout").value || 30),
+			swe_timeout: Number(
+				$("sweTimeout").value || DEFAULT_SWE_TIMEOUT_MINUTES,
+			),
 			pass_count: Number($("swePassCount").value || 1),
 			context_window: numberOrNull($("sweContextWindow").value),
 		});

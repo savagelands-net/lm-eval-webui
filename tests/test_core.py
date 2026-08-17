@@ -2,6 +2,7 @@ import asyncio
 import json
 import math
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -157,6 +158,21 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
 
 
 class SweMiniRunnerTests(unittest.TestCase):
+    def test_swe_mini_agent_timeout_defaults_to_one_hour(self):
+        SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
+        default_timeout = symbol(
+            "lm_eval_webui.swe_mini", "DEFAULT_SWE_MINI_TIMEOUT_MINUTES"
+        )
+
+        request = SweMiniRequest(
+            model_id="Model-A",
+            task_target="task.json",
+            output_path="results",
+        )
+
+        self.assertEqual(default_timeout, 60)
+        self.assertEqual(request.timeout_minutes, 60)
+
     def test_swe_mini_command_uses_repo_owned_wrapper_for_lemonade_judge(self):
         SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
         build_swe_mini_command = symbol(
@@ -1227,11 +1243,86 @@ class SweMiniWrapperScriptTests(unittest.TestCase):
         self.assertIn('PASS_COUNT="$2"', pass_case)
         self.assertNotIn("EXTRA_ARGS", pass_case)
 
+    def test_wrapper_defaults_agent_timeout_to_one_hour(self):
+        script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
+
+        self.assertIn("DEFAULT_SWE_TIMEOUT_MINUTES=60", script)
+        self.assertIn(
+            'EXTRA_ARGS+=(--timeout "$DEFAULT_SWE_TIMEOUT_MINUTES")', script
+        )
+
     def test_wrapper_fails_fast_when_docker_run_produces_no_result(self):
         script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
 
         self.assertIn("No result file produced", script)
         self.assertIn('exit "$EXIT_CODE"', script)
+
+    def test_wrapper_scores_lifecycle_race_zero_and_continues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = root / "runtime"
+            (runtime / "src").mkdir(parents=True)
+            (runtime / "tasks").mkdir()
+            (runtime / "src" / "index.ts").write_text(
+                Path("third_party/pi-bench/src/index.ts").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            task_id = "sphinx-doc__sphinx-race"
+            task_file = runtime / "tasks" / "sphinx-doc__sphinx-race.json"
+            task_file.write_text(
+                json.dumps({"id": task_id, "repo": "sphinx-doc/sphinx"}),
+                encoding="utf-8",
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_docker = bin_dir / "docker"
+            fake_docker.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = "volume" ]; then
+    exit 0
+fi
+printf '%s\\n' "$@"
+echo 'error: Lemonade model lifecycle request failed (409): slots_pinned_error'
+exit 1
+""",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            output_dir = runtime / "results"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "PI_BENCH_DIR": str(runtime),
+                    "PI_BENCH_RUN_DIR": str(runtime),
+                    "PI_BENCH_SKIP_CHOWN": "1",
+                    "SWE_MINI_OUTPUT_PATH": str(output_dir),
+                    "LMEVAL_WEBUI_JOB_ID": "race-test",
+                }
+            )
+
+            completed = subprocess.run(
+                ["bash", "scripts/run-swe-mini.sh", str(task_file)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            summary = json.loads(
+                (output_dir / "summary.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("scoring this attempt zero and continuing", completed.stdout)
+        self.assertIn("'--timeout' '60'", completed.stdout)
+        self.assertEqual(summary["totalTasks"], 1)
+        self.assertEqual(summary["passedTasks"], 0)
+        self.assertEqual(summary["results"][0]["judgeScore"], 0)
+        self.assertEqual(
+            summary["results"][0]["infrastructureError"],
+            "lemonade_model_lifecycle",
+        )
 
     def test_wrapper_labels_and_cleans_up_cancelled_containers(self):
         script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
@@ -1244,9 +1335,15 @@ class SweMiniWrapperScriptTests(unittest.TestCase):
     def test_wrapper_switches_pin_to_judge_and_restores_candidate(self):
         script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
 
-        self.assertIn("LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE", script)
+        self.assertIn("LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE_V2", script)
         self.assertIn("switchPinnedCandidateToJudge", script)
         self.assertIn("restorePinnedCandidate", script)
+        self.assertIn("waitForModelIdle(candidate)", script)
+        self.assertIn("loadAndConfirmPinnedModel", script)
+        self.assertIn("task will be scored zero", script)
+        self.assertIn("Judge infrastructure failure; task scored zero", script)
+        self.assertIn("write_lifecycle_failure_result", script)
+        self.assertIn("scoring this attempt zero and continuing", script)
         self.assertIn('"/internal/pin"', script)
         self.assertIn('"/api/v1/load"', script)
         self.assertIn("MODEL_LIFECYCLE_ENV_ARGS+=(--env", script)
@@ -2588,6 +2685,7 @@ class JobManagerSweMiniTests(unittest.TestCase):
 
             listed = manager.list_jobs()[0]
 
+        self.assertEqual(job["swe_options"]["timeout_minutes"], 60)
         self.assertEqual(listed["progress"]["current"], 2)
         self.assertEqual(listed["progress"]["total"], 3)
         self.assertAlmostEqual(listed["progress"]["percent"], 66.6666666667)
@@ -4003,6 +4101,7 @@ class SmokeTests(unittest.TestCase):
 
     def test_static_ui_defaults_to_full_quality_benchmarks(self):
         index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
         limit_control = index[
             index.index('id="limit"') - 50 : index.index('id="limit"') + 100
         ]
@@ -4014,6 +4113,10 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("value=", fewshot_control)
         self.assertIn('id="maxGenToks" type="number" value="32768"', index)
         self.assertIn('id="timeout" type="number" value="7200"', index)
+        self.assertIn(
+            'id="sweTimeout" type="number" min="1" value="60"', index
+        )
+        self.assertIn("const DEFAULT_SWE_TIMEOUT_MINUTES = 60", script)
         self.assertIn("Limit (blank = all)", index)
         self.assertIn("Few-shot (blank = task default)", index)
 

@@ -28,6 +28,33 @@ cancel_run() {
 	exit "$exit_code"
 }
 
+write_lifecycle_failure_result() {
+	local result_file="$1"
+	local task_id="$2"
+	local duration_ms="$3"
+	mkdir -p "$(dirname "$result_file")"
+	python3 - "$result_file" "$task_id" "$duration_ms" <<'PY'
+import json, sys
+
+result_file, task_id, duration_ms = sys.argv[1], sys.argv[2], int(sys.argv[3])
+result = {
+    "task": task_id,
+    "durationMs": duration_ms,
+    "diff": "",
+    "testExitCode": None,
+    "testOutput": "",
+    "judgeScore": 0,
+    "judgeRationale": (
+        "Judge model lifecycle failed; the task was scored zero so the "
+        "benchmark could continue."
+    ),
+    "infrastructureError": "lemonade_model_lifecycle",
+}
+with open(result_file, "w", encoding="utf-8") as handle:
+    json.dump(result, handle, indent=2)
+PY
+}
+
 trap cleanup_active_container EXIT
 trap 'cancel_run 130' INT
 trap 'cancel_run 143' TERM
@@ -52,6 +79,7 @@ fi
 TARGET="$1"
 shift
 
+DEFAULT_SWE_TIMEOUT_MINUTES=60
 PASS_COUNT=1
 EXTRA_ARGS=()
 while [ $# -gt 0 ]; do
@@ -66,6 +94,16 @@ while [ $# -gt 0 ]; do
 		;;
 	esac
 done
+
+HAS_TIMEOUT=false
+for arg in "${EXTRA_ARGS[@]}"; do
+	case "$arg" in
+	--timeout | --timeout=*) HAS_TIMEOUT=true ;;
+	esac
+done
+if [ "$HAS_TIMEOUT" = false ]; then
+	EXTRA_ARGS+=(--timeout "$DEFAULT_SWE_TIMEOUT_MINUTES")
+fi
 
 # shellcheck source=scripts/docker-ownership.sh
 source "$SCRIPT_DIR/docker-ownership.sh"
@@ -135,53 +173,9 @@ if local_judge_marker not in text:
         raise SystemExit(f"Could not patch {path}: insertion point not found")
     text = text.replace(needle, insert, 1)
 
-model_pin_marker = "LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE"
-if model_pin_marker not in text:
-    run_task = "async function runTask("
-    lifecycle_helpers = '''// LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE
-async function postLemonadeLifecycle(path: string, payload: Record<string, unknown>) {
-  const baseUrl = process.env.LMEVAL_WEBUI_LEMONADE_BASE_URL?.replace(/\\/+$/, "");
-  if (!baseUrl) throw new Error("Lemonade model lifecycle URL is not configured");
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Lemonade model lifecycle request failed (${response.status}): ${body}`);
-  }
-}
-
-async function switchPinnedCandidateToJudge(): Promise<boolean> {
-  const candidate = process.env.LMEVAL_WEBUI_CANDIDATE_MODEL_ID;
-  const judge = process.env.LMEVAL_WEBUI_JUDGE_MODEL_ID;
-  if (!candidate || !judge || candidate === judge) return false;
-  console.log(`[INFO] Model protection: switching pin from ${candidate} to judge ${judge}...`);
-  await postLemonadeLifecycle("/internal/pin", { model: candidate, pinned: false });
-  try {
-    await postLemonadeLifecycle("/api/v1/load", { model_name: judge, pinned: true });
-  } catch (error) {
-    await postLemonadeLifecycle("/api/v1/load", { model_name: candidate, pinned: true });
-    throw error;
-  }
-  return true;
-}
-
-async function restorePinnedCandidate(switched: boolean): Promise<void> {
-  if (!switched) return;
-  const candidate = process.env.LMEVAL_WEBUI_CANDIDATE_MODEL_ID!;
-  const judge = process.env.LMEVAL_WEBUI_JUDGE_MODEL_ID!;
-  console.log(`[INFO] Model protection: restoring pin to candidate ${candidate}...`);
-  await postLemonadeLifecycle("/internal/pin", { model: judge, pinned: false });
-  await postLemonadeLifecycle("/api/v1/load", { model_name: candidate, pinned: true });
-}
-
-'''
-    if run_task not in text:
-        raise SystemExit(f"Could not patch {path}: runTask not found")
-    text = text.replace(run_task, lifecycle_helpers + run_task, 1)
-    old_judge_stream = '''    let judgeOutput = "";
+model_pin_marker = "LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE_V2"
+legacy_helper_marker = "// LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE\n"
+upstream_judge_stream = '''    let judgeOutput = "";
     const { streamSimple } = await import("@mariozechner/pi-ai");
     const stream = streamSimple(judgeModel, {
       systemPrompt: judgeSystemPrompt,
@@ -197,7 +191,11 @@ async function restorePinnedCandidate(switched: boolean): Promise<void> {
       }
     }
 '''
-    new_judge_stream = '''    let judgeOutput = "";
+if model_pin_marker not in text and legacy_helper_marker in text:
+    helper_start = text.index(legacy_helper_marker)
+    run_task_start = text.index("async function runTask(", helper_start)
+    text = text[:helper_start] + text[run_task_start:]
+    legacy_judge_stream = '''    let judgeOutput = "";
     const switchedToJudge = await switchPinnedCandidateToJudge();
     try {
       const { streamSimple } = await import("@mariozechner/pi-ai");
@@ -218,9 +216,279 @@ async function restorePinnedCandidate(switched: boolean): Promise<void> {
       await restorePinnedCandidate(switchedToJudge);
     }
 '''
-    if old_judge_stream not in text:
+    if legacy_judge_stream not in text:
+        raise SystemExit(f"Could not upgrade {path}: legacy judge stream not found")
+    text = text.replace(legacy_judge_stream, upstream_judge_stream, 1)
+
+if model_pin_marker not in text:
+    run_task = "async function runTask("
+    lifecycle_helpers = '''// LMEVAL_WEBUI_LEMONADE_MODEL_PIN_LIFECYCLE_V2
+const LEMONADE_LIFECYCLE_POLL_MS = 2000;
+const LEMONADE_MODEL_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const LEMONADE_MODEL_LOAD_TIMEOUT_MS = 15 * 60 * 1000;
+const LEMONADE_MODEL_CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
+
+function lemonadeLifecycleBaseUrl(): string {
+  const baseUrl = process.env.LMEVAL_WEBUI_LEMONADE_BASE_URL?.replace(/\\/+$/, "");
+  if (!baseUrl) throw new Error("Lemonade model lifecycle URL is not configured");
+  return baseUrl;
+}
+
+function lifecycleErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function lifecycleDelay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function lemonadeHealth(): Promise<Record<string, unknown>> {
+  const response = await fetch(`${lemonadeLifecycleBaseUrl()}/api/v1/health`, {
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Lemonade health request failed (${response.status}): ${body}`);
+  }
+  const payload = await response.json();
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Lemonade health response was not an object");
+  }
+  return payload as Record<string, unknown>;
+}
+
+function loadedModelHealth(
+  health: Record<string, unknown>,
+  modelName: string,
+): Record<string, unknown> | undefined {
+  const loadedModels = health.all_models_loaded;
+  if (!Array.isArray(loadedModels)) return undefined;
+  for (const entry of loadedModels) {
+    if (
+      entry &&
+      typeof entry === "object" &&
+      (entry as Record<string, unknown>).model_name === modelName
+    ) {
+      return entry as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+async function waitForModelIdle(
+  modelName: string,
+  timeoutMs = LEMONADE_MODEL_IDLE_TIMEOUT_MS,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastHealthError = "";
+  while (Date.now() < deadline) {
+    try {
+      const model = loadedModelHealth(await lemonadeHealth(), modelName);
+      if (!model || (model.is_busy !== true && model.is_streaming !== true)) return;
+      lastHealthError = "";
+    } catch (error) {
+      lastHealthError = lifecycleErrorMessage(error);
+    }
+    await lifecycleDelay(LEMONADE_LIFECYCLE_POLL_MS);
+  }
+  const detail = lastHealthError ? ` Last health error: ${lastHealthError}` : "";
+  throw new Error(`Timed out waiting for model ${modelName} to become idle.${detail}`);
+}
+
+async function waitForModelLoadedAndPinned(
+  modelName: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const model = loadedModelHealth(await lemonadeHealth(), modelName);
+      if (
+        model &&
+        model.loaded !== false &&
+        model.pinned === true &&
+        model.backend_alive !== false
+      ) {
+        return true;
+      }
+    } catch {
+      // The model host can briefly reject health checks while changing backends.
+    }
+    await lifecycleDelay(LEMONADE_LIFECYCLE_POLL_MS);
+  }
+  return false;
+}
+
+async function postLemonadeLifecycle(path: string, payload: Record<string, unknown>) {
+  const response = await fetch(`${lemonadeLifecycleBaseUrl()}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(LEMONADE_MODEL_LOAD_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Lemonade model lifecycle request failed (${response.status}): ${body}`);
+  }
+}
+
+async function loadAndConfirmPinnedModel(modelName: string): Promise<void> {
+  let loadError: unknown = null;
+  try {
+    await postLemonadeLifecycle("/api/v1/load", {
+      model_name: modelName,
+      pinned: true,
+    });
+  } catch (error) {
+    loadError = error;
+    console.warn(
+      `[WARN] Model protection: load request for ${modelName} failed; checking actual host state: ${lifecycleErrorMessage(error)}`,
+    );
+  }
+
+  const confirmationTimeout = loadError ? LEMONADE_MODEL_CONFIRM_TIMEOUT_MS : 60000;
+  if (await waitForModelLoadedAndPinned(modelName, confirmationTimeout)) {
+    if (loadError) {
+      console.warn(
+        `[WARN] Model protection: ${modelName} became ready despite the failed load response; continuing.`,
+      );
+    }
+    return;
+  }
+  if (loadError) throw loadError;
+  throw new Error(`Model ${modelName} did not become loaded and pinned after its load request`);
+}
+
+async function bestEffortUnpinModel(modelName: string): Promise<void> {
+  try {
+    await postLemonadeLifecycle("/internal/pin", {
+      model: modelName,
+      pinned: false,
+    });
+  } catch (error) {
+    console.warn(
+      `[WARN] Model protection: could not unpin ${modelName}: ${lifecycleErrorMessage(error)}`,
+    );
+  }
+}
+
+async function pinCandidateAfterJudge(candidate: string, judge: string): Promise<void> {
+  await waitForModelIdle(judge);
+  await bestEffortUnpinModel(judge);
+  await loadAndConfirmPinnedModel(candidate);
+}
+
+async function switchPinnedCandidateToJudge(): Promise<boolean> {
+  const candidate = process.env.LMEVAL_WEBUI_CANDIDATE_MODEL_ID;
+  const judge = process.env.LMEVAL_WEBUI_JUDGE_MODEL_ID;
+  if (!candidate || !judge || candidate === judge) return false;
+
+  console.log(`[INFO] Model protection: waiting for candidate ${candidate} to become idle...`);
+  await waitForModelIdle(candidate);
+  console.log(`[INFO] Model protection: switching pin from ${candidate} to judge ${judge}...`);
+  await postLemonadeLifecycle("/internal/pin", {
+    model: candidate,
+    pinned: false,
+  });
+  try {
+    await loadAndConfirmPinnedModel(judge);
+  } catch (switchError) {
+    console.error(
+      `[ERROR] Model protection: judge switch failed: ${lifecycleErrorMessage(switchError)}`,
+    );
+    try {
+      await pinCandidateAfterJudge(candidate, judge);
+    } catch (restoreError) {
+      throw new Error(
+        `Judge switch failed: ${lifecycleErrorMessage(switchError)}; candidate restore failed: ${lifecycleErrorMessage(restoreError)}`,
+      );
+    }
+    throw switchError;
+  }
+  return true;
+}
+
+async function restorePinnedCandidate(switched: boolean): Promise<void> {
+  if (!switched) return;
+  const candidate = process.env.LMEVAL_WEBUI_CANDIDATE_MODEL_ID!;
+  const judge = process.env.LMEVAL_WEBUI_JUDGE_MODEL_ID!;
+  console.log(`[INFO] Model protection: restoring pin to candidate ${candidate}...`);
+  await pinCandidateAfterJudge(candidate, judge);
+}
+
+'''
+    if run_task not in text:
+        raise SystemExit(f"Could not patch {path}: runTask not found")
+    text = text.replace(run_task, lifecycle_helpers + run_task, 1)
+    new_judge_stream = '''    let judgeOutput = "";
+    let judgeFailure: string | null = null;
+    let switchedToJudge = false;
+    try {
+      switchedToJudge = await switchPinnedCandidateToJudge();
+      const { streamSimple } = await import("@mariozechner/pi-ai");
+      const stream = streamSimple(judgeModel, {
+        systemPrompt: judgeSystemPrompt,
+        messages: [{ role: "user", content: judgePrompt, timestamp: Date.now() }]
+      }, { apiKey: auth.apiKey, headers: auth.headers });
+
+      for await (const chunk of stream) {
+        if (chunk.type === "text_delta") {
+          judgeOutput += chunk.delta;
+        }
+        if (chunk.type === "error") {
+          const streamError = lifecycleErrorMessage(chunk.error);
+          judgeFailure ||= `Judge stream error: ${streamError}`;
+          console.error("[DEBUG] streamSimple error:", chunk.error);
+        }
+      }
+    } catch (error) {
+      judgeFailure = `Judge model handoff or inference failed: ${lifecycleErrorMessage(error)}`;
+      console.error(`[ERROR] ${judgeFailure}; task will be scored zero.`);
+    } finally {
+      try {
+        await restorePinnedCandidate(switchedToJudge);
+      } catch (error) {
+        const restoreFailure = `Candidate model restore failed: ${lifecycleErrorMessage(error)}`;
+        judgeFailure = judgeFailure ? `${judgeFailure}; ${restoreFailure}` : restoreFailure;
+        console.error(`[ERROR] ${restoreFailure}; task will be scored zero.`);
+      }
+    }
+'''
+    if upstream_judge_stream not in text:
         raise SystemExit(f"Could not patch {path}: judge stream not found")
-    text = text.replace(old_judge_stream, new_judge_stream, 1)
+    text = text.replace(upstream_judge_stream, new_judge_stream, 1)
+
+    old_score_parse = '''    let score = 0;
+    let rationale = "Failed to parse judge output";
+    try {
+      const jsonStr = judgeOutput.match(/\\{[\\s\\S]*\\}/)?.[0] || judgeOutput;
+      const parsed = JSON.parse(jsonStr);
+      score = parsed.score;
+      rationale = parsed.rationale;
+    } catch (e) {
+      console.error("[ERROR] Failed to parse judge JSON", e);
+      rationale = judgeOutput;
+    }
+'''
+    new_score_parse = '''    let score = 0;
+    let rationale = judgeFailure
+      ? `Judge infrastructure failure; task scored zero: ${judgeFailure}`
+      : "Failed to parse judge output";
+    if (!judgeFailure) {
+      try {
+        const jsonStr = judgeOutput.match(/\\{[\\s\\S]*\\}/)?.[0] || judgeOutput;
+        const parsed = JSON.parse(jsonStr);
+        score = parsed.score;
+        rationale = parsed.rationale;
+      } catch (e) {
+        console.error("[ERROR] Failed to parse judge JSON", e);
+        rationale = judgeOutput;
+      }
+    }
+'''
+    if old_score_parse not in text:
+        raise SystemExit(f"Could not patch {path}: judge score parser not found")
+    text = text.replace(old_score_parse, new_score_parse, 1)
 
 path.write_text(text, encoding="utf-8")
 PY
@@ -360,6 +628,7 @@ PY
 		fi
 
 		LOGFILE="$(mktemp /tmp/lm-eval-swe-mini-log.XXXXXX)"
+		ATTEMPT_STARTED_AT="$(date +%s)"
 		CONTAINER_NAME="lm-eval-webui-${SAFE_JOB_ID}-${COUNT}-${ATTEMPT}"
 		ACTIVE_CONTAINER="$CONTAINER_NAME"
 		set +e
@@ -394,8 +663,19 @@ PY
 		if [ -z "${RESULTS_DIR:-}" ]; then
 			RESULTS_DIR="$(grep -m1 'Saving results to directory:' "$LOGFILE" | sed 's/.*Saving results to directory: //' | tr -d '\r' || true)"
 		fi
-		rm -f "$LOGFILE"
 		restore_docker_result_ownership "$RESULTS_DIR" "$IMAGE"
+
+		if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 2 ] && [ -n "${RESULTS_DIR:-}" ] && \
+			grep -Eq 'Lemonade model lifecycle request failed|slots_pinned_error|Judge switch failed|Candidate model restore failed' "$LOGFILE"; then
+			ATTEMPT_FINISHED_AT="$(date +%s)"
+			ATTEMPT_DURATION_MS=$(((ATTEMPT_FINISHED_AT - ATTEMPT_STARTED_AT) * 1000))
+			RESULT_FILE="$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json"
+			write_lifecycle_failure_result "$RESULT_FILE" "$TASK_ID" "$ATTEMPT_DURATION_MS"
+			echo "[WARN] Judge model handoff failed for $TASK_ID; scoring this attempt zero and continuing."
+			EXIT_CODE=0
+		fi
+
+		rm -f "$LOGFILE"
 
 		if [ "$EXIT_CODE" -eq 2 ]; then
 			echo "[FATAL] Inference backend is unreachable or crashed. Aborting entire benchmark run."

@@ -45,6 +45,7 @@ from .runner import (
 from .swe_mini import (  # type: ignore[reportMissingImports]
     DEFAULT_SWE_MINI_JUDGE_MODEL,
     DEFAULT_SWE_MINI_PLATFORM,
+    DEFAULT_SWE_MINI_TIMEOUT_MINUTES,
     LAUNCH_CWD_ENV,
     SWE_JUDGE_MODEL_ENV,
     SWE_MINI_SUITE,
@@ -669,7 +670,8 @@ class JobManager:
             str(payload.get("judge_model") or DEFAULT_SWE_MINI_JUDGE_MODEL)
         )
         timeout_minutes = self._int_or_default(
-            payload.get("swe_timeout", payload.get("timeout_minutes")), 30
+            payload.get("swe_timeout", payload.get("timeout_minutes")),
+            DEFAULT_SWE_MINI_TIMEOUT_MINUTES,
         )
         pass_count = self._int_or_default(payload.get("pass_count"), 1)
         context_window = self._optional_int(payload.get("context_window"))
@@ -1320,7 +1322,9 @@ class JobManager:
             ),
             platform=str(options.get("platform") or DEFAULT_SWE_MINI_PLATFORM),
             model_tag=str(options.get("model_tag") or job.get("id") or ""),
-            timeout_minutes=self._int_or_default(options.get("timeout_minutes"), 30),
+            timeout_minutes=self._int_or_default(
+                options.get("timeout_minutes"), DEFAULT_SWE_MINI_TIMEOUT_MINUTES
+            ),
             pass_count=self._int_or_default(options.get("pass_count"), 1),
             context_window=self._optional_int(options.get("context_window")),
         )
