@@ -1247,9 +1247,7 @@ class SweMiniWrapperScriptTests(unittest.TestCase):
         script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
 
         self.assertIn("DEFAULT_SWE_TIMEOUT_MINUTES=60", script)
-        self.assertIn(
-            'EXTRA_ARGS+=(--timeout "$DEFAULT_SWE_TIMEOUT_MINUTES")', script
-        )
+        self.assertIn('EXTRA_ARGS+=(--timeout "$DEFAULT_SWE_TIMEOUT_MINUTES")', script)
 
     def test_wrapper_fails_fast_when_docker_run_produces_no_result(self):
         script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
@@ -4113,9 +4111,7 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("value=", fewshot_control)
         self.assertIn('id="maxGenToks" type="number" value="32768"', index)
         self.assertIn('id="timeout" type="number" value="7200"', index)
-        self.assertIn(
-            'id="sweTimeout" type="number" min="1" value="60"', index
-        )
+        self.assertIn('id="sweTimeout" type="number" min="1" value="60"', index)
         self.assertIn("const DEFAULT_SWE_TIMEOUT_MINUTES = 60", script)
         self.assertIn("Limit (blank = all)", index)
         self.assertIn("Few-shot (blank = task default)", index)

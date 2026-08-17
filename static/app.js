@@ -291,9 +291,7 @@ function renderBenchmarkProfiles() {
 		profileButton.title = [profile.description, profile.warning]
 			.filter(Boolean)
 			.join(" ");
-		profileButton.addEventListener("click", () =>
-			applyBenchmarkProfile(profile),
-		);
+		profileButton.addEventListener("click", () => applyBenchmarkProfile(profile));
 		container.append(profileButton);
 	});
 	updateBenchmarkProfileIndicator();
@@ -325,18 +323,12 @@ async function loadTasks() {
 		const payload = await api(`/api/tasks?suite=${suite}`, {
 			timeoutMs: TASK_REQUEST_TIMEOUT_MS,
 		});
-		if (
-			loadToken !== state.taskLoadToken ||
-			requestedSuite !== state.activeSuite
-		)
+		if (loadToken !== state.taskLoadToken || requestedSuite !== state.activeSuite)
 			return;
 		state.tasks = payload.tasks || [];
 		renderTasks();
 	} catch (error) {
-		if (
-			loadToken !== state.taskLoadToken ||
-			requestedSuite !== state.activeSuite
-		)
+		if (loadToken !== state.taskLoadToken || requestedSuite !== state.activeSuite)
 			return;
 		setText($("taskList"), `Could not load tasks: ${error.message}`);
 	} finally {
@@ -413,9 +405,7 @@ async function loadResultRows(suite = state.resultSuite, force = false) {
 				timeoutMs: 120000,
 			});
 			rows.push(...(payload.rows || []));
-			offset = Number.isFinite(payload.next_offset)
-				? payload.next_offset
-				: null;
+			offset = Number.isFinite(payload.next_offset) ? payload.next_offset : null;
 		} while (offset !== null);
 		state.rows = [
 			...state.rows.filter((row) => recordSuite(row) !== suite),
@@ -446,10 +436,7 @@ function renderModels() {
 	const list = $("modelList");
 	list.replaceChildren();
 	if (!state.models.length)
-		return setText(
-			list,
-			"No models returned by the OpenAI-compatible endpoint.",
-		);
+		return setText(list, "No models returned by the OpenAI-compatible endpoint.");
 	if (!state.selectedModels.size) state.selectedModels.add(state.models[0].id);
 	const filter = $("modelFilter").value.trim().toLowerCase();
 	const matchingModels = state.models.filter((model) =>
@@ -980,8 +967,7 @@ function renderLmEvalLeaderboard(list, entries) {
 			key: "model",
 			label: "Model",
 			sortValue: (row) => row.modelName,
-			cell: (row) =>
-				leaderboardCell(row.modelName, "model-cell", row.modelName),
+			cell: (row) => leaderboardCell(row.modelName, "model-cell", row.modelName),
 		},
 		{
 			key: "profile",
@@ -1155,9 +1141,7 @@ function setLeaderboardSort(suite, column) {
 
 function sortLeaderboardRows(rows, columns, suite) {
 	const currentSort = state.leaderboardSort[suite];
-	const column = columns.find(
-		(candidate) => candidate.key === currentSort?.key,
-	);
+	const column = columns.find((candidate) => candidate.key === currentSort?.key);
 	if (!column) return rows;
 	return rows
 		.map((row, index) => ({ row, index }))
@@ -1230,8 +1214,7 @@ function renderSweMiniLeaderboard(list, entries) {
 			key: "model",
 			label: "Model",
 			sortValue: (row) => row.modelName,
-			cell: (row) =>
-				leaderboardCell(row.modelName, "model-cell", row.modelName),
+			cell: (row) => leaderboardCell(row.modelName, "model-cell", row.modelName),
 		},
 		{
 			key: "runtime-backend",
@@ -1345,8 +1328,7 @@ function renderDetailFilter(kind, values, filterState) {
 		allSelected,
 		true,
 	);
-	allOption.checkbox.indeterminate =
-		selectedValues.length > 0 && !allSelected;
+	allOption.checkbox.indeterminate = selectedValues.length > 0 && !allSelected;
 	allOption.checkbox.disabled = values.length === 0;
 	container.append(allOption.option);
 
@@ -1609,8 +1591,7 @@ async function clearSelectedJobs() {
 		state.jobCommands.clear();
 		state.jobLogs.clear();
 		state.jobLogElements.clear();
-		$("setupMessage").textContent =
-			`Cleared ${payload.cleared} selected job(s).`;
+		$("setupMessage").textContent = `Cleared ${payload.cleared} selected job(s).`;
 		renderJobs();
 		invalidateResultRows();
 		await loadResults({ forceRows: true });
@@ -1686,9 +1667,7 @@ async function startJobs() {
 	if (suite === "swe_mini") {
 		Object.assign(body, {
 			judge_model: $("sweJudgeModel").value.trim() || DEFAULT_SWE_JUDGE_MODEL,
-			swe_timeout: Number(
-				$("sweTimeout").value || DEFAULT_SWE_TIMEOUT_MINUTES,
-			),
+			swe_timeout: Number($("sweTimeout").value || DEFAULT_SWE_TIMEOUT_MINUTES),
 			pass_count: Number($("swePassCount").value || 1),
 			context_window: numberOrNull($("sweContextWindow").value),
 		});
@@ -1944,9 +1923,7 @@ function modelMeta(model) {
 	return [
 		model.recipe,
 		model.size_gb ? `${model.size_gb} GB` : null,
-		model.context_window
-			? `${model.context_window.toLocaleString()} ctx`
-			: null,
+		model.context_window ? `${model.context_window.toLocaleString()} ctx` : null,
 	]
 		.filter(Boolean)
 		.join(" · ");
@@ -2173,17 +2150,11 @@ function updateSuiteUi() {
 		? "SWE Mini tasks run in Docker SWE-bench containers and are judged by the selected judge model."
 		: "OpenAI-compatible chat backends are generation oriented. Use generate_until tasks first.";
 	for (const button of [$("suiteLmEval"), $("suiteSweMini")]) {
-		button.classList.toggle(
-			"active",
-			button.dataset.suite === state.activeSuite,
-		);
+		button.classList.toggle("active", button.dataset.suite === state.activeSuite);
 	}
 	updateBenchmarkProfileIndicator();
 	for (const button of [$("leaderboardLmEval"), $("leaderboardSweMini")]) {
-		button.classList.toggle(
-			"active",
-			button.dataset.suite === state.resultSuite,
-		);
+		button.classList.toggle("active", button.dataset.suite === state.resultSuite);
 	}
 }
 async function selectBenchmarkSuite(suite) {

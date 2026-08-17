@@ -221,9 +221,7 @@ def build_swe_mini_command(request: SweMiniRequest) -> tuple[list[str], dict[str
         [
             "--timeout",
             str(
-                _positive_int(
-                    request.timeout_minutes, DEFAULT_SWE_MINI_TIMEOUT_MINUTES
-                )
+                _positive_int(request.timeout_minutes, DEFAULT_SWE_MINI_TIMEOUT_MINUTES)
             ),
         ]
     )

@@ -15,25 +15,25 @@ SAFE_JOB_ID="$(printf '%s' "$JOB_ID" | tr -c 'A-Za-z0-9_.-' '-')"
 ACTIVE_CONTAINER=""
 
 cleanup_active_container() {
-	if [ -n "$ACTIVE_CONTAINER" ]; then
-		docker rm -f "$ACTIVE_CONTAINER" >/dev/null 2>&1 || true
-		ACTIVE_CONTAINER=""
-	fi
+  if [ -n "$ACTIVE_CONTAINER" ]; then
+    docker rm -f "$ACTIVE_CONTAINER" >/dev/null 2>&1 || true
+    ACTIVE_CONTAINER=""
+  fi
 }
 
 cancel_run() {
-	local exit_code="$1"
-	trap - EXIT INT TERM
-	cleanup_active_container
-	exit "$exit_code"
+  local exit_code="$1"
+  trap - EXIT INT TERM
+  cleanup_active_container
+  exit "$exit_code"
 }
 
 write_lifecycle_failure_result() {
-	local result_file="$1"
-	local task_id="$2"
-	local duration_ms="$3"
-	mkdir -p "$(dirname "$result_file")"
-	python3 - "$result_file" "$task_id" "$duration_ms" <<'PY'
+  local result_file="$1"
+  local task_id="$2"
+  local duration_ms="$3"
+  mkdir -p "$(dirname "$result_file")"
+  python3 - "$result_file" "$task_id" "$duration_ms" <<'PY'
 import json, sys
 
 result_file, task_id, duration_ms = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -60,7 +60,7 @@ trap 'cancel_run 130' INT
 trap 'cancel_run 143' TERM
 
 usage() {
-	cat >&2 <<'USAGE'
+  cat >&2 <<'USAGE'
 Usage:
   scripts/run-swe-mini.sh <task-file-or-dir> [pi-bench args...]
 
@@ -72,8 +72,8 @@ USAGE
 }
 
 if [ $# -lt 1 ]; then
-	usage
-	exit 1
+  usage
+  exit 1
 fi
 
 TARGET="$1"
@@ -83,47 +83,47 @@ DEFAULT_SWE_TIMEOUT_MINUTES=60
 PASS_COUNT=1
 EXTRA_ARGS=()
 while [ $# -gt 0 ]; do
-	case "$1" in
-	--pass)
-		PASS_COUNT="$2"
-		shift 2
-		;;
-	*)
-		EXTRA_ARGS+=("$1")
-		shift
-		;;
-	esac
+  case "$1" in
+  --pass)
+    PASS_COUNT="$2"
+    shift 2
+    ;;
+  *)
+    EXTRA_ARGS+=("$1")
+    shift
+    ;;
+  esac
 done
 
 HAS_TIMEOUT=false
 for arg in "${EXTRA_ARGS[@]}"; do
-	case "$arg" in
-	--timeout | --timeout=*) HAS_TIMEOUT=true ;;
-	esac
+  case "$arg" in
+  --timeout | --timeout=*) HAS_TIMEOUT=true ;;
+  esac
 done
 if [ "$HAS_TIMEOUT" = false ]; then
-	EXTRA_ARGS+=(--timeout "$DEFAULT_SWE_TIMEOUT_MINUTES")
+  EXTRA_ARGS+=(--timeout "$DEFAULT_SWE_TIMEOUT_MINUTES")
 fi
 
 # shellcheck source=scripts/docker-ownership.sh
 source "$SCRIPT_DIR/docker-ownership.sh"
 
 if [ ! -d "$PI_BENCH_DIR" ]; then
-	echo "[ERROR] PI_BENCH_DIR does not exist: $PI_BENCH_DIR" >&2
-	exit 1
+  echo "[ERROR] PI_BENCH_DIR does not exist: $PI_BENCH_DIR" >&2
+  exit 1
 fi
 
 if [ "$PI_BENCH_RUN_DIR" != "$PI_BENCH_DIR" ]; then
-	mkdir -p "$PI_BENCH_RUN_DIR"
-	# Keep the runtime copy simple and dependency-free. This intentionally avoids
-	# deleting files so cached node_modules and previous results can be reused.
-	cp -a "$PI_BENCH_DIR/." "$PI_BENCH_RUN_DIR/"
+  mkdir -p "$PI_BENCH_RUN_DIR"
+  # Keep the runtime copy simple and dependency-free. This intentionally avoids
+  # deleting files so cached node_modules and previous results can be reused.
+  cp -a "$PI_BENCH_DIR/." "$PI_BENCH_RUN_DIR/"
 fi
 
 patch_pi_bench_for_webui() {
-	local index_ts="$PI_BENCH_RUN_DIR/src/index.ts"
-	[ -f "$index_ts" ] || return 0
-	python3 - "$index_ts" <<'PY'
+  local index_ts="$PI_BENCH_RUN_DIR/src/index.ts"
+  [ -f "$index_ts" ] || return 0
+  python3 - "$index_ts" <<'PY'
 import sys
 from pathlib import Path
 
@@ -498,72 +498,72 @@ patch_pi_bench_for_webui
 
 MODEL_DOCKER_ARGS=()
 if [ -n "${PI_BENCH_MODELS_JSON:-}" ]; then
-	if [ ! -f "$PI_BENCH_MODELS_JSON" ]; then
-		echo "[ERROR] PI_BENCH_MODELS_JSON does not exist: $PI_BENCH_MODELS_JSON" >&2
-		exit 1
-	fi
-	MODEL_DOCKER_ARGS=(-v "$PI_BENCH_MODELS_JSON:/pi-bench/models.json:z,ro")
+  if [ ! -f "$PI_BENCH_MODELS_JSON" ]; then
+    echo "[ERROR] PI_BENCH_MODELS_JSON does not exist: $PI_BENCH_MODELS_JSON" >&2
+    exit 1
+  fi
+  MODEL_DOCKER_ARGS=(-v "$PI_BENCH_MODELS_JSON:/pi-bench/models.json:z,ro")
 fi
 
 ENV_ARGS=()
 if [ -f "$REPO_ROOT/.env" ]; then
-	ENV_ARGS=(--env-file "$REPO_ROOT/.env")
+  ENV_ARGS=(--env-file "$REPO_ROOT/.env")
 elif [ -f "$PI_BENCH_RUN_DIR/.env" ]; then
-	ENV_ARGS=(--env-file "$PI_BENCH_RUN_DIR/.env")
+  ENV_ARGS=(--env-file "$PI_BENCH_RUN_DIR/.env")
 fi
 
 MODEL_LIFECYCLE_ENV_ARGS=()
 for variable in \
-	LMEVAL_WEBUI_LEMONADE_BASE_URL \
-	LMEVAL_WEBUI_CANDIDATE_MODEL_ID \
-	LMEVAL_WEBUI_JUDGE_MODEL_ID; do
-	if [ -n "${!variable:-}" ]; then
-		MODEL_LIFECYCLE_ENV_ARGS+=(--env "$variable=${!variable}")
-	fi
+  LMEVAL_WEBUI_LEMONADE_BASE_URL \
+  LMEVAL_WEBUI_CANDIDATE_MODEL_ID \
+  LMEVAL_WEBUI_JUDGE_MODEL_ID; do
+  if [ -n "${!variable:-}" ]; then
+    MODEL_LIFECYCLE_ENV_ARGS+=(--env "$variable=${!variable}")
+  fi
 done
 
 mkdir -p "$PI_BENCH_RUN_DIR"
 docker volume create pi-bench-bun-cache >/dev/null 2>&1 || true
 
 resolve_target() {
-	local raw="$1"
-	if [ -e "$raw" ]; then
-		realpath "$raw"
-	elif [ -e "$PI_BENCH_RUN_DIR/$raw" ]; then
-		realpath "$PI_BENCH_RUN_DIR/$raw"
-	elif [ -e "$PI_BENCH_DIR/$raw" ]; then
-		realpath "$PI_BENCH_DIR/$raw"
-	else
-		printf '%s\n' "$raw"
-	fi
+  local raw="$1"
+  if [ -e "$raw" ]; then
+    realpath "$raw"
+  elif [ -e "$PI_BENCH_RUN_DIR/$raw" ]; then
+    realpath "$PI_BENCH_RUN_DIR/$raw"
+  elif [ -e "$PI_BENCH_DIR/$raw" ]; then
+    realpath "$PI_BENCH_DIR/$raw"
+  else
+    printf '%s\n' "$raw"
+  fi
 }
 
 TARGET_ABS="$(resolve_target "$TARGET")"
 TASK_FILES=()
 if [ -d "$TARGET_ABS" ]; then
-	for f in "$TARGET_ABS"/*.json; do
-		[ -f "$f" ] && TASK_FILES+=("$f")
-	done
+  for f in "$TARGET_ABS"/*.json; do
+    [ -f "$f" ] && TASK_FILES+=("$f")
+  done
 else
-	TASK_FILES+=("$TARGET_ABS")
+  TASK_FILES+=("$TARGET_ABS")
 fi
 
 if [ ${#TASK_FILES[@]} -eq 0 ]; then
-	echo "[ERROR] No task JSON files found in $TARGET" >&2
-	exit 1
+  echo "[ERROR] No task JSON files found in $TARGET" >&2
+  exit 1
 fi
 
 if [ -n "${SWE_MINI_OUTPUT_PATH:-}" ]; then
-	RESULTS_DIR="$(
-		python3 - "$SWE_MINI_OUTPUT_PATH" "$PI_BENCH_RUN_DIR" <<'PY'
+  RESULTS_DIR="$(
+    python3 - "$SWE_MINI_OUTPUT_PATH" "$PI_BENCH_RUN_DIR" <<'PY'
 import os, sys
 print(os.path.relpath(sys.argv[1], sys.argv[2]))
 PY
-	)"
+  )"
 else
-	set +e
-	RESULTS_DIR="$(cd "$PI_BENCH_RUN_DIR" && bun run src/index.ts --print-output-dir "$TARGET" "${EXTRA_ARGS[@]}" 2>/dev/null)"
-	set -e
+  set +e
+  RESULTS_DIR="$(cd "$PI_BENCH_RUN_DIR" && bun run src/index.ts --print-output-dir "$TARGET" "${EXTRA_ARGS[@]}" 2>/dev/null)"
+  set -e
 fi
 
 TOTAL=${#TASK_FILES[@]}
@@ -579,69 +579,69 @@ printf '[INFO] pi-bench runtime: %s\n' "$PI_BENCH_RUN_DIR"
 printf '========================================================\n'
 
 for task_file in "${TASK_FILES[@]}"; do
-	COUNT=$((COUNT + 1))
-	TASK_ID="$(
-		python3 - "$task_file" <<'PY'
+  COUNT=$((COUNT + 1))
+  TASK_ID="$(
+    python3 - "$task_file" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as handle:
     print(json.load(handle)['id'])
 PY
-	)"
-	IMAGE="$REGISTRY.$TASK_ID:latest"
+  )"
+  IMAGE="$REGISTRY.$TASK_ID:latest"
 
-	if [ -n "${RESULTS_DIR:-}" ] && [ -f "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json" ]; then
-		restore_docker_result_ownership "$RESULTS_DIR" "$IMAGE"
-		printf '\n========================================================\n'
-		printf '[%s/%s] Task: %s\n' "$COUNT" "$TOTAL" "$TASK_ID"
-		printf '[INFO] Skipping %s, result already exists.\n' "$TASK_ID"
-		printf '========================================================\n'
-		EXISTING_SCORE="$(
-			python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json" <<'PY' || true
+  if [ -n "${RESULTS_DIR:-}" ] && [ -f "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json" ]; then
+    restore_docker_result_ownership "$RESULTS_DIR" "$IMAGE"
+    printf '\n========================================================\n'
+    printf '[%s/%s] Task: %s\n' "$COUNT" "$TOTAL" "$TASK_ID"
+    printf '[INFO] Skipping %s, result already exists.\n' "$TASK_ID"
+    printf '========================================================\n'
+    EXISTING_SCORE="$(
+      python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json" <<'PY' || true
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as handle:
     print(json.load(handle).get('judgeScore', 0))
 PY
-		)"
-		if [ "$EXISTING_SCORE" = "1" ]; then
-			PASSED=$((PASSED + 1))
-		else
-			FAILED=$((FAILED + 1))
-		fi
-		continue
-	fi
+    )"
+    if [ "$EXISTING_SCORE" = "1" ]; then
+      PASSED=$((PASSED + 1))
+    else
+      FAILED=$((FAILED + 1))
+    fi
+    continue
+  fi
 
-	printf '\n========================================================\n'
-	printf '[%s/%s] Task: %s\n' "$COUNT" "$TOTAL" "$TASK_ID"
-	printf '         Image: %s\n' "$IMAGE"
-	printf '========================================================\n'
+  printf '\n========================================================\n'
+  printf '[%s/%s] Task: %s\n' "$COUNT" "$TOTAL" "$TASK_ID"
+  printf '         Image: %s\n' "$IMAGE"
+  printf '========================================================\n'
 
-	REL_TASK_FILE="$(
-		python3 - "$task_file" "$PI_BENCH_RUN_DIR" <<'PY'
+  REL_TASK_FILE="$(
+    python3 - "$task_file" "$PI_BENCH_RUN_DIR" <<'PY'
 import os, sys
 print(os.path.relpath(sys.argv[1], sys.argv[2]))
 PY
-	)"
+  )"
 
-	for ATTEMPT in $(seq 1 "$PASS_COUNT"); do
-		if [ "$PASS_COUNT" -gt 1 ]; then
-			echo "[INFO] Starting attempt $ATTEMPT of $PASS_COUNT for $TASK_ID"
-		fi
+  for ATTEMPT in $(seq 1 "$PASS_COUNT"); do
+    if [ "$PASS_COUNT" -gt 1 ]; then
+      echo "[INFO] Starting attempt $ATTEMPT of $PASS_COUNT for $TASK_ID"
+    fi
 
-		LOGFILE="$(mktemp /tmp/lm-eval-swe-mini-log.XXXXXX)"
-		ATTEMPT_STARTED_AT="$(date +%s)"
-		CONTAINER_NAME="lm-eval-webui-${SAFE_JOB_ID}-${COUNT}-${ATTEMPT}"
-		ACTIVE_CONTAINER="$CONTAINER_NAME"
-		set +e
-		docker run --init -i --rm --network host \
-			--name "$CONTAINER_NAME" \
-			--label "lm-eval-webui.job-id=$JOB_ID" \
-			"${ENV_ARGS[@]}" \
-			"${MODEL_LIFECYCLE_ENV_ARGS[@]}" \
-			-v "$PI_BENCH_RUN_DIR:/pi-bench:z" \
-			"${MODEL_DOCKER_ARGS[@]}" \
-			-v "pi-bench-bun-cache:/root/.bun" \
-			"$IMAGE" \
-			bash -c "
+    LOGFILE="$(mktemp /tmp/lm-eval-swe-mini-log.XXXXXX)"
+    ATTEMPT_STARTED_AT="$(date +%s)"
+    CONTAINER_NAME="lm-eval-webui-${SAFE_JOB_ID}-${COUNT}-${ATTEMPT}"
+    ACTIVE_CONTAINER="$CONTAINER_NAME"
+    set +e
+    docker run --init -i --rm --network host \
+      --name "$CONTAINER_NAME" \
+      --label "lm-eval-webui.job-id=$JOB_ID" \
+      "${ENV_ARGS[@]}" \
+      "${MODEL_LIFECYCLE_ENV_ARGS[@]}" \
+      -v "$PI_BENCH_RUN_DIR:/pi-bench:z" \
+      "${MODEL_DOCKER_ARGS[@]}" \
+      -v "pi-bench-bun-cache:/root/.bun" \
+      "$IMAGE" \
+      bash -c "
         set -e
         if [ ! -f /root/.bun/bin/bun ]; then
           echo '[SETUP] Installing bun...'
@@ -656,60 +656,60 @@ PY
         conda activate testbed
         bun run src/index.ts '$REL_TASK_FILE' ${EXTRA_ARGS[*]@Q}
       " 2>&1 | tee "$LOGFILE"
-		EXIT_CODE=${PIPESTATUS[0]}
-		ACTIVE_CONTAINER=""
-		set -e
+    EXIT_CODE=${PIPESTATUS[0]}
+    ACTIVE_CONTAINER=""
+    set -e
 
-		if [ -z "${RESULTS_DIR:-}" ]; then
-			RESULTS_DIR="$(grep -m1 'Saving results to directory:' "$LOGFILE" | sed 's/.*Saving results to directory: //' | tr -d '\r' || true)"
-		fi
-		restore_docker_result_ownership "$RESULTS_DIR" "$IMAGE"
+    if [ -z "${RESULTS_DIR:-}" ]; then
+      RESULTS_DIR="$(grep -m1 'Saving results to directory:' "$LOGFILE" | sed 's/.*Saving results to directory: //' | tr -d '\r' || true)"
+    fi
+    restore_docker_result_ownership "$RESULTS_DIR" "$IMAGE"
 
-		if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 2 ] && [ -n "${RESULTS_DIR:-}" ] && \
-			grep -Eq 'Lemonade model lifecycle request failed|slots_pinned_error|Judge switch failed|Candidate model restore failed' "$LOGFILE"; then
-			ATTEMPT_FINISHED_AT="$(date +%s)"
-			ATTEMPT_DURATION_MS=$(((ATTEMPT_FINISHED_AT - ATTEMPT_STARTED_AT) * 1000))
-			RESULT_FILE="$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json"
-			write_lifecycle_failure_result "$RESULT_FILE" "$TASK_ID" "$ATTEMPT_DURATION_MS"
-			echo "[WARN] Judge model handoff failed for $TASK_ID; scoring this attempt zero and continuing."
-			EXIT_CODE=0
-		fi
+    if [ "$EXIT_CODE" -ne 0 ] && [ "$EXIT_CODE" -ne 2 ] && [ -n "${RESULTS_DIR:-}" ] &&
+      grep -Eq 'Lemonade model lifecycle request failed|slots_pinned_error|Judge switch failed|Candidate model restore failed' "$LOGFILE"; then
+      ATTEMPT_FINISHED_AT="$(date +%s)"
+      ATTEMPT_DURATION_MS=$(((ATTEMPT_FINISHED_AT - ATTEMPT_STARTED_AT) * 1000))
+      RESULT_FILE="$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json"
+      write_lifecycle_failure_result "$RESULT_FILE" "$TASK_ID" "$ATTEMPT_DURATION_MS"
+      echo "[WARN] Judge model handoff failed for $TASK_ID; scoring this attempt zero and continuing."
+      EXIT_CODE=0
+    fi
 
-		rm -f "$LOGFILE"
+    rm -f "$LOGFILE"
 
-		if [ "$EXIT_CODE" -eq 2 ]; then
-			echo "[FATAL] Inference backend is unreachable or crashed. Aborting entire benchmark run."
-			exit 2
-		fi
-		if [ "$EXIT_CODE" -ne 0 ]; then
-			echo "[FATAL] SWE Mini container exited with status $EXIT_CODE."
-			exit "$EXIT_CODE"
-		fi
-		if [ -z "${RESULTS_DIR:-}" ]; then
-			echo "[FATAL] No results directory produced for task $TASK_ID."
-			exit 1
-		fi
+    if [ "$EXIT_CODE" -eq 2 ]; then
+      echo "[FATAL] Inference backend is unreachable or crashed. Aborting entire benchmark run."
+      exit 2
+    fi
+    if [ "$EXIT_CODE" -ne 0 ]; then
+      echo "[FATAL] SWE Mini container exited with status $EXIT_CODE."
+      exit "$EXIT_CODE"
+    fi
+    if [ -z "${RESULTS_DIR:-}" ]; then
+      echo "[FATAL] No results directory produced for task $TASK_ID."
+      exit 1
+    fi
 
-		RESULT_FILE="$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json"
-		if [ ! -f "$RESULT_FILE" ]; then
-			echo "[FATAL] No result file produced for task $TASK_ID: $RESULT_FILE"
-			exit 1
-		fi
-		mv "$RESULT_FILE" "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}-attempt${ATTEMPT}.json"
-		mv "$PI_BENCH_RUN_DIR/$RESULTS_DIR/transcript-${TASK_ID}.json" "$PI_BENCH_RUN_DIR/$RESULTS_DIR/transcript-${TASK_ID}-attempt${ATTEMPT}.json" 2>/dev/null || true
-		JUDGE_SCORE="$(
-			python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}-attempt${ATTEMPT}.json" <<'PY' || true
+    RESULT_FILE="$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json"
+    if [ ! -f "$RESULT_FILE" ]; then
+      echo "[FATAL] No result file produced for task $TASK_ID: $RESULT_FILE"
+      exit 1
+    fi
+    mv "$RESULT_FILE" "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}-attempt${ATTEMPT}.json"
+    mv "$PI_BENCH_RUN_DIR/$RESULTS_DIR/transcript-${TASK_ID}.json" "$PI_BENCH_RUN_DIR/$RESULTS_DIR/transcript-${TASK_ID}-attempt${ATTEMPT}.json" 2>/dev/null || true
+    JUDGE_SCORE="$(
+      python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}-attempt${ATTEMPT}.json" <<'PY' || true
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as handle:
     print(json.load(handle).get('judgeScore', 0))
 PY
-		)"
-		if [ "$JUDGE_SCORE" = "1" ]; then
-			break
-		fi
-	done
+    )"
+    if [ "$JUDGE_SCORE" = "1" ]; then
+      break
+    fi
+  done
 
-	python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR" "$TASK_ID" "$PASS_COUNT" <<'PY'
+  python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR" "$TASK_ID" "$PASS_COUNT" <<'PY'
 import json, os, shutil, sys
 results_dir, task_id, pass_count_s = sys.argv[1], sys.argv[2], sys.argv[3]
 pass_count = int(pass_count_s)
@@ -739,19 +739,19 @@ if attempts:
         shutil.copy2(best_transcript, final_transcript)
 PY
 
-	FINAL_SCORE="$(
-		python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json" <<'PY' || true
+  FINAL_SCORE="$(
+    python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json" <<'PY' || true
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as handle:
     print(json.load(handle).get('judgeScore', 0))
 PY
-	)"
-	if [ "$FINAL_SCORE" = "1" ]; then
-		PASSED=$((PASSED + 1))
-	else
-		FAILED=$((FAILED + 1))
-		echo "[WARN] Task $TASK_ID failed"
-	fi
+  )"
+  if [ "$FINAL_SCORE" = "1" ]; then
+    PASSED=$((PASSED + 1))
+  else
+    FAILED=$((FAILED + 1))
+    echo "[WARN] Task $TASK_ID failed"
+  fi
 done
 
 printf '\n========================================================\n'
@@ -760,8 +760,8 @@ printf '[INFO] Tasks: %s | Succeeded: %s | Failed: %s\n' "$TOTAL" "$PASSED" "$FA
 printf '========================================================\n'
 
 if [ -n "${RESULTS_DIR:-}" ] && [ -d "$PI_BENCH_RUN_DIR/$RESULTS_DIR" ]; then
-	echo "[INFO] Generating aggregate summary from $RESULTS_DIR ..."
-	python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR" <<'PY'
+  echo "[INFO] Generating aggregate summary from $RESULTS_DIR ..."
+  python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR" <<'PY'
 import glob, json, os, sys
 results_dir = sys.argv[1]
 result_files = [
