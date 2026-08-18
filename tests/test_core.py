@@ -4479,6 +4479,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("LEMONADE_CLI_VERSION=11.6.0", dockerfile)
         self.assertIn("LEMONADE_CLI_SHA256_AMD64=", dockerfile)
         self.assertIn("LEMONADE_CLI_SHA256_ARM64=", dockerfile)
+        self.assertIn("ARG TARGETARCH\n", dockerfile)
+        self.assertNotIn("ARG TARGETARCH=", dockerfile)
         self.assertIn('case "${TARGETARCH}"', dockerfile)
 
     def test_static_ui_exposes_balanced_profile_controls_and_results(self):

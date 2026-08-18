@@ -21,7 +21,8 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 RUN curl -fsSL https://bun.sh/install | bash
 
-ARG TARGETARCH=amd64
+# BuildKit supplies TARGETARCH per target platform; a default would override arm64.
+ARG TARGETARCH
 ARG LEMONADE_CLI_VERSION=11.6.0
 ARG LEMONADE_CLI_SHA256_AMD64=9d3fc9c96e745e96c56347eb0a9c1b07ad791fbd8def47beb9fe3ef5fc40e8de
 ARG LEMONADE_CLI_SHA256_ARM64=69c3a57fd9ed16439d977543fc10ecf486f86e55d04aa9b46626464d6e99a6b4
