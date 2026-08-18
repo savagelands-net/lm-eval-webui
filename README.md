@@ -1,8 +1,8 @@
-# Lemonade lm-eval Benchmark WebUI
+# Lemonade Benchmark WebUI
 
-A small stdlib Python WebUI for selecting OpenAI-compatible chat models,
-launching `lm-evaluation-harness` benchmarks, and viewing rolled-up leaderboard
-results.
+A small stdlib Python WebUI for running Lemonade Bench, lm-evaluation-harness,
+and SWE Mini against installed models. Each suite has its own leaderboard and
+detailed result view.
 
 ## Run
 
@@ -25,6 +25,23 @@ python -m lm_eval_webui --openai-base-url "https://your-openai-compatible-host"
 
 The WebUI also lets you edit the OpenAI-compatible base URL before refreshing
 models or starting benchmark jobs.
+
+## Lemonade Bench
+
+Lemonade Bench is the first suite in the setup and result tabs. It wraps the
+upstream `lemonade bench` command and records TTFT, output tokens per second,
+request duration, peak VRAM/RAM, failed runs, backend, and context size. Its
+scenario picker is populated from Lemonade's bundled scenario catalog and
+includes chat, coding, long-context, embedding, and image-generation workloads.
+Long-context scenarios remain opt-in.
+
+The benchmark options support backend and context-size matrices, measurement
+and warmup counts, request timeout, memory tracking, model reloads between runs,
+and optional response logging. Lemonade Bench jobs are always serialized because
+the CLI controls model loading and unloading on a shared Lemonade server. The
+container image includes the checksum-pinned Lemonade 11.6 CLI and supports both
+amd64 and arm64 builds. Source-based local runs require a compatible `lemonade`
+CLI on `PATH`; override its location with `LEMONADE_CLI=/path/to/lemonade`.
 
 ## SWE Mini / pi-bench
 
@@ -126,7 +143,9 @@ The relevant read APIs are:
 - `GET /api/jobs/<id>` — full job details
 - `GET /api/jobs/<id>/log` — an efficient log tail
 - `GET /api/leaderboard` — compact leaderboard entries
-- `GET /api/results?offset=0&limit=1000&suite=lm_eval` — paginated rows
+- `GET /api/results?offset=0&limit=1000&suite=lemonade_bench` — paginated Lemonade Bench rows
+- `GET /api/results?offset=0&limit=1000&suite=lm_eval` — paginated lm-eval rows
+- `GET /api/results?offset=0&limit=1000&suite=swe_mini` — paginated SWE Mini rows
 
 ## Balanced lm-eval profiles and scoring
 
@@ -201,15 +220,17 @@ Lemonade loads a model when a client asks for that model. With
 `max_loaded_models=1`, unrelated client traffic could otherwise evict a
 benchmark model.
 
-WebUI benchmark jobs therefore load and pin their selected model before the
-first request, keep it pinned across every lm-eval task batch, and unpin it when
-the job succeeds, fails, or is cancelled. A competing model request receives
-HTTP 409 instead of evicting the benchmark model. SWE Mini temporarily unpins
-the candidate and pins the configured Lemonade judge while judging each task,
-then restores the candidate pin before continuing. Hosts without Lemonade's
-lifecycle endpoints continue without model protection and record that state in
-the job log. Alternatively, increase `max_loaded_models` only when the host has
-enough memory for every concurrently used model.
+lm-eval jobs load and pin their selected model before the first request, keep it
+pinned across every task batch, and unpin it when the job succeeds, fails, or is
+cancelled. A competing model request receives HTTP 409 instead of evicting the
+benchmark model. SWE Mini temporarily unpins the candidate and pins the
+configured Lemonade judge while judging each task, then restores the candidate
+pin before continuing. Lemonade Bench is intentionally not pinned because the
+upstream CLI reloads models between scenarios and backend/context combinations.
+Hosts without Lemonade's lifecycle endpoints continue without model protection
+and record that state in the job log. Alternatively, increase
+`max_loaded_models` only when the host has enough memory for every concurrently
+used model.
 
 ## Notes
 

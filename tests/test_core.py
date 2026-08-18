@@ -157,6 +157,333 @@ class OpenAICompatibleEndpointTests(unittest.TestCase):
         self.assertIn("llamacpp_backend=vulkan", command)
 
 
+class LemonadeBenchTests(unittest.TestCase):
+    @staticmethod
+    def result_payload(measurement_runs=3):
+        return {
+            "timestamp": "2026-08-18T20:00:00Z",
+            "hardware": {"os": "Linux"},
+            "models": [
+                {
+                    "model": "user.Qwen/Model-A",
+                    "timestamp": "2026-08-18T20:00:01Z",
+                    "config": {
+                        "measurement_runs": measurement_runs,
+                        "warmup_runs": 0,
+                        "memory_tracking": True,
+                    },
+                    "results": [
+                        {
+                            "recipe": "vllm",
+                            "backend": "rocm",
+                            "ctx_size": 262144,
+                            "backend_args": "--kv-cache-memory-bytes 10G",
+                            "scenarios": [
+                                {
+                                    "name": "chat-short",
+                                    "category": "chat",
+                                    "input_tokens": 100,
+                                    "output_tokens": 20,
+                                    "ttft_ms": {
+                                        "mean": 100,
+                                        "min": 90,
+                                        "max": 110,
+                                        "p50": 100,
+                                        "p95": 109,
+                                    },
+                                    "duration_ms": {
+                                        "mean": 1000,
+                                        "min": 900,
+                                        "max": 1100,
+                                        "p50": 1000,
+                                        "p95": 1090,
+                                    },
+                                    "tps": {
+                                        "mean": 20,
+                                        "min": 18,
+                                        "max": 22,
+                                        "p50": 20,
+                                        "p95": 21.8,
+                                    },
+                                    "vram_peak_gb": 60,
+                                    "memory_peak_gb": 70,
+                                    "failed_runs": 0,
+                                },
+                                {
+                                    "name": "code-short",
+                                    "category": "coding",
+                                    "input_tokens": 80,
+                                    "output_tokens": 30,
+                                    "ttft_ms": {
+                                        "mean": 200,
+                                        "min": 180,
+                                        "max": 220,
+                                        "p50": 200,
+                                        "p95": 218,
+                                    },
+                                    "duration_ms": {
+                                        "mean": 2000,
+                                        "min": 1800,
+                                        "max": 2200,
+                                        "p50": 2000,
+                                        "p95": 2180,
+                                    },
+                                    "tps": {
+                                        "mean": 10,
+                                        "min": 9,
+                                        "max": 11,
+                                        "p50": 10,
+                                        "p95": 10.9,
+                                    },
+                                    "vram_peak_gb": 61,
+                                    "memory_peak_gb": 72,
+                                    "failed_runs": 1,
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_command_targets_lemonade_server_and_persists_json(self):
+        LemonadeBenchRequest = symbol(
+            "lm_eval_webui.lemonade_bench", "LemonadeBenchRequest"
+        )
+        build_command = symbol(
+            "lm_eval_webui.lemonade_bench", "build_lemonade_bench_command"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "run" / "results.json"
+            command, env = build_command(
+                LemonadeBenchRequest(
+                    model_id="Qwen/Model-A",
+                    lemonade_model_id="user.Qwen/Model-A",
+                    scenarios=["chat-short", "code-short"],
+                    output_path=str(output_path),
+                    openai_base_url="https://llm.example.test/v1",
+                    backends=["rocm"],
+                    context_sizes=[4096, 32768],
+                    measurement_runs=5,
+                    warmup_runs=1,
+                    timeout=600,
+                    memory_tracking=False,
+                    reload_between_runs=False,
+                    log_responses=True,
+                    lemonade_cli="/usr/local/bin/lemonade",
+                )
+            )
+
+        self.assertEqual(
+            command[:3],
+            ["/usr/local/bin/lemonade", "--host", "https://llm.example.test"],
+        )
+        self.assertIn("bench", command)
+        self.assertIn("--json", command)
+        self.assertIn("--output", command)
+        self.assertIn(str(output_path), command)
+        self.assertIn("--backend", command)
+        self.assertIn("rocm", command)
+        self.assertIn("--ctx-size", command)
+        self.assertIn("4096", command)
+        self.assertIn("32768", command)
+        self.assertEqual(command.count("--scenarios"), 2)
+        self.assertIn("--no-memory", command)
+        self.assertIn("--no-reload", command)
+        self.assertIn("--response-log", command)
+        self.assertEqual(command[-1], "user.Qwen/Model-A")
+        self.assertEqual(env["NO_COLOR"], "1")
+
+    def test_scenario_catalog_reads_lemonade_resource_schema(self):
+        find_scenarios = symbol(
+            "lm_eval_webui.lemonade_bench", "find_lemonade_bench_scenarios"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scenario_file = Path(tmp) / "bench_scenarios.json"
+            scenario_file.write_text(
+                json.dumps(
+                    {
+                        "scenarios": [
+                            {
+                                "name": "chat-short",
+                                "category": "chat",
+                                "max_tokens": 20,
+                            },
+                            {
+                                "name": "context-32k",
+                                "category": "long-context",
+                                "max_tokens": 20,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scenarios = find_scenarios(scenario_file)
+
+        self.assertEqual(
+            [item["name"] for item in scenarios], ["chat-short", "context-32k"]
+        )
+        self.assertEqual(scenarios[0]["suite"], "lemonade_bench")
+        self.assertEqual(scenarios[0]["kind"], "scenario")
+        self.assertTrue(scenarios[0]["default_selected"])
+        self.assertFalse(scenarios[1]["default_selected"])
+        self.assertIn("20 output tokens", scenarios[0]["description"])
+
+    def test_server_task_loader_can_return_lemonade_bench_scenarios(self):
+        load_available_tasks = symbol("lm_eval_webui.server", "load_available_tasks")
+        expected = [{"name": "chat-short", "suite": "lemonade_bench"}]
+
+        with mock.patch(
+            "lm_eval_webui.server.find_lemonade_bench_scenarios",
+            return_value=expected,
+        ):
+            scenarios = load_available_tasks(suite="lemonade_bench")
+
+        self.assertEqual(scenarios, expected)
+
+    def test_results_parse_details_leaderboard_and_telemetry(self):
+        extract_rows = symbol(
+            "lm_eval_webui.lemonade_bench", "extract_lemonade_bench_result_rows"
+        )
+        extract_entries = symbol(
+            "lm_eval_webui.lemonade_bench",
+            "extract_lemonade_bench_leaderboard_entries",
+        )
+        summarize = symbol(
+            "lm_eval_webui.lemonade_bench", "summarize_lemonade_bench_telemetry"
+        )
+        job = {
+            "id": "job-1",
+            "suite": "lemonade_bench",
+            "model_id": "Qwen/Model-A",
+            "status": "succeeded",
+            "runtime_seconds": 12.5,
+        }
+        payload = self.result_payload()
+
+        rows = extract_rows(job, payload)
+        entries = extract_entries(job, payload)
+        telemetry = summarize(payload)
+
+        ttft_row = next(
+            row
+            for row in rows
+            if row["task"] == "chat-short" and row["metric"] == "ttft_mean_ms"
+        )
+        self.assertEqual(ttft_row["model"], "Qwen/Model-A")
+        self.assertEqual(ttft_row["value"], 100.0)
+        self.assertEqual(ttft_row["samples"], 3)
+        self.assertEqual(ttft_row["context_window"], 262144)
+        self.assertEqual(
+            ttft_row["configuration"],
+            "vllm/rocm · 262,144 ctx · --kv-cache-memory-bytes 10G",
+        )
+        self.assertTrue(all(row["suite"] == "lemonade_bench" for row in rows))
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry["model"], "Qwen/Model-A")
+        self.assertEqual(entry["average_ttft_ms"], 150.0)
+        self.assertEqual(entry["average_tps"], 15.0)
+        self.assertEqual(entry["overall_score"], 15.0)
+        self.assertEqual(entry["failed_runs"], 1)
+        self.assertEqual(entry["total_runs"], 5)
+        self.assertEqual(entry["measured_duration_seconds"], 7.0)
+        self.assertEqual(entry["vram_peak_gb"], 61.0)
+        self.assertTrue(entry["partial"])
+        self.assertEqual(telemetry["request_count"], 5)
+        self.assertEqual(telemetry["failed_request_count"], 1)
+        self.assertEqual(telemetry["ttft_s"], 0.15)
+        self.assertEqual(telemetry["generation_tok_s"], 15.0)
+
+    def test_job_runs_cli_without_pinning_and_rerun_preserves_options(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+        pin_events = []
+
+        def launcher(command, _env, _log_path):
+            commands.append(command)
+            output_path = Path(command[command.index("--output") + 1])
+            output_path.write_text(
+                json.dumps(self.result_payload(measurement_runs=2)),
+                encoding="utf-8",
+            )
+            return 0
+
+        def pin_model(*args):
+            pin_events.append(("pin", args))
+            return {}
+
+        def unpin_model(*args):
+            pin_events.append(("unpin", args))
+            return {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=tmp,
+                launcher=launcher,
+                run_async=False,
+                protect_models=True,
+                model_pin_loader=pin_model,
+                model_unpinner=unpin_model,
+            )
+            original = manager.create_jobs(
+                {
+                    "suite": "lemonade_bench",
+                    "model_ids": ["Qwen/Model-A"],
+                    "lemonade_model_ids": {"Qwen/Model-A": "user.Qwen/Model-A"},
+                    "tasks": ["chat-short", "code-short"],
+                    "openai_base_url": "https://llm.example.test/v1",
+                    "bench_backends": ["rocm"],
+                    "bench_context_sizes": [262144],
+                    "bench_runs": 2,
+                    "bench_warmup": 1,
+                    "bench_timeout": 600,
+                    "bench_memory_tracking": False,
+                    "bench_reload_between_runs": False,
+                    "bench_log_responses": True,
+                    "max_concurrent_jobs": 4,
+                }
+            )[0]
+            original_job = manager.get_job(original["id"])
+            rows = manager.result_rows()
+            entries = manager.leaderboard_entries()
+            rerun = manager.rerun_jobs([original["id"]])[0]
+            rerun_job = manager.get_job(rerun["id"])
+
+        self.assertEqual(manager.max_concurrent_jobs, 1)
+        self.assertEqual(original_job["suite"], "lemonade_bench")
+        self.assertNotIn("benchmark_profile", original_job)
+        self.assertEqual(
+            original_job["lemonade_bench_options"]["server_model_id"],
+            "user.Qwen/Model-A",
+        )
+        self.assertEqual(original_job["lemonade_bench_options"]["measurement_runs"], 2)
+        self.assertEqual(
+            original_job["lemonade_bench_options"]["context_sizes"], [262144]
+        )
+        self.assertEqual(
+            original_job["result_files"],
+            [str(Path(original_job["output_path"]) / "results.json")],
+        )
+        self.assertEqual(pin_events, [])
+        self.assertEqual(commands[0][-1], "user.Qwen/Model-A")
+        self.assertIn("--no-memory", commands[0])
+        self.assertIn("--no-reload", commands[0])
+        self.assertEqual(rows[0]["suite"], "lemonade_bench")
+        self.assertEqual(entries[0]["suite"], "lemonade_bench")
+        self.assertEqual(original_job["telemetry"]["request_count"], 3)
+        self.assertEqual(rerun_job["suite"], "lemonade_bench")
+        self.assertEqual(rerun_job["rerun_of"], original_job["id"])
+        self.assertEqual(
+            rerun_job["lemonade_bench_options"], original_job["lemonade_bench_options"]
+        )
+        self.assertEqual(commands[1][-1], "user.Qwen/Model-A")
+
+
 class SweMiniRunnerTests(unittest.TestCase):
     def test_swe_mini_agent_timeout_defaults_to_one_hour(self):
         SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
@@ -4116,6 +4443,44 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("Limit (blank = all)", index)
         self.assertIn("Few-shot (blank = task default)", index)
 
+    def test_static_ui_exposes_lemonade_bench_as_first_suite(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
+        dockerfile = Path("deploy/Dockerfile").read_text(encoding="utf-8")
+
+        self.assertLess(
+            index.index('id="suiteLemonadeBench"'), index.index('id="suiteLmEval"')
+        )
+        self.assertLess(
+            index.index('id="suiteLmEval"'), index.index('id="suiteSweMini"')
+        )
+        self.assertLess(
+            index.index('id="leaderboardLemonadeBench"'),
+            index.index('id="leaderboardLmEval"'),
+        )
+        self.assertLess(
+            index.index('id="leaderboardLmEval"'),
+            index.index('id="leaderboardSweMini"'),
+        )
+        self.assertIn('id="lemonadeBenchOptions"', index)
+        self.assertIn('id="benchBackends"', index)
+        self.assertIn('id="benchContextSizes"', index)
+        self.assertIn('id="benchRuns" type="number" min="1" value="3"', index)
+        self.assertIn('id="benchWarmup" type="number" min="0" value="0"', index)
+        self.assertIn('id="benchMemoryTracking" type="checkbox" checked', index)
+        self.assertIn('id="benchReloadBetweenRuns" type="checkbox" checked', index)
+        self.assertIn('activeSuite: "lemonade_bench"', script)
+        self.assertIn('resultSuite: "lemonade_bench"', script)
+        self.assertIn("function renderLemonadeBenchLeaderboard", script)
+        self.assertIn(
+            'renderLeaderboardTable(list, rows, columns, "lemonade_bench")', script
+        )
+        self.assertIn("function resultConfigurationLabel", script)
+        self.assertIn("LEMONADE_CLI_VERSION=11.6.0", dockerfile)
+        self.assertIn("LEMONADE_CLI_SHA256_AMD64=", dockerfile)
+        self.assertIn("LEMONADE_CLI_SHA256_ARM64=", dockerfile)
+        self.assertIn('case "${TARGETARCH}"', dockerfile)
+
     def test_static_ui_exposes_balanced_profile_controls_and_results(self):
         index = Path("static/index.html").read_text(encoding="utf-8")
         script = Path("static/app.js").read_text(encoding="utf-8")
@@ -4126,7 +4491,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="lmEvalProfileButtons"', index)
         self.assertIn('id="activeBenchmarkProfile"', index)
         self.assertIn('id="resultProfileFilter"', index)
-        self.assertIn("Balanced Overall", index)
+        self.assertIn('id="leaderboardDescription"', index)
+        self.assertIn("Balanced Overall", script)
         self.assertIn("function applyBenchmarkProfile", script)
         self.assertIn("function activeBenchmarkProfile", script)
         self.assertIn("function renderResultProfileFilter", script)
@@ -4147,7 +4513,8 @@ class SmokeTests(unittest.TestCase):
         script = Path("static/app.js").read_text(encoding="utf-8")
         styles = Path("static/styles.css").read_text(encoding="utf-8")
 
-        self.assertIn("Select any column heading to sort", index)
+        self.assertIn("Select any", index)
+        self.assertIn("column heading to sort", index)
         self.assertIn("leaderboardSort: {}", script)
         self.assertIn("function renderLeaderboardTable", script)
         self.assertIn("function sortLeaderboardRows", script)
@@ -4162,8 +4529,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('label: "Prompt tok/s"', script)
         self.assertIn("numberOrNull(row.entry.prompt_tok_s)", script)
         self.assertIn("formatRate(row.entry.prompt_tok_s)", script)
-        self.assertEqual(script.count('label: "Backend"'), 2)
-        self.assertEqual(script.count('sortLabel: "Runtime backend"'), 2)
+        self.assertEqual(script.count('label: "Backend"'), 3)
+        self.assertEqual(script.count('sortLabel: "Runtime backend"'), 3)
         self.assertIn('label: "Overall"', script)
         self.assertIn('sortLabel: "Balanced Overall"', script)
         self.assertIn(
@@ -4203,7 +4570,7 @@ class SmokeTests(unittest.TestCase):
         ):
             self.assertIn(f'id="{control_id}"', index)
         self.assertIn('aria-label="Models tested"', index)
-        self.assertIn('aria-label="Tasks run"', index)
+        self.assertIn('aria-label="Scenarios or tasks run"', index)
         self.assertIn('aria-label="Metrics for selected tasks"', index)
         self.assertNotIn('id="metricSelect"', index)
         self.assertIn("detailFilters: new Map()", script)
@@ -4333,7 +4700,7 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("Current batch requests", script)
         self.assertIn("Completed task batches", script)
         self.assertIn("Model protection", script)
-        self.assertIn("Lemonade lm-eval Benchmark WebUI", index)
+        self.assertIn("Lemonade Benchmark WebUI", index)
         self.assertNotIn("Local lm-eval Benchmark WebUI", index)
         self.assertIn("OpenAI-compatible base URL", index)
         self.assertIn('id="openaiBaseUrl"', index)

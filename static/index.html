@@ -3,16 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Lemonade lm-eval Benchmark WebUI</title>
+    <title>Lemonade Benchmark WebUI</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <header>
       <div>
-        <h1>Lemonade lm-eval Benchmark WebUI</h1>
+        <h1>Lemonade Benchmark WebUI</h1>
         <p>
-          Select OpenAI-compatible models, run lm-eval or SWE Mini benchmarks,
-          and compare metrics.
+          Run Lemonade Bench, lm-eval, or SWE Mini against installed models and
+          compare each suite on its own leaderboard.
         </p>
       </div>
       <button id="refreshAll" type="button">Refresh</button>
@@ -43,18 +43,21 @@
           <div class="selector-panel">
             <div class="suite-tabs" role="tablist" aria-label="Benchmark suite">
               <button
-                id="suiteLmEval"
+                id="suiteLemonadeBench"
                 class="active"
                 type="button"
-                data-suite="lm_eval"
+                data-suite="lemonade_bench"
               >
+                Lemonade Bench scenarios
+              </button>
+              <button id="suiteLmEval" type="button" data-suite="lm_eval">
                 lm-eval tasks
               </button>
               <button id="suiteSweMini" type="button" data-suite="swe_mini">
                 SWE Mini tasks
               </button>
             </div>
-            <div id="lmEvalProfilePicker" class="profile-picker">
+            <div id="lmEvalProfilePicker" class="profile-picker" hidden>
               <div class="row between profile-picker-header">
                 <div>
                   <h3>Balanced benchmark profiles</h3>
@@ -73,7 +76,7 @@
               <div id="lmEvalProfileButtons" class="row profile-buttons"></div>
             </div>
             <div class="row between list-header">
-              <h3 id="taskPanelTitle">lm-eval tasks</h3>
+              <h3 id="taskPanelTitle">Lemonade Bench scenarios</h3>
               <div class="row list-actions">
                 <button id="selectVisibleTasks" type="button" disabled>
                   Select visible
@@ -81,7 +84,7 @@
                 <button id="unselectVisibleTasks" type="button" disabled>
                   Unselect visible
                 </button>
-                <label id="taskViewModeControl" class="task-view-mode"
+                <label id="taskViewModeControl" class="task-view-mode" hidden
                   >Task view
                   <select id="taskViewMode">
                     <option value="leaves" selected>Leaf tasks</option>
@@ -100,7 +103,9 @@
             </div>
             <label
               >Filter tasks
-              <input id="taskFilter" placeholder="Type to search 14k+ tasks"
+              <input
+                id="taskFilter"
+                placeholder="Type to search benchmark scenarios"
             /></label>
             <p id="taskCount" class="hint"></p>
             <div id="taskList" class="list"></div>
@@ -109,7 +114,7 @@
               <span id="taskPage" class="hint"></span>
               <button id="taskNext" type="button">Next</button>
             </div>
-            <div id="lmEvalCategoryFilters" class="row task-filters">
+            <div id="lmEvalCategoryFilters" class="row task-filters" hidden>
               <label class="check compact"
                 ><input id="taskCategoryReasoning" type="checkbox" checked />
                 Reasoning</label
@@ -131,7 +136,11 @@
                 Other</label
               >
             </div>
-            <div id="lmEvalCompatibilityFilters" class="row task-filters">
+            <div
+              id="lmEvalCompatibilityFilters"
+              class="row task-filters"
+              hidden
+            >
               <label class="check compact"
                 ><input id="hideIncompatibleTasks" type="checkbox" checked />
                 hide incompatible</label
@@ -146,21 +155,22 @@
               >
             </div>
             <p id="taskHint" class="hint">
-              OpenAI-compatible chat backends are generation oriented. Use
-              generate_until tasks first.
+              Lemonade Bench measures TTFT, token throughput, request duration,
+              and memory use. Long-context scenarios are opt-in and can run for
+              a long time.
             </p>
             <div class="selected-panel">
               <div class="row between">
-                <h3>Selected tasks</h3>
+                <h3 id="selectedWorkItemsTitle">Selected scenarios</h3>
                 <span id="selectedTaskCount" class="hint"></span>
               </div>
               <div id="selectedTasksList" class="selected-list empty">
-                No tasks selected.
+                No scenarios selected.
               </div>
             </div>
           </div>
         </div>
-        <details>
+        <details id="modelRuntimeOptions" hidden>
           <summary>Model runtime options</summary>
           <div class="grid four">
             <label
@@ -176,7 +186,44 @@
         </details>
         <details>
           <summary>Benchmark options</summary>
-          <div id="lmEvalBenchmarkOptions" class="grid four">
+          <div id="lemonadeBenchOptions" class="grid four">
+            <label
+              >Backends (blank = compatible installed)
+              <input id="benchBackends" placeholder="Example: rocm, vulkan" />
+            </label>
+            <label
+              >Context sizes (blank = model default)
+              <input
+                id="benchContextSizes"
+                placeholder="Example: 4096, 32768"
+              />
+            </label>
+            <label
+              >Measurement runs
+              <input id="benchRuns" type="number" min="1" value="3" />
+            </label>
+            <label
+              >Warmup runs
+              <input id="benchWarmup" type="number" min="0" value="0" />
+            </label>
+            <label
+              >Request timeout seconds
+              <input id="benchTimeout" type="number" min="1" value="300" />
+            </label>
+            <label class="check"
+              ><input id="benchMemoryTracking" type="checkbox" checked /> Track
+              VRAM and RAM</label
+            >
+            <label class="check"
+              ><input id="benchReloadBetweenRuns" type="checkbox" checked />
+              Reload between runs</label
+            >
+            <label class="check"
+              ><input id="benchLogResponses" type="checkbox" /> Save response
+              log</label
+            >
+          </div>
+          <div id="lmEvalBenchmarkOptions" class="grid four" hidden>
             <label
               >Limit (blank = all) <input id="limit" placeholder="All samples"
             /></label>
@@ -255,14 +302,13 @@
         <div class="row between">
           <div>
             <h2>Leaderboard</h2>
-            <p>
-              Balanced Overall gives equal weight to reasoning, math,
-              instruction following, and structured output. Rankings are kept
-              separate by profile. Select any column heading to sort; select it
-              again to reverse the order.
+            <p id="leaderboardDescription">
+              Lemonade Bench compares average TTFT, token throughput, duration,
+              and peak memory for each backend/context combination. Select any
+              column heading to sort; select it again to reverse the order.
             </p>
           </div>
-          <label id="resultProfileControl" class="profile-filter"
+          <label id="resultProfileControl" class="profile-filter" hidden
             >Profile
             <select id="resultProfileFilter">
               <option value="all">All profiles</option>
@@ -271,11 +317,14 @@
         </div>
         <div class="suite-tabs" role="tablist" aria-label="Leaderboard suite">
           <button
-            id="leaderboardLmEval"
+            id="leaderboardLemonadeBench"
             class="active"
             type="button"
-            data-suite="lm_eval"
+            data-suite="lemonade_bench"
           >
+            Lemonade Bench leaderboard
+          </button>
+          <button id="leaderboardLmEval" type="button" data-suite="lm_eval">
             lm-eval leaderboard
           </button>
           <button id="leaderboardSweMini" type="button" data-suite="swe_mini">
@@ -289,9 +338,11 @@
 
       <section class="card">
         <details id="resultDetails">
-          <summary>Detailed metric comparison</summary>
+          <summary id="resultDetailsSummary">
+            Lemonade Bench detailed metric comparison
+          </summary>
           <div class="detail-header detail-results-header">
-            <h2>Detailed results</h2>
+            <h2 id="detailResultsTitle">Lemonade Bench detailed results</h2>
             <div
               class="detail-filter-grid"
               aria-label="Detailed result filters"
@@ -309,13 +360,13 @@
               </details>
               <details class="detail-filter" data-detail-filter="tasks">
                 <summary>
-                  <span id="detailTaskSummary">Tasks: All</span>
+                  <span id="detailTaskSummary">Scenarios: All</span>
                 </summary>
                 <div
                   id="detailTaskOptions"
                   class="detail-filter-menu"
                   role="group"
-                  aria-label="Tasks run"
+                  aria-label="Scenarios or tasks run"
                 ></div>
               </details>
               <details class="detail-filter" data-detail-filter="metrics">

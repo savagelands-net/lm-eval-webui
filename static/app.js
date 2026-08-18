@@ -21,8 +21,8 @@ const state = {
 	hasAutoSelectedTask: false,
 	taskPage: 0,
 	taskLoadToken: 0,
-	activeSuite: "lm_eval",
-	resultSuite: "lm_eval",
+	activeSuite: "lemonade_bench",
+	resultSuite: "lemonade_bench",
 	detailFilters: new Map(),
 };
 
@@ -75,6 +75,7 @@ const CLIENT_BACKENDS = new Set([
 	"lemonade-chat-completions",
 ]);
 const SUITES = {
+	lemonade_bench: "Lemonade Bench",
 	lm_eval: "lm-eval",
 	swe_mini: "SWE Mini",
 };
@@ -98,6 +99,8 @@ const DETAIL_FILTER_CONFIG = {
 		summaryId: "detailMetricSummary",
 	},
 };
+const DEFAULT_LEMONADE_BENCH_RUNS = 3;
+const DEFAULT_LEMONADE_BENCH_TIMEOUT = 300;
 const DEFAULT_SWE_JUDGE_MODEL = "gpt-oss-120b-mxfp-GGUF";
 const DEFAULT_SWE_TIMEOUT_MINUTES = 60;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -317,7 +320,10 @@ async function loadTasks() {
 	setTaskLoading(true);
 	$("selectVisibleTasks").disabled = true;
 	$("unselectVisibleTasks").disabled = true;
-	setText($("taskList"), `Loading ${suiteLabel(requestedSuite)} tasks…`);
+	setText(
+		$("taskList"),
+		`Loading ${suiteLabel(requestedSuite)} ${suiteWorkItems(requestedSuite)}…`,
+	);
 	try {
 		const suite = encodeURIComponent(requestedSuite);
 		const payload = await api(`/api/tasks?suite=${suite}`, {
@@ -519,7 +525,13 @@ function renderTasks() {
 		matchingTasks.length &&
 		!state.hasAutoSelectedTask
 	) {
-		state.selectedTasks.add(matchingTasks[0].name);
+		const defaults =
+			state.activeSuite === "lemonade_bench"
+				? matchingTasks.filter((task) => task.default_selected)
+				: [matchingTasks[0]];
+		(defaults.length ? defaults : [matchingTasks[0]]).forEach((task) =>
+			state.selectedTasks.add(task.name),
+		);
 		state.hasAutoSelectedTask = true;
 	}
 	renderSelectedTasks();
@@ -533,8 +545,9 @@ function renderTasks() {
 		(state.taskPage + 1) * TASKS_PER_PAGE,
 	);
 	state.visibleTaskNames = renderedTasks.map((task) => task.name);
+	const workItems = suiteWorkItems(state.activeSuite);
 	$("taskCount").textContent =
-		`Showing ${renderedTasks.length.toLocaleString()} of ${matchingTasks.length.toLocaleString()} matching tasks (${state.tasks.length.toLocaleString()} total).`;
+		`Showing ${renderedTasks.length.toLocaleString()} of ${matchingTasks.length.toLocaleString()} matching ${workItems} (${state.tasks.length.toLocaleString()} total).`;
 	$("taskPage").textContent = `Page ${state.taskPage + 1} of ${pageCount}`;
 	$("taskPrev").disabled = state.taskPage <= 0;
 	$("taskNext").disabled = state.taskPage >= pageCount - 1;
@@ -601,7 +614,8 @@ function renderSelectedTasks() {
 		`${selected.length.toLocaleString()} selected`;
 	list.replaceChildren();
 	updateBenchmarkProfileIndicator();
-	if (!selected.length) return setText(list, "No tasks selected.");
+	if (!selected.length)
+		return setText(list, `No ${suiteWorkItems(state.activeSuite)} selected.`);
 	selected.forEach((taskName) => {
 		const chip = document.createElement("button");
 		chip.className = "selected-chip";
@@ -701,7 +715,7 @@ function renderJobs() {
 		summary.append(
 			summaryBlock(
 				job.model_id,
-				`Job ${job.id} · ${suiteLabel(jobSuite(job))} · ${Number(job.task_count || 0).toLocaleString()} tasks`,
+				`Job ${job.id} · ${suiteLabel(jobSuite(job))} · ${Number(job.task_count || 0).toLocaleString()} ${suiteWorkItems(jobSuite(job))}`,
 			),
 			summaryActions,
 		);
@@ -920,8 +934,12 @@ function renderLeaderboard() {
 	if (!entries.length)
 		return setText(
 			list,
-			`No ${suiteLabel(state.resultSuite)} leaderboard results for this profile.`,
+			`No ${suiteLabel(state.resultSuite)} leaderboard results yet.`,
 		);
+	if (state.resultSuite === "lemonade_bench") {
+		renderLemonadeBenchLeaderboard(list, entries);
+		return;
+	}
 	if (state.resultSuite === "swe_mini") {
 		renderSweMiniLeaderboard(list, entries);
 		return;
@@ -1195,6 +1213,99 @@ function formatTaskCoverage(entry) {
 	return "—";
 }
 
+function renderLemonadeBenchLeaderboard(list, entries) {
+	const rows = entries.map((entry, index) => ({
+		entry,
+		modelName: entry.model || entry.model_id || "unknown model",
+		rankNumber: index + 1,
+	}));
+	const columns = [
+		{
+			key: "rank",
+			label: "#",
+			sortLabel: "rank",
+			sortValue: (row) => row.rankNumber,
+			cell: (row) => leaderboardCell(`#${row.rankNumber}`, "rank-cell"),
+		},
+		{
+			key: "model",
+			label: "Model",
+			sortValue: (row) => row.modelName,
+			cell: (row) => leaderboardCell(row.modelName, "model-cell", row.modelName),
+		},
+		{
+			key: "runtime-backend",
+			label: "Backend",
+			sortLabel: "Runtime backend",
+			sortValue: (row) => row.entry.configuration,
+			cell: (row) =>
+				leaderboardCell(
+					[row.entry.recipe, row.entry.provider_backend].filter(Boolean).join("/") ||
+						"unknown",
+					"",
+					row.entry.backend_args || "",
+				),
+		},
+		{
+			key: "context",
+			label: "Context",
+			sortValue: (row) => numberOrNull(row.entry.context_window),
+			cell: (row) => leaderboardCell(formatContext(row.entry.context_window)),
+		},
+		{
+			key: "scenarios",
+			label: "Scenarios",
+			sortValue: (row) => numberOrNull(row.entry.successful_scenarios),
+			cell: (row) =>
+				leaderboardCell(
+					`${row.entry.successful_scenarios ?? 0}/${row.entry.scenario_count ?? 0}`,
+				),
+		},
+		{
+			key: "ttft",
+			label: "Avg TTFT",
+			sortValue: (row) => numberOrNull(row.entry.average_ttft_ms),
+			cell: (row) => leaderboardCell(formatDurationMs(row.entry.average_ttft_ms)),
+		},
+		{
+			key: "generation-rate",
+			label: "Avg tok/s",
+			sortValue: (row) => numberOrNull(row.entry.average_tps),
+			cell: (row) =>
+				leaderboardCell(formatRate(row.entry.average_tps), "score-cell"),
+		},
+		{
+			key: "vram",
+			label: "Peak VRAM",
+			sortValue: (row) => numberOrNull(row.entry.vram_peak_gb),
+			cell: (row) => leaderboardCell(formatGigabytes(row.entry.vram_peak_gb)),
+		},
+		{
+			key: "memory",
+			label: "Peak RAM",
+			sortValue: (row) => numberOrNull(row.entry.memory_peak_gb),
+			cell: (row) => leaderboardCell(formatGigabytes(row.entry.memory_peak_gb)),
+		},
+		{
+			key: "failed-runs",
+			label: "Failed",
+			sortValue: (row) => numberOrNull(row.entry.failed_runs),
+			cell: (row) => leaderboardCell(String(row.entry.failed_runs ?? 0)),
+		},
+		{
+			key: "runtime",
+			label: "Runtime",
+			sortValue: (row) => resultRuntimeSeconds(row.entry),
+			cell: (row) =>
+				leaderboardCell(
+					formatRuntimeSeconds(resultRuntimeSeconds(row.entry)),
+					"runtime-cell",
+				),
+		},
+	];
+	renderLeaderboardTable(list, rows, columns, "lemonade_bench");
+}
+
 function renderSweMiniLeaderboard(list, entries) {
 	const rows = entries.map((entry, index) => ({
 		entry,
@@ -1314,6 +1425,14 @@ function createDetailFilterOption(kind, value, labelText, checked, selectAll) {
 }
 function renderDetailFilter(kind, values, filterState) {
 	const config = DETAIL_FILTER_CONFIG[kind];
+	const label =
+		kind === "tasks" && state.resultSuite === "lemonade_bench"
+			? "Scenarios"
+			: config.label;
+	const allLabel =
+		kind === "tasks" && state.resultSuite === "lemonade_bench"
+			? "All scenarios"
+			: config.allLabel;
 	const container = $(config.optionsId);
 	const summary = $(config.summaryId);
 	const selectedValues = values.filter((value) => filterState[kind].has(value));
@@ -1324,7 +1443,7 @@ function renderDetailFilter(kind, values, filterState) {
 	const allOption = createDetailFilterOption(
 		kind,
 		"",
-		config.allLabel,
+		allLabel,
 		allSelected,
 		true,
 	);
@@ -1345,16 +1464,16 @@ function renderDetailFilter(kind, values, filterState) {
 	});
 
 	if (!values.length) {
-		summary.textContent = `${config.label}: None available`;
+		summary.textContent = `${label}: None available`;
 		summary.title = "";
 	} else if (allSelected) {
-		summary.textContent = `${config.label}: All (${values.length})`;
+		summary.textContent = `${label}: All (${values.length})`;
 		summary.title = selectedValues.join(", ");
 	} else if (selectedValues.length === 1) {
-		summary.textContent = `${config.label}: ${selectedValues[0]}`;
+		summary.textContent = `${label}: ${selectedValues[0]}`;
 		summary.title = selectedValues[0];
 	} else {
-		summary.textContent = `${config.label}: ${selectedValues.length} of ${values.length}`;
+		summary.textContent = `${label}: ${selectedValues.length} of ${values.length}`;
 		summary.title = selectedValues.join(", ");
 	}
 }
@@ -1407,7 +1526,11 @@ function renderResults() {
 	);
 	const metrics = detailFilterValues(metricRows, "metric");
 	if (!filterState.metricsInitialized && metrics.length) {
-		filterState.metrics.add(metrics[0]);
+		const defaultMetric =
+			state.resultSuite === "lemonade_bench" && metrics.includes("tps_mean")
+				? "tps_mean"
+				: metrics[0];
+		filterState.metrics.add(defaultMetric);
 		filterState.metricsInitialized = true;
 	}
 	syncDetailFilterSelection(filterState, "metrics", metrics);
@@ -1469,7 +1592,7 @@ function appendMetricChart(chart, rows, metric) {
 		const label = svgText(
 			10,
 			30 + index * rowHeight + 16,
-			`${row.model} · ${recordProfileLabel(row)} · ${row.task}`,
+			`${row.model} · ${resultConfigurationLabel(row)} · ${row.task}`,
 			"bar-label",
 		);
 		svg.append(label);
@@ -1508,19 +1631,32 @@ function renderTable(rows) {
 	const wrap = $("resultTable");
 	wrap.replaceChildren();
 	if (!rows.length) return;
+	const isLemonadeBench = state.resultSuite === "lemonade_bench";
+	const headers = isLemonadeBench
+		? [
+				"Model",
+				"Scenario",
+				"Category",
+				"Backend / context",
+				"Metric",
+				"Value",
+				"Runs",
+				"Job",
+			]
+		: [
+				"Model",
+				"Profile",
+				"Task",
+				"Metric",
+				"Value",
+				"Samples",
+				"Runtime",
+				"Job",
+			];
 	const table = document.createElement("table");
 	const thead = document.createElement("thead");
 	const header = document.createElement("tr");
-	[
-		"Model",
-		"Profile",
-		"Task",
-		"Metric",
-		"Value",
-		"Samples",
-		"Runtime",
-		"Job",
-	].forEach((name) => {
+	headers.forEach((name) => {
 		const th = document.createElement("th");
 		th.textContent = name;
 		header.append(th);
@@ -1529,16 +1665,28 @@ function renderTable(rows) {
 	const tbody = document.createElement("tbody");
 	rows.forEach((row) => {
 		const tr = document.createElement("tr");
-		[
-			row.model,
-			recordProfileLabel(row),
-			row.task,
-			row.metric,
-			formatValue(row.value),
-			row.samples ?? "",
-			formatRuntimeSeconds(resultRuntimeSeconds(row)),
-			row.job_id,
-		].forEach((value) => {
+		const values = isLemonadeBench
+			? [
+					row.model,
+					row.task,
+					row.scenario_category || "",
+					resultConfigurationLabel(row),
+					row.metric,
+					formatValue(row.value),
+					row.samples ?? "",
+					row.job_id,
+				]
+			: [
+					row.model,
+					recordProfileLabel(row),
+					row.task,
+					row.metric,
+					formatValue(row.value),
+					row.samples ?? "",
+					formatRuntimeSeconds(resultRuntimeSeconds(row)),
+					row.job_id,
+				];
+		values.forEach((value) => {
 			const td = document.createElement("td");
 			td.textContent = String(value);
 			tr.append(td);
@@ -1655,16 +1803,45 @@ async function startJobs() {
 		tasks = [...state.selectedTasks];
 	if (!modelIds.length || !tasks.length)
 		return ($("setupMessage").textContent =
-			`Select at least one model and one ${suiteLabel(suite)} task.`);
+			`Select at least one model and one ${suiteLabel(suite)} ${suiteWorkItem(suite)}.`);
 	const body = {
 		suite,
 		model_ids: modelIds,
 		tasks,
 		openai_base_url: $("openaiBaseUrl").value.trim(),
-		llamacpp_backend: $("llamacppBackend").value || null,
-		max_concurrent_jobs: Number($("maxConcurrentJobs").value || 1),
+		max_concurrent_jobs:
+			suite === "lemonade_bench" ? 1 : Number($("maxConcurrentJobs").value || 1),
 	};
-	if (suite === "swe_mini") {
+	if (suite !== "lemonade_bench") {
+		body.llamacpp_backend = $("llamacppBackend").value || null;
+	}
+	if (suite === "lemonade_bench") {
+		const customModels = new Set(
+			state.models
+				.filter((model) => (model.labels || []).includes("custom"))
+				.map((model) => model.id),
+		);
+		Object.assign(body, {
+			lemonade_model_ids: Object.fromEntries(
+				modelIds.map((modelId) => [
+					modelId,
+					customModels.has(modelId) ? `user.${modelId}` : modelId,
+				]),
+			),
+			bench_backends: splitOptionValues($("benchBackends").value),
+			bench_context_sizes: splitOptionValues($("benchContextSizes").value)
+				.map(Number)
+				.filter((value) => Number.isInteger(value) && value > 0),
+			bench_runs: Number($("benchRuns").value || DEFAULT_LEMONADE_BENCH_RUNS),
+			bench_warmup: Number($("benchWarmup").value || 0),
+			bench_timeout: Number(
+				$("benchTimeout").value || DEFAULT_LEMONADE_BENCH_TIMEOUT,
+			),
+			bench_memory_tracking: $("benchMemoryTracking").checked,
+			bench_reload_between_runs: $("benchReloadBetweenRuns").checked,
+			bench_log_responses: $("benchLogResponses").checked,
+		});
+	} else if (suite === "swe_mini") {
 		Object.assign(body, {
 			judge_model: $("sweJudgeModel").value.trim() || DEFAULT_SWE_JUDGE_MODEL,
 			swe_timeout: Number($("sweTimeout").value || DEFAULT_SWE_TIMEOUT_MINUTES),
@@ -1837,6 +2014,7 @@ function suiteBadge(job) {
 function jobDetailMeta(job) {
 	const details = div("job-meta");
 	const options = job.swe_options || {};
+	const benchOptions = job.lemonade_bench_options || {};
 	const evalOptions = job.eval_options || {};
 	const progress = job.progress || {};
 	const requestProgress =
@@ -1879,6 +2057,18 @@ function jobDetailMeta(job) {
 			? `Judge: ${displayJudgeModel(options.judge_model)}`
 			: null,
 		options.pass_count ? `Pass attempts: ${options.pass_count}` : null,
+		jobSuite(job) === "lemonade_bench"
+			? `Runs: ${benchOptions.measurement_runs || DEFAULT_LEMONADE_BENCH_RUNS}`
+			: null,
+		jobSuite(job) === "lemonade_bench"
+			? `Warmups: ${benchOptions.warmup_runs || 0}`
+			: null,
+		jobSuite(job) === "lemonade_bench" && benchOptions.backends?.length
+			? `Backends: ${benchOptions.backends.join(", ")}`
+			: null,
+		jobSuite(job) === "lemonade_bench" && benchOptions.context_sizes?.length
+			? `Contexts: ${benchOptions.context_sizes.map(formatContext).join(", ")}`
+			: null,
 		job.provider_backend ? `Runtime backend: ${job.provider_backend}` : null,
 	].filter(Boolean);
 	details.textContent = values.join(" · ");
@@ -1892,6 +2082,28 @@ function recordSuite(record) {
 }
 function suiteLabel(suite) {
 	return SUITES[suite] || suite || "lm-eval";
+}
+function suiteWorkItem(suite) {
+	return suite === "lemonade_bench" ? "scenario" : "task";
+}
+function suiteWorkItems(suite) {
+	return `${suiteWorkItem(suite)}s`;
+}
+function splitOptionValues(value) {
+	return String(value || "")
+		.replaceAll(",", " ")
+		.split(/\s+/)
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+function resultConfigurationLabel(record) {
+	if (recordSuite(record) === "lemonade_bench") {
+		return (
+			record.configuration ||
+			`${[record.recipe, record.backend].filter(Boolean).join("/") || "default"} · ${formatContext(record.context_window)}`
+		);
+	}
+	return recordProfileLabel(record);
 }
 function numberOrNull(value) {
 	return value === "" || value === null || value === undefined
@@ -2102,6 +2314,11 @@ function formatRate(value) {
 		? "—"
 		: `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })}`;
 }
+function formatGigabytes(value) {
+	return value === null || value === undefined || Number.isNaN(Number(value))
+		? "—"
+		: `${Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`;
+}
 function formatSeconds(value) {
 	return value === null || value === undefined || Number.isNaN(Number(value))
 		? "—"
@@ -2133,27 +2350,68 @@ function selectedTaskCategories() {
 	);
 }
 function updateSuiteUi() {
+	const isLemonadeBench = state.activeSuite === "lemonade_bench";
+	const isLmEval = state.activeSuite === "lm_eval";
 	const isSweMini = state.activeSuite === "swe_mini";
-	$("taskPanelTitle").textContent = `${suiteLabel(state.activeSuite)} tasks`;
-	$("taskFilter").placeholder = isSweMini
-		? "Type to search SWE Mini tasks or repos"
-		: "Type to search 14k+ tasks";
-	$("taskViewModeControl").hidden = isSweMini;
-	$("lmEvalProfilePicker").hidden = isSweMini;
-	$("lmEvalCategoryFilters").hidden = isSweMini;
-	$("lmEvalCompatibilityFilters").hidden = isSweMini;
-	$("lmEvalBenchmarkOptions").hidden = isSweMini;
+	let taskPlaceholder = "Type to search 14k+ tasks";
+	let taskHint =
+		"OpenAI-compatible chat backends are generation oriented. Use generate_until tasks first.";
+	if (isLemonadeBench) {
+		taskPlaceholder = "Type to search benchmark scenarios";
+		taskHint =
+			"Lemonade Bench measures TTFT, token throughput, request duration, and memory use. Long-context scenarios are opt-in and can run for a long time.";
+	} else if (isSweMini) {
+		taskPlaceholder = "Type to search SWE Mini tasks or repos";
+		taskHint =
+			"SWE Mini tasks run in Docker SWE-bench containers and are judged by the selected judge model.";
+	}
+	let leaderboardDescription =
+		"Balanced Overall gives equal weight to reasoning, math, instruction following, and structured output. Rankings are kept separate by profile. Select any column heading to sort; select it again to reverse the order.";
+	if (state.resultSuite === "lemonade_bench") {
+		leaderboardDescription =
+			"Lemonade Bench compares average TTFT, token throughput, duration, and peak memory for each backend/context combination. Select any column heading to sort; select it again to reverse the order.";
+	} else if (state.resultSuite === "swe_mini") {
+		leaderboardDescription =
+			"SWE Mini ranks models by judged task success and shows runtime and average task duration. Select any column heading to sort; select it again to reverse the order.";
+	}
+	$("taskPanelTitle").textContent =
+		`${suiteLabel(state.activeSuite)} ${suiteWorkItems(state.activeSuite)}`;
+	$("selectedWorkItemsTitle").textContent =
+		`Selected ${suiteWorkItems(state.activeSuite)}`;
+	$("selectVisibleTasks").textContent =
+		`Select visible ${suiteWorkItems(state.activeSuite)}`;
+	$("unselectVisibleTasks").textContent =
+		`Unselect visible ${suiteWorkItems(state.activeSuite)}`;
+	$("taskFilter").placeholder = taskPlaceholder;
+	$("taskViewModeControl").hidden = !isLmEval;
+	$("lmEvalProfilePicker").hidden = !isLmEval;
+	$("lmEvalCategoryFilters").hidden = !isLmEval;
+	$("lmEvalCompatibilityFilters").hidden = !isLmEval;
+	$("modelRuntimeOptions").hidden = isLemonadeBench;
+	$("lemonadeBenchOptions").hidden = !isLemonadeBench;
+	$("lmEvalBenchmarkOptions").hidden = !isLmEval;
 	$("sweMiniBenchmarkOptions").hidden = !isSweMini;
 	$("sweMiniJudgeHint").hidden = !isSweMini;
-	$("resultProfileControl").hidden = state.resultSuite === "swe_mini";
-	$("taskHint").textContent = isSweMini
-		? "SWE Mini tasks run in Docker SWE-bench containers and are judged by the selected judge model."
-		: "OpenAI-compatible chat backends are generation oriented. Use generate_until tasks first.";
-	for (const button of [$("suiteLmEval"), $("suiteSweMini")]) {
+	$("resultProfileControl").hidden = state.resultSuite !== "lm_eval";
+	$("taskHint").textContent = taskHint;
+	$("leaderboardDescription").textContent = leaderboardDescription;
+	$("resultDetailsSummary").textContent =
+		`${suiteLabel(state.resultSuite)} detailed metric comparison`;
+	$("detailResultsTitle").textContent =
+		`${suiteLabel(state.resultSuite)} detailed results`;
+	for (const button of [
+		$("suiteLemonadeBench"),
+		$("suiteLmEval"),
+		$("suiteSweMini"),
+	]) {
 		button.classList.toggle("active", button.dataset.suite === state.activeSuite);
 	}
 	updateBenchmarkProfileIndicator();
-	for (const button of [$("leaderboardLmEval"), $("leaderboardSweMini")]) {
+	for (const button of [
+		$("leaderboardLemonadeBench"),
+		$("leaderboardLmEval"),
+		$("leaderboardSweMini"),
+	]) {
 		button.classList.toggle("active", button.dataset.suite === state.resultSuite);
 	}
 }
@@ -2230,11 +2488,18 @@ Object.values(PROFILE_OPTION_CONTROLS).forEach((controlId) => {
 	control.addEventListener("input", updateBenchmarkProfileIndicator);
 	control.addEventListener("change", updateBenchmarkProfileIndicator);
 });
+$("suiteLemonadeBench").addEventListener("click", () =>
+	selectBenchmarkSuite("lemonade_bench"),
+);
 $("suiteLmEval").addEventListener("click", () =>
 	selectBenchmarkSuite("lm_eval"),
 );
 $("suiteSweMini").addEventListener("click", () =>
 	selectBenchmarkSuite("swe_mini"),
+);
+$("leaderboardLemonadeBench").addEventListener(
+	"click",
+	() => void selectResultSuite("lemonade_bench"),
 );
 $("leaderboardLmEval").addEventListener(
 	"click",

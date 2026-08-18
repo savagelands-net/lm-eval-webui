@@ -1,0 +1,6 @@
+# Known false positives in the pinned pi-bench submodule's synthetic fixtures.
+third_party/pi-bench/benchmark_results/dual-strix-halo/ayysasha_MiniMax-M2_7-AWQ-G32-STRIX-2H_results/transcript-django__django-12209.json:generic-api-key:2463
+third_party/pi-bench/debug/ds4-hip-DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2.gguf/transcript-django__django-12143.json:generic-api-key:818
+third_party/pi-bench/debug/ds4-hip-DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2.gguf/transcript-django__django-12143.json:generic-api-key:850
+third_party/pi-bench/tasks/synthetic/django__django-12700.json:generic-api-key:7
+third_party/pi-bench/research/swe_bench_lite.json:generic-api-key:40

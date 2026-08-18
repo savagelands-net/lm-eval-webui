@@ -26,6 +26,20 @@ from .lemonade import (
     load_and_pin_model,
     unpin_model,
 )
+from .lemonade_bench import (  # type: ignore[reportMissingImports]
+    DEFAULT_LEMONADE_BENCH_RUNS,
+    DEFAULT_LEMONADE_BENCH_TIMEOUT,
+    DEFAULT_LEMONADE_BENCH_WARMUP,
+    LEMONADE_BENCH_RESULT_NAME,
+    LEMONADE_BENCH_SCENARIO_RE,
+    LEMONADE_BENCH_SUITE,
+    LemonadeBenchRequest,
+    build_lemonade_bench_command,
+    extract_lemonade_bench_leaderboard_entries,
+    extract_lemonade_bench_result_rows,
+    find_lemonade_bench_result_files,
+    summarize_lemonade_bench_telemetry,
+)
 from .results import (
     benchmark_profile_for_job,
     classify_lm_eval_profile,
@@ -78,7 +92,7 @@ SWE_MINI_COMPLETE_RE = re.compile(
 )
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancelling"}
 TERMINAL_JOB_STATUSES = {"cancelled", "failed", "succeeded"}
-RESULT_SUMMARY_VERSION = 3
+RESULT_SUMMARY_VERSION = 4
 CANCEL_GRACE_SECONDS = 10.0
 
 
@@ -201,7 +215,9 @@ class JobManager:
         if not tasks:
             raise ValueError("At least one task is required")
         requested_concurrency = self._optional_int(payload.get("max_concurrent_jobs"))
-        if requested_concurrency is not None:
+        if self._payload_suite(payload) == LEMONADE_BENCH_SUITE:
+            self.set_max_concurrent_jobs(1)
+        elif requested_concurrency is not None:
             self.set_max_concurrent_jobs(requested_concurrency)
 
         created: list[dict[str, Any]] = []
@@ -519,7 +535,12 @@ class JobManager:
                 result_json = load_result_file(result_file)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            if suite == SWE_MINI_SUITE:
+            if suite == LEMONADE_BENCH_SUITE:
+                rows.extend(extract_lemonade_bench_result_rows(job, result_json))
+                entries.extend(
+                    extract_lemonade_bench_leaderboard_entries(job, result_json)
+                )
+            elif suite == SWE_MINI_SUITE:
                 rows.extend(extract_swe_mini_result_rows(job, result_json))
                 entries.append(extract_swe_mini_leaderboard_entry(job, result_json))
             else:
@@ -560,6 +581,7 @@ class JobManager:
             "telemetry": job.get("telemetry") or {},
             "model_metadata": job.get("model_metadata") or {},
             "benchmark_profile": benchmark_profile_for_job(job),
+            "lemonade_bench_options": job.get("lemonade_bench_options") or {},
             "runtime_seconds": job_runtime_seconds(job),
         }
         return json.dumps(relevant, sort_keys=True, separators=(",", ":"))
@@ -567,7 +589,10 @@ class JobManager:
     def _create_job(
         self, model_id: str, tasks: list[str], payload: dict[str, Any]
     ) -> dict[str, Any]:
-        if self._payload_suite(payload) == SWE_MINI_SUITE:
+        suite = self._payload_suite(payload)
+        if suite == LEMONADE_BENCH_SUITE:
+            return self._create_lemonade_bench_job(model_id, tasks, payload)
+        if suite == SWE_MINI_SUITE:
             return self._create_swe_mini_job(model_id, tasks, payload)
         job_id = uuid.uuid4().hex[:12]
         output_path = self.runs_dir / job_id
@@ -653,6 +678,104 @@ class JobManager:
                     "llamacpp_backend": llamacpp_backend,
                 }
             )
+        self._write_job(job)
+        return self._public_job(job)
+
+    def _create_lemonade_bench_job(
+        self, model_id: str, scenarios: list[str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        job_id = uuid.uuid4().hex[:12]
+        output_path = self.runs_dir / job_id
+        result_path = output_path / LEMONADE_BENCH_RESULT_NAME
+        log_path = self.logs_dir / f"{job_id}.log"
+        openai_base_url = payload.get(
+            "openai_base_url", payload.get("lemonade_base_url", self.openai_base_url)
+        )
+        backends = self._string_values(payload.get("bench_backends"))
+        context_sizes = self._positive_int_values(payload.get("bench_context_sizes"))
+        measurement_runs = self._int_or_default(
+            payload.get("bench_runs"), DEFAULT_LEMONADE_BENCH_RUNS
+        )
+        warmup_runs = self._nonnegative_int(
+            payload.get("bench_warmup"), DEFAULT_LEMONADE_BENCH_WARMUP
+        )
+        timeout = self._int_or_default(
+            payload.get("bench_timeout"), DEFAULT_LEMONADE_BENCH_TIMEOUT
+        )
+        memory_tracking = self._optional_bool(
+            payload.get("bench_memory_tracking"), True
+        )
+        reload_between_runs = self._optional_bool(
+            payload.get("bench_reload_between_runs"), True
+        )
+        log_responses = self._optional_bool(payload.get("bench_log_responses"), False)
+        raw_model_ids = payload.get("lemonade_model_ids")
+        model_ids = raw_model_ids if isinstance(raw_model_ids, dict) else {}
+        requested_server_model_id = str(model_ids.get(model_id) or model_id).strip()
+        allowed_server_ids = {model_id, f"user.{model_id}"}
+        server_model_id = (
+            requested_server_model_id
+            if requested_server_model_id in allowed_server_ids
+            else model_id
+        )
+        request = LemonadeBenchRequest(
+            model_id=model_id,
+            lemonade_model_id=server_model_id,
+            scenarios=scenarios,
+            output_path=str(result_path),
+            openai_base_url=str(openai_base_url),
+            backends=backends,
+            context_sizes=context_sizes,
+            measurement_runs=measurement_runs,
+            warmup_runs=warmup_runs,
+            timeout=timeout,
+            memory_tracking=memory_tracking,
+            reload_between_runs=reload_between_runs,
+            log_responses=log_responses,
+        )
+        command, env = build_lemonade_bench_command(request)
+        options = {
+            "server_model_id": server_model_id,
+            "backends": backends,
+            "context_sizes": context_sizes,
+            "measurement_runs": measurement_runs,
+            "warmup_runs": warmup_runs,
+            "timeout": timeout,
+            "memory_tracking": memory_tracking,
+            "reload_between_runs": reload_between_runs,
+            "log_responses": log_responses,
+        }
+        now = time.time()
+        job: dict[str, Any] = {
+            "id": job_id,
+            "suite": LEMONADE_BENCH_SUITE,
+            "model_id": model_id,
+            "tasks": scenarios,
+            "status": "queued",
+            "created_at": now,
+            "updated_at": now,
+            "command": command,
+            "output_path": str(output_path),
+            "log_path": str(log_path),
+            "openai_base_url": str(openai_base_url).rstrip("/"),
+            "lemonade_base_url": str(openai_base_url).rstrip("/"),
+            "backend": LEMONADE_BENCH_SUITE,
+            "lemonade_bench_options": options,
+            "max_concurrent_jobs": self.max_concurrent_jobs,
+            "telemetry": {},
+            "result_files": [],
+            "returncode": None,
+            "error": None,
+            "_env": env,
+        }
+        if len(backends) == 1:
+            job["provider_backend"] = backends[0]
+            job["lemonade_backend"] = backends[0]
+            job["runtime_backend"] = backends[0]
+        if len(context_sizes) == 1:
+            job["context_window"] = context_sizes[0]
+        if payload.get("rerun_of"):
+            job["rerun_of"] = str(payload["rerun_of"])
         self._write_job(job)
         return self._public_job(job)
 
@@ -1066,6 +1189,7 @@ class JobManager:
             self._write_job(job)
             return
         env = self._launch_env_for_job(job)
+        suite = self._job_suite(job)
         protection_acquired = False
         started_at = time.time()
         job["status"] = "running"
@@ -1073,13 +1197,14 @@ class JobManager:
         job["updated_at"] = started_at
         self._write_job(job)
         try:
-            protection_acquired = self._protect_job_model(job)
+            if suite != LEMONADE_BENCH_SUITE:
+                protection_acquired = self._protect_job_model(job)
             self._raise_if_cancelled(job_id)
-            if protection_acquired and self._job_suite(job) == SWE_MINI_SUITE:
+            if protection_acquired and suite == SWE_MINI_SUITE:
                 env.update(
                     swe_mini_model_lifecycle_env(self._swe_request_from_job(job))
                 )
-            if self._job_suite(job) == SWE_MINI_SUITE:
+            if suite in {LEMONADE_BENCH_SUITE, SWE_MINI_SUITE}:
                 returncode = self._launch_command(
                     job_id, job["command"], env, Path(job["log_path"])
                 )
@@ -1088,9 +1213,13 @@ class JobManager:
             self._raise_if_cancelled(job_id, returncode)
             job["returncode"] = returncode
             self._discover_result_files(job)
-            job["telemetry"] = self._collect_telemetry(job, returncode)
-            job["model_metadata"] = self._collect_model_metadata(job, returncode)
-            self._apply_model_metadata(job)
+            if suite == LEMONADE_BENCH_SUITE:
+                job["telemetry"] = self._lemonade_bench_telemetry(job)
+                job["model_metadata"] = {}
+            else:
+                job["telemetry"] = self._collect_telemetry(job, returncode)
+                job["model_metadata"] = self._collect_model_metadata(job, returncode)
+                self._apply_model_metadata(job)
             self._raise_if_cancelled(job_id, returncode)
             job["status"] = "succeeded" if returncode == 0 else "failed"
         except JobCancelled as exc:
@@ -1107,7 +1236,7 @@ class JobManager:
         finally:
             self._release_job_model(job, env, protection_acquired)
             self._cleanup_swe_task_target(job)
-            if self._job_suite(job) == SWE_MINI_SUITE:
+            if suite == SWE_MINI_SUITE:
                 progress = self._swe_mini_progress(job)
                 if progress:
                     job["swe_progress"] = progress
@@ -1122,7 +1251,12 @@ class JobManager:
                 self._invalidate_results()
 
     def _discover_result_files(self, job: dict[str, Any]) -> None:
-        if self._job_suite(job) == SWE_MINI_SUITE:
+        suite = self._job_suite(job)
+        if suite == LEMONADE_BENCH_SUITE:
+            result_files = find_lemonade_bench_result_files(
+                job.get("output_path") or ""
+            )
+        elif suite == SWE_MINI_SUITE:
             output_path = self._persist_swe_mini_results(job)
             result_files = find_swe_mini_result_files(output_path)
         else:
@@ -1255,7 +1389,12 @@ class JobManager:
         return data if isinstance(data, dict) else {}
 
     def _launch_env_for_job(self, job: dict[str, Any]) -> dict[str, str]:
-        if self._job_suite(job) == SWE_MINI_SUITE:
+        suite = self._job_suite(job)
+        if suite == LEMONADE_BENCH_SUITE:
+            return build_lemonade_bench_command(
+                self._lemonade_bench_request_from_job(job)
+            )[1]
+        if suite == SWE_MINI_SUITE:
             request = self._swe_request_from_job(job)
             env = build_swe_mini_command(request)[1]
             env["LMEVAL_WEBUI_JOB_ID"] = str(job.get("id") or "")
@@ -1302,6 +1441,43 @@ class JobManager:
             or job.get("llamacpp_backend"),
         )
 
+    def _lemonade_bench_request_from_job(
+        self, job: dict[str, Any]
+    ) -> LemonadeBenchRequest:
+        raw_options = job.get("lemonade_bench_options")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        return LemonadeBenchRequest(
+            model_id=str(job.get("model_id") or ""),
+            lemonade_model_id=str(
+                options.get("server_model_id") or job.get("model_id") or ""
+            ),
+            scenarios=[str(task) for task in job.get("tasks") or []],
+            output_path=str(
+                Path(str(job.get("output_path") or "")) / LEMONADE_BENCH_RESULT_NAME
+            ),
+            openai_base_url=str(
+                job.get("openai_base_url")
+                or job.get("lemonade_base_url")
+                or self.openai_base_url
+            ),
+            backends=self._string_values(options.get("backends")),
+            context_sizes=self._positive_int_values(options.get("context_sizes")),
+            measurement_runs=self._int_or_default(
+                options.get("measurement_runs"), DEFAULT_LEMONADE_BENCH_RUNS
+            ),
+            warmup_runs=self._nonnegative_int(
+                options.get("warmup_runs"), DEFAULT_LEMONADE_BENCH_WARMUP
+            ),
+            timeout=self._int_or_default(
+                options.get("timeout"), DEFAULT_LEMONADE_BENCH_TIMEOUT
+            ),
+            memory_tracking=self._optional_bool(options.get("memory_tracking"), True),
+            reload_between_runs=self._optional_bool(
+                options.get("reload_between_runs"), True
+            ),
+            log_responses=self._optional_bool(options.get("log_responses"), False),
+        )
+
     def _swe_request_from_job(self, job: dict[str, Any]) -> SweMiniRequest:
         raw_options = job.get("swe_options")
         options = raw_options if isinstance(raw_options, dict) else {}
@@ -1336,6 +1512,16 @@ class JobManager:
     @staticmethod
     def _job_suite(job: dict[str, Any]) -> str:
         return str(job.get("suite") or "lm_eval")
+
+    def _lemonade_bench_telemetry(self, job: dict[str, Any]) -> dict[str, Any]:
+        for result_file in job.get("result_files") or []:
+            try:
+                return summarize_lemonade_bench_telemetry(
+                    load_result_file(str(result_file))
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+        return {}
 
     def _collect_telemetry(
         self, job: dict[str, Any], returncode: int | None
@@ -1472,7 +1658,27 @@ class JobManager:
             or job.get("lemonade_base_url"),
             "rerun_of": job.get("id"),
         }
-        if JobManager._job_suite(job) == SWE_MINI_SUITE:
+        suite = JobManager._job_suite(job)
+        if suite == LEMONADE_BENCH_SUITE:
+            raw_options = job.get("lemonade_bench_options")
+            options = raw_options if isinstance(raw_options, dict) else {}
+            option_map = {
+                "backends": "bench_backends",
+                "context_sizes": "bench_context_sizes",
+                "measurement_runs": "bench_runs",
+                "warmup_runs": "bench_warmup",
+                "timeout": "bench_timeout",
+                "memory_tracking": "bench_memory_tracking",
+                "reload_between_runs": "bench_reload_between_runs",
+                "log_responses": "bench_log_responses",
+            }
+            for source_key, payload_key in option_map.items():
+                if source_key in options:
+                    payload[payload_key] = options[source_key]
+            server_model_id = str(options.get("server_model_id") or "").strip()
+            if model_id and server_model_id:
+                payload["lemonade_model_ids"] = {model_id: server_model_id}
+        elif suite == SWE_MINI_SUITE:
             raw_options = job.get("swe_options")
             options = raw_options if isinstance(raw_options, dict) else {}
             option_map = {
@@ -1532,7 +1738,10 @@ class JobManager:
         return public_job
 
     def _job_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
-        if self._job_suite(job) == SWE_MINI_SUITE:
+        suite = self._job_suite(job)
+        if suite == LEMONADE_BENCH_SUITE:
+            return self._lemonade_bench_progress(job)
+        if suite == SWE_MINI_SUITE:
             return self._swe_mini_progress(job)
 
         raw_progress = job.get("batch_progress")
@@ -1548,6 +1757,35 @@ class JobManager:
         progress = self._progress_payload(display_current, total, completed, "batches")
         if progress:
             progress["percent"] = (completed / total) * 100
+        return progress
+
+    def _lemonade_bench_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        tasks = [str(task) for task in job.get("tasks") or []]
+        if not tasks:
+            return None
+        raw_options = job.get("lemonade_bench_options")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        configurations = max(1, len(options.get("backends") or [])) * max(
+            1, len(options.get("context_sizes") or [])
+        )
+        total = len(tasks) * configurations
+        try:
+            log_text = Path(str(job.get("log_path") or "")).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            log_text = ""
+        matches = LEMONADE_BENCH_SCENARIO_RE.findall(log_text)
+        current = min(total, len(matches))
+        terminal = str(job.get("status") or "") in TERMINAL_JOB_STATUSES
+        if terminal and job.get("result_files"):
+            current = total
+            completed = total
+        else:
+            completed = max(0, current - 1)
+        progress = self._progress_payload(current, total, completed, "scenarios")
+        if progress and matches:
+            progress["current_scenario"] = matches[-1][0]
         return progress
 
     def _lm_eval_request_progress(self, job: dict[str, Any]) -> dict[str, Any] | None:
@@ -1722,7 +1960,7 @@ class JobManager:
         public_job = {
             key: value for key, value in job.items() if not key.startswith("_")
         }
-        if JobManager._job_suite(job) != SWE_MINI_SUITE:
+        if JobManager._job_suite(job) == "lm_eval":
             public_job["benchmark_profile"] = benchmark_profile_for_job(job)
         return public_job
 
@@ -1732,6 +1970,27 @@ class JobManager:
         return self._positive_optional_int(
             options.get("task_batch_size", job.get("task_batch_size"))
         )
+
+    @staticmethod
+    def _string_values(value: Any) -> list[str]:
+        if value in (None, ""):
+            return []
+        raw_values = value if isinstance(value, list) else [value]
+        values: list[str] = []
+        for raw in raw_values:
+            for item in str(raw).replace(",", " ").split():
+                if item and item not in values:
+                    values.append(item)
+        return values
+
+    @staticmethod
+    def _positive_int_values(value: Any) -> list[int]:
+        values: list[int] = []
+        for raw in JobManager._string_values(value):
+            parsed = JobManager._positive_optional_int(raw)
+            if parsed is not None and parsed not in values:
+                values.append(parsed)
+        return values
 
     @staticmethod
     def _positive_optional_int(value: Any) -> int | None:
