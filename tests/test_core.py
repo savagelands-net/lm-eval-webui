@@ -332,6 +332,25 @@ class LemonadeBenchTests(unittest.TestCase):
         self.assertFalse(scenarios[1]["default_selected"])
         self.assertIn("20 output tokens", scenarios[0]["description"])
 
+    def test_frontend_keeps_scenarios_out_of_lm_eval_view_mode_filters(self):
+        script = Path("static/app.js").read_text(encoding="utf-8")
+        render_start = script.index("function renderTasks()")
+        render_end = script.index("function setTaskLoading", render_start)
+        render_tasks = " ".join(script[render_start:render_end].split())
+
+        self.assertIn(
+            "if (isLmEval) pruneSelectedTasksForViewMode(taskViewMode);",
+            render_tasks,
+        )
+        self.assertIn(
+            'isLmEval && taskViewMode === "leaves" && (task.kind || "task") !== "task"',
+            render_tasks,
+        )
+        self.assertIn(
+            'isLmEval && taskViewMode === "groups" && (task.kind || "task") === "task"',
+            render_tasks,
+        )
+
     def test_server_task_loader_can_return_lemonade_bench_scenarios(self):
         load_available_tasks = symbol("lm_eval_webui.server", "load_available_tasks")
         expected = [{"name": "chat-short", "suite": "lemonade_bench"}]
