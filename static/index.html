@@ -393,8 +393,21 @@
           <div class="row between detail-header">
             <h2>Jobs</h2>
             <div class="row job-actions">
+              <label class="job-suite-filter"
+                >Show
+                <select
+                  id="jobSuiteFilter"
+                  aria-label="Filter jobs by benchmark suite"
+                >
+                  <option value="all" selected>All jobs</option>
+                  <option value="lemonade_bench">Lemonade Bench</option>
+                  <option value="lm_eval">lm-eval</option>
+                  <option value="swe_mini">SWE Mini</option>
+                </select>
+              </label>
+              <span id="visibleJobCount" class="hint">0 jobs</span>
               <label class="check compact"
-                ><input id="selectAllJobs" type="checkbox" /> Select all
+                ><input id="selectAllJobs" type="checkbox" /> Select all visible
                 jobs</label
               >
               <span id="selectedJobCount" class="hint">0 selected</span>

@@ -2,6 +2,7 @@ const state = {
 	models: [],
 	tasks: [],
 	jobs: [],
+	jobSuiteFilter: "all",
 	rows: [],
 	leaderboard: [],
 	leaderboardSort: {},
@@ -629,6 +630,15 @@ function renderSelectedTasks() {
 	});
 }
 
+function visibleJobs() {
+	if (state.jobSuiteFilter === "all") return state.jobs;
+	return state.jobs.filter((job) => jobSuite(job) === state.jobSuiteFilter);
+}
+
+function selectedVisibleJobs() {
+	return visibleJobs().filter((job) => state.selectedJobs.has(job.id));
+}
+
 function renderJobs() {
 	const list = $("jobList");
 	const logViews = new Map();
@@ -647,12 +657,24 @@ function renderJobs() {
 	state.expandedJobs = new Set(
 		[...state.expandedJobs].filter((id) => existing.has(id)),
 	);
+	const jobs = visibleJobs();
+	const visibleLabel = `${jobs.length.toLocaleString()} ${jobs.length === 1 ? "job" : "jobs"}`;
+	const totalLabel = `${state.jobs.length.toLocaleString()} ${state.jobs.length === 1 ? "job" : "jobs"}`;
+	$("visibleJobCount").textContent =
+		state.jobSuiteFilter === "all"
+			? visibleLabel
+			: `${jobs.length.toLocaleString()} of ${totalLabel}`;
 	if (!state.jobs.length) {
 		setText(list, "No jobs yet.");
 		renderSelectedJobs();
 		return;
 	}
-	state.jobs.forEach((job) => {
+	if (!jobs.length) {
+		setText(list, `No ${suiteLabel(state.jobSuiteFilter)} jobs.`);
+		renderSelectedJobs();
+		return;
+	}
+	jobs.forEach((job) => {
 		const row = div("job-row");
 		const checkbox = input("checkbox", "job-select", job.id);
 		checkbox.checked = state.selectedJobs.has(job.id);
@@ -800,7 +822,7 @@ async function loadJobDetails(jobId) {
 }
 
 function renderSelectedJobs() {
-	const selected = state.jobs.filter((job) => state.selectedJobs.has(job.id));
+	const selected = selectedVisibleJobs();
 	const count = selected.length;
 	const activeCount = selected.filter((job) =>
 		ACTIVE_JOB_STATUSES.has(job.status),
@@ -815,17 +837,19 @@ function renderSelectedJobs() {
 }
 function syncSelectAllJobs() {
 	const checkbox = $("selectAllJobs"),
-		count = state.selectedJobs.size,
-		total = state.jobs.length;
+		jobs = visibleJobs(),
+		count = jobs.filter((job) => state.selectedJobs.has(job.id)).length,
+		total = jobs.length;
 	checkbox.disabled = total === 0;
 	checkbox.checked = total > 0 && count === total;
 	checkbox.indeterminate = count > 0 && count < total;
 }
 function toggleAllJobs() {
+	const jobs = visibleJobs();
 	if ($("selectAllJobs").checked) {
-		state.selectedJobs = new Set(state.jobs.map((job) => job.id));
+		jobs.forEach((job) => state.selectedJobs.add(job.id));
 	} else {
-		state.selectedJobs.clear();
+		jobs.forEach((job) => state.selectedJobs.delete(job.id));
 	}
 	renderJobs();
 }
@@ -1697,11 +1721,8 @@ function renderTable(rows) {
 	wrap.append(table);
 }
 async function cancelSelectedJobs() {
-	const jobIds = state.jobs
-		.filter(
-			(job) =>
-				state.selectedJobs.has(job.id) && ACTIVE_JOB_STATUSES.has(job.status),
-		)
+	const jobIds = selectedVisibleJobs()
+		.filter((job) => ACTIVE_JOB_STATUSES.has(job.status))
 		.map((job) => job.id);
 	if (!jobIds.length) return;
 	await cancelJobs(jobIds);
@@ -1726,7 +1747,7 @@ async function cancelJobs(jobIds) {
 }
 
 async function clearSelectedJobs() {
-	const jobIds = [...state.selectedJobs];
+	const jobIds = selectedVisibleJobs().map((job) => job.id);
 	if (!jobIds.length) return;
 	try {
 		const payload = await api("/api/jobs/clear", {
@@ -1734,7 +1755,7 @@ async function clearSelectedJobs() {
 			body: JSON.stringify({ job_ids: jobIds }),
 		});
 		state.jobs = payload.jobs || [];
-		state.selectedJobs.clear();
+		jobIds.forEach((jobId) => state.selectedJobs.delete(jobId));
 		state.jobDetails.clear();
 		state.jobCommands.clear();
 		state.jobLogs.clear();
@@ -1765,7 +1786,7 @@ async function clearFailedJobs() {
 	}
 }
 async function rerunSelectedJobs() {
-	const jobIds = [...state.selectedJobs];
+	const jobIds = selectedVisibleJobs().map((job) => job.id);
 	if (!jobIds.length) return;
 	await rerunJobs(jobIds);
 }
@@ -1786,7 +1807,7 @@ async function rerunJobs(jobIds) {
 				body: JSON.stringify({ job_ids: rerunOriginals }),
 			});
 		}
-		state.selectedJobs.clear();
+		jobIds.forEach((jobId) => state.selectedJobs.delete(jobId));
 		if (created.length) state.expandedJobs.add(created.at(-1).id);
 		$("setupMessage").textContent = `Started ${created.length} rerun job(s).`;
 		await loadJobs({ refreshResultsOnTransition: false });
@@ -2441,6 +2462,10 @@ async function selectResultSuite(suite) {
 
 $("refreshModels").addEventListener("click", loadModels);
 $("modelFilter").addEventListener("input", renderModels);
+$("jobSuiteFilter").addEventListener("change", () => {
+	state.jobSuiteFilter = $("jobSuiteFilter").value;
+	renderJobs();
+});
 $("selectAllJobs").addEventListener("change", toggleAllJobs);
 $("cancelSelectedJobs").addEventListener("click", cancelSelectedJobs);
 $("clearSelectedJobs").addEventListener("click", clearSelectedJobs);

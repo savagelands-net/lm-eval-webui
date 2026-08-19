@@ -4818,6 +4818,53 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("function scheduleJobPoll", script)
         self.assertIn('id="resultDetails"', index)
 
+    def test_job_suite_filter_scopes_bulk_selection_to_visible_jobs(self):
+        index = Path("static/index.html").read_text(encoding="utf-8")
+        script = Path("static/app.js").read_text(encoding="utf-8")
+        styles = Path("static/styles.css").read_text(encoding="utf-8")
+
+        filter_markup = index[
+            index.index('id="jobSuiteFilter"') : index.index('id="visibleJobCount"')
+        ]
+        self.assertLess(
+            filter_markup.index('value="all"'),
+            filter_markup.index('value="lemonade_bench"'),
+        )
+        self.assertLess(
+            filter_markup.index('value="lemonade_bench"'),
+            filter_markup.index('value="lm_eval"'),
+        )
+        self.assertLess(
+            filter_markup.index('value="lm_eval"'),
+            filter_markup.index('value="swe_mini"'),
+        )
+        self.assertIn("All jobs", filter_markup)
+        normalized_index = " ".join(index.split())
+        self.assertIn("Select all visible jobs", normalized_index)
+        self.assertIn('jobSuiteFilter: "all"', script)
+        self.assertIn("function visibleJobs()", script)
+        self.assertIn("function selectedVisibleJobs()", script)
+        self.assertIn("jobSuite(job) === state.jobSuiteFilter", script)
+        self.assertIn('$("jobSuiteFilter").addEventListener("change"', script)
+
+        toggle_start = script.index("function toggleAllJobs()")
+        toggle_end = script.index("async function loadJobLog", toggle_start)
+        toggle = script[toggle_start:toggle_end]
+        self.assertIn("const jobs = visibleJobs()", toggle)
+        self.assertIn("state.selectedJobs.add(job.id)", toggle)
+        self.assertIn("state.selectedJobs.delete(job.id)", toggle)
+        self.assertNotIn("state.jobs.map", toggle)
+
+        for function_name in (
+            "cancelSelectedJobs",
+            "clearSelectedJobs",
+            "rerunSelectedJobs",
+        ):
+            function_start = script.index(f"async function {function_name}()")
+            function_end = script.index("\n}", function_start)
+            self.assertIn("selectedVisibleJobs()", script[function_start:function_end])
+        self.assertIn(".job-suite-filter", styles)
+
     def test_requirements_include_libra_scoring_dependency(self):
         requirements = Path("requirements.txt").read_text(encoding="utf-8")
 
