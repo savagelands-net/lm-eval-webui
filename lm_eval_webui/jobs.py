@@ -57,8 +57,11 @@ from .runner import (
     build_eval_command,
 )
 from .swe_mini import (  # type: ignore[reportMissingImports]
+    DEFAULT_SWE_MINI_CONTEXT_WINDOW,
     DEFAULT_SWE_MINI_JUDGE_MODEL,
     DEFAULT_SWE_MINI_PLATFORM,
+    DEFAULT_SWE_MINI_PROVIDER_MAX_RETRIES,
+    DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES,
     DEFAULT_SWE_MINI_TIMEOUT_MINUTES,
     LAUNCH_CWD_ENV,
     SWE_JUDGE_MODEL_ENV,
@@ -74,6 +77,7 @@ from .swe_mini import (  # type: ignore[reportMissingImports]
     normalize_swe_mini_judge_model,
     swe_mini_model_lifecycle_env,
     swe_mini_output_path,
+    write_swe_mini_summary,
 )
 from .telemetry import aggregate_telemetry_file
 
@@ -797,7 +801,13 @@ class JobManager:
             DEFAULT_SWE_MINI_TIMEOUT_MINUTES,
         )
         pass_count = self._int_or_default(payload.get("pass_count"), 1)
-        context_window = self._optional_int(payload.get("context_window"))
+        context_window = self._int_or_default(
+            payload.get("context_window"), DEFAULT_SWE_MINI_CONTEXT_WINDOW
+        )
+        provider_timeout_minutes = self._int_or_default(
+            payload.get("swe_provider_timeout"),
+            DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES,
+        )
         provider = str(payload.get("swe_provider") or "lemonade")
         openai_base_url = payload.get(
             "openai_base_url", payload.get("lemonade_base_url", self.openai_base_url)
@@ -816,6 +826,7 @@ class JobManager:
             timeout_minutes=timeout_minutes,
             pass_count=pass_count,
             context_window=context_window,
+            provider_timeout_minutes=provider_timeout_minutes,
         )
         command, env = build_swe_mini_command(request)
         env["LMEVAL_WEBUI_JOB_ID"] = job_id
@@ -831,6 +842,8 @@ class JobManager:
             "timeout_minutes": timeout_minutes,
             "pass_count": pass_count,
             "context_window": context_window,
+            "provider_timeout_minutes": provider_timeout_minutes,
+            "provider_max_retries": DEFAULT_SWE_MINI_PROVIDER_MAX_RETRIES,
             "task_target": task_target,
             "pi_bench_dir": str(self.pi_bench_dir),
             "openai_base_url": str(openai_base_url),
@@ -1502,7 +1515,13 @@ class JobManager:
                 options.get("timeout_minutes"), DEFAULT_SWE_MINI_TIMEOUT_MINUTES
             ),
             pass_count=self._int_or_default(options.get("pass_count"), 1),
-            context_window=self._optional_int(options.get("context_window")),
+            context_window=self._int_or_default(
+                options.get("context_window"), DEFAULT_SWE_MINI_CONTEXT_WINDOW
+            ),
+            provider_timeout_minutes=self._int_or_default(
+                options.get("provider_timeout_minutes"),
+                DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES,
+            ),
         )
 
     @staticmethod
@@ -1687,6 +1706,7 @@ class JobManager:
                 "pass_count": "pass_count",
                 "timeout_minutes": "swe_timeout",
                 "context_window": "context_window",
+                "provider_timeout_minutes": "swe_provider_timeout",
                 "provider": "swe_provider",
                 "openai_base_url": "openai_base_url",
             }
@@ -1899,7 +1919,9 @@ class JobManager:
             raw_options = job.get("swe_options")
             if isinstance(raw_options, dict):
                 raw_options["pi_bench_output_path"] = str(source)
-        return persistent_path if persistent_path.exists() else source
+        result_path = persistent_path if persistent_path.exists() else source
+        write_swe_mini_summary(result_path, scheduled_tasks=len(job.get("tasks") or []))
+        return result_path
 
     def _remove_job_artifacts(self, job: dict[str, Any]) -> None:
         for key in (

@@ -13,6 +13,8 @@ REGISTRY="${SWE_BENCH_IMAGE_REGISTRY:-ghcr.io/epoch-research/swe-bench.eval.x86_
 JOB_ID="${LMEVAL_WEBUI_JOB_ID:-manual-$$}"
 SAFE_JOB_ID="$(printf '%s' "$JOB_ID" | tr -c 'A-Za-z0-9_.-' '-')"
 ACTIVE_CONTAINER=""
+RESULTS_DIR=""
+SUMMARY_GENERATED=false
 
 cleanup_active_container() {
   if [ -n "$ACTIVE_CONTAINER" ]; then
@@ -25,6 +27,7 @@ cancel_run() {
   local exit_code="$1"
   trap - EXIT INT TERM
   cleanup_active_container
+  generate_aggregate_summary || true
   exit "$exit_code"
 }
 
@@ -52,6 +55,164 @@ result = {
 }
 with open(result_file, "w", encoding="utf-8") as handle:
     json.dump(result, handle, indent=2)
+PY
+}
+
+write_inference_timeout_result() {
+  local result_file="$1"
+  local task_id="$2"
+  local duration_ms="$3"
+  mkdir -p "$(dirname "$result_file")"
+  python3 - "$result_file" "$task_id" "$duration_ms" <<'PY'
+import json, sys
+
+result_file, task_id, duration_ms = sys.argv[1], sys.argv[2], int(sys.argv[3])
+result = {
+    "task": task_id,
+    "durationMs": duration_ms,
+    "diff": "",
+    "testExitCode": None,
+    "testOutput": "",
+    "judgeScore": 0,
+    "judgeRationale": (
+        "Candidate inference exceeded the provider request timeout; the task "
+        "was scored zero so the benchmark could continue."
+    ),
+    "infrastructureError": "inference_timeout",
+}
+with open(result_file, "w", encoding="utf-8") as handle:
+    json.dump(result, handle, indent=2)
+PY
+}
+
+generate_aggregate_summary() {
+  if [ "$SUMMARY_GENERATED" = true ] || [ -z "${RESULTS_DIR:-}" ]; then
+    return 0
+  fi
+  local result_root="$PI_BENCH_RUN_DIR/$RESULTS_DIR"
+  if [ ! -d "$result_root" ]; then
+    return 0
+  fi
+  echo "[INFO] Generating aggregate summary from $RESULTS_DIR ..."
+  python3 - "$result_root" "${TOTAL:-0}" <<'PY'
+import glob, json, os, sys
+
+results_dir, scheduled_s = sys.argv[1], sys.argv[2]
+result_files = [
+    path for path in sorted(glob.glob(os.path.join(results_dir, "results-*.json")))
+    if "-attempt" not in os.path.basename(path)
+]
+if not result_files:
+    print("[WARN] No result files found, skipping summary generation.")
+    sys.exit(0)
+results = []
+passed = 0
+total_duration = 0.0
+infrastructure_failures = 0
+for path in result_files:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            result = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"[WARN] Could not include {path} in aggregate summary: {error}")
+        continue
+    if not isinstance(result, dict):
+        continue
+    results.append(result)
+    if result.get("judgeScore") == 1:
+        passed += 1
+    try:
+        total_duration += float(result.get("durationMs", 0) or 0)
+    except (TypeError, ValueError):
+        pass
+    if str(result.get("infrastructureError") or "").strip():
+        infrastructure_failures += 1
+if not results:
+    print("[WARN] No valid result files found, skipping summary generation.")
+    sys.exit(0)
+completed = len(results)
+try:
+    scheduled = max(completed, int(scheduled_s))
+except ValueError:
+    scheduled = completed
+summary_path = os.path.join(results_dir, "summary.json")
+summary = {}
+try:
+    with open(summary_path, encoding="utf-8") as handle:
+        existing = json.load(handle)
+    if isinstance(existing, dict):
+        summary.update(existing)
+except (OSError, json.JSONDecodeError):
+    pass
+summary.update({
+    "totalTasks": completed,
+    "completedTasks": completed,
+    "scheduledTasks": scheduled,
+    "passedTasks": passed,
+    "passRate": passed / completed,
+    "coverage": completed / scheduled if scheduled else 0,
+    "partial": completed < scheduled,
+    "infrastructureFailedTasks": infrastructure_failures,
+    "totalDurationMs": total_duration,
+    "averageDurationMs": total_duration / completed,
+    "results": results,
+})
+temporary_path = f"{summary_path}.tmp"
+with open(temporary_path, "w", encoding="utf-8") as handle:
+    json.dump(summary, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary_path, summary_path)
+print(f"[INFO] Aggregate summary: {passed}/{completed} passed ({summary['passRate']*100:.1f}%)")
+print(f"[INFO] Summary saved to {summary_path}")
+PY
+  SUMMARY_GENERATED=true
+}
+
+wait_for_candidate_idle() {
+  local base_url="${LMEVAL_WEBUI_LEMONADE_BASE_URL:-}"
+  local model_name="${LMEVAL_WEBUI_CANDIDATE_MODEL_ID:-}"
+  local timeout_ms="${LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS:-900000}"
+  if [ -z "$base_url" ] || [ -z "$model_name" ]; then
+    return 0
+  fi
+  echo "[INFO] Waiting for timed-out candidate request to drain before continuing..."
+  python3 - "$base_url" "$model_name" "$timeout_ms" <<'PY'
+import json, sys, time, urllib.request
+
+base_url, model_name, timeout_ms_s = sys.argv[1:]
+deadline = time.monotonic() + max(1, int(timeout_ms_s)) / 1000
+health_url = f"{base_url.rstrip('/')}/api/v1/health"
+normalized_model = model_name.removeprefix("user.")
+last_error = ""
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen(health_url, timeout=30) as response:
+            health = json.load(response)
+        loaded = health.get("all_models_loaded")
+        candidate = None
+        if isinstance(loaded, list):
+            candidate = next(
+                (
+                    entry for entry in loaded
+                    if isinstance(entry, dict)
+                    and str(entry.get("model_name") or "").removeprefix("user.")
+                    == normalized_model
+                ),
+                None,
+            )
+        if candidate is None or (
+            candidate.get("is_busy") is not True
+            and candidate.get("is_streaming") is not True
+        ):
+            print("[INFO] Candidate backend is idle.")
+            sys.exit(0)
+        last_error = ""
+    except Exception as error:
+        last_error = str(error)
+    time.sleep(2)
+detail = f" Last health error: {last_error}" if last_error else ""
+print(f"[ERROR] Candidate backend did not become idle before the drain timeout.{detail}", file=sys.stderr)
+sys.exit(1)
 PY
 }
 
@@ -490,6 +651,80 @@ async function restorePinnedCandidate(switched: boolean): Promise<void> {
         raise SystemExit(f"Could not patch {path}: judge score parser not found")
     text = text.replace(old_score_parse, new_score_parse, 1)
 
+provider_retry_marker = "LMEVAL_WEBUI_EXPLICIT_PROVIDER_TIMEOUT_V1"
+if provider_retry_marker not in text:
+    import_needle = '''  ModelRegistry,
+  SessionManager,
+} from "@mariozechner/pi-coding-agent";
+'''
+    import_replacement = '''  ModelRegistry,
+  SessionManager,
+  SettingsManager,
+} from "@mariozechner/pi-coding-agent";
+'''
+    if import_needle not in text:
+        raise SystemExit(f"Could not patch {path}: SettingsManager import point not found")
+    text = text.replace(import_needle, import_replacement, 1)
+
+    session_needle = '''    const { session } = await createAgentSession({
+      cwd: tmpDir,
+'''
+    session_replacement = '''    // LMEVAL_WEBUI_EXPLICIT_PROVIDER_TIMEOUT_V1
+    const configuredProviderTimeoutMs = Number.parseInt(
+      process.env.LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS || "900000",
+      10,
+    );
+    const providerTimeoutMs = Number.isFinite(configuredProviderTimeoutMs)
+      ? Math.max(1000, configuredProviderTimeoutMs)
+      : 900000;
+    const settingsManager = SettingsManager.inMemory({
+      retry: {
+        enabled: false,
+        maxRetries: 0,
+        provider: {
+          timeoutMs: providerTimeoutMs,
+          maxRetries: 0,
+          maxRetryDelayMs: 60000,
+        },
+      },
+    });
+    console.log(
+      `[INFO] Provider request timeout: ${providerTimeoutMs}ms; automatic retries disabled`,
+    );
+
+    const { session } = await createAgentSession({
+      cwd: tmpDir,
+'''
+    if session_needle not in text:
+        raise SystemExit(f"Could not patch {path}: agent session insertion point not found")
+    text = text.replace(session_needle, session_replacement, 1)
+
+    registry_needle = '''      authStorage,
+      modelRegistry,
+      model: resolvedAgentModel,
+'''
+    registry_replacement = '''      authStorage,
+      modelRegistry,
+      settingsManager,
+      model: resolvedAgentModel,
+'''
+    if registry_needle not in text:
+        raise SystemExit(f"Could not patch {path}: settings manager option point not found")
+    text = text.replace(registry_needle, registry_replacement, 1)
+
+    judge_options = '''    }, { apiKey: auth.apiKey, headers: auth.headers });
+'''
+    judge_options_replacement = '''    }, {
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      timeoutMs: providerTimeoutMs,
+      maxRetries: 0,
+    });
+'''
+    if judge_options not in text:
+        raise SystemExit(f"Could not patch {path}: judge provider options not found")
+    text = text.replace(judge_options, judge_options_replacement, 1)
+
 path.write_text(text, encoding="utf-8")
 PY
 }
@@ -516,7 +751,8 @@ MODEL_LIFECYCLE_ENV_ARGS=()
 for variable in \
   LMEVAL_WEBUI_LEMONADE_BASE_URL \
   LMEVAL_WEBUI_CANDIDATE_MODEL_ID \
-  LMEVAL_WEBUI_JUDGE_MODEL_ID; do
+  LMEVAL_WEBUI_JUDGE_MODEL_ID \
+  LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS; do
   if [ -n "${!variable:-}" ]; then
     MODEL_LIFECYCLE_ENV_ARGS+=(--env "$variable=${!variable}")
   fi
@@ -675,23 +911,43 @@ PY
       EXIT_CODE=0
     fi
 
+    if [ "$EXIT_CODE" -eq 2 ] && [ -n "${RESULTS_DIR:-}" ] &&
+      grep -Eiq 'operation timed out|request timed out|request timeout|provider.*timed out' "$LOGFILE"; then
+      ATTEMPT_FINISHED_AT="$(date +%s)"
+      ATTEMPT_DURATION_MS=$(((ATTEMPT_FINISHED_AT - ATTEMPT_STARTED_AT) * 1000))
+      RESULT_FILE="$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json"
+      write_inference_timeout_result "$RESULT_FILE" "$TASK_ID" "$ATTEMPT_DURATION_MS"
+      echo "[WARN] Candidate inference timed out for $TASK_ID; scoring this attempt zero and continuing."
+      if ! wait_for_candidate_idle; then
+        rm -f "$LOGFILE"
+        generate_aggregate_summary || true
+        echo "[FATAL] Timed-out candidate request did not drain; refusing to overlap another task."
+        exit 2
+      fi
+      EXIT_CODE=0
+    fi
+
     rm -f "$LOGFILE"
 
     if [ "$EXIT_CODE" -eq 2 ]; then
-      echo "[FATAL] Inference backend is unreachable or crashed. Aborting entire benchmark run."
+      generate_aggregate_summary || true
+      echo "[FATAL] Inference backend is unreachable. Aborting benchmark run."
       exit 2
     fi
     if [ "$EXIT_CODE" -ne 0 ]; then
+      generate_aggregate_summary || true
       echo "[FATAL] SWE Mini container exited with status $EXIT_CODE."
       exit "$EXIT_CODE"
     fi
     if [ -z "${RESULTS_DIR:-}" ]; then
+      generate_aggregate_summary || true
       echo "[FATAL] No results directory produced for task $TASK_ID."
       exit 1
     fi
 
     RESULT_FILE="$PI_BENCH_RUN_DIR/$RESULTS_DIR/results-${TASK_ID}.json"
     if [ ! -f "$RESULT_FILE" ]; then
+      generate_aggregate_summary || true
       echo "[FATAL] No result file produced for task $TASK_ID: $RESULT_FILE"
       exit 1
     fi
@@ -759,40 +1015,4 @@ printf '[INFO] SWE Mini Runner Complete!\n'
 printf '[INFO] Tasks: %s | Succeeded: %s | Failed: %s\n' "$TOTAL" "$PASSED" "$FAILED"
 printf '========================================================\n'
 
-if [ -n "${RESULTS_DIR:-}" ] && [ -d "$PI_BENCH_RUN_DIR/$RESULTS_DIR" ]; then
-  echo "[INFO] Generating aggregate summary from $RESULTS_DIR ..."
-  python3 - "$PI_BENCH_RUN_DIR/$RESULTS_DIR" <<'PY'
-import glob, json, os, sys
-results_dir = sys.argv[1]
-result_files = [
-    path for path in sorted(glob.glob(os.path.join(results_dir, "results-*.json")))
-    if "-attempt" not in os.path.basename(path)
-]
-if not result_files:
-    print("[WARN] No result files found, skipping summary generation.")
-    sys.exit(0)
-results = []
-passed = 0
-total_duration = 0
-for path in result_files:
-    with open(path, encoding="utf-8") as handle:
-        result = json.load(handle)
-    results.append(result)
-    if result.get("judgeScore") == 1:
-        passed += 1
-    total_duration += result.get("durationMs", 0)
-summary = {
-    "totalTasks": len(results),
-    "passedTasks": passed,
-    "passRate": passed / len(results) if results else 0,
-    "totalDurationMs": total_duration,
-    "averageDurationMs": total_duration / len(results) if results else 0,
-    "results": results,
-}
-summary_path = os.path.join(results_dir, "summary.json")
-with open(summary_path, "w", encoding="utf-8") as handle:
-    json.dump(summary, handle, indent=2)
-print(f"[INFO] Aggregate summary: {passed}/{len(results)} passed ({summary['passRate']*100:.1f}%)")
-print(f"[INFO] Summary saved to {summary_path}")
-PY
-fi
+generate_aggregate_summary

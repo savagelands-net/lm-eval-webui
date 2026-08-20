@@ -29,6 +29,9 @@ def default_pi_bench_dir(project_root: str | Path | None = None) -> Path:
 DEFAULT_PI_BENCH_DIR = default_pi_bench_dir()
 DEFAULT_SWE_MINI_PLATFORM = "lemonade-swe"
 DEFAULT_SWE_MINI_TIMEOUT_MINUTES = 60
+DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES = 15
+DEFAULT_SWE_MINI_PROVIDER_MAX_RETRIES = 0
+DEFAULT_SWE_MINI_CONTEXT_WINDOW = 32768
 DEFAULT_SWE_MINI_JUDGE_PROVIDER = "lemonade"
 DEFAULT_SWE_MINI_JUDGE_MODEL_ID = "gpt-oss-120b-mxfp-GGUF"
 DEFAULT_SWE_MINI_JUDGE_MODEL = (
@@ -41,6 +44,7 @@ SWE_OUTPUT_ENV = "SWE_MINI_OUTPUT_PATH"
 SWE_LEMONADE_BASE_URL_ENV = "LMEVAL_WEBUI_LEMONADE_BASE_URL"
 SWE_CANDIDATE_MODEL_ENV = "LMEVAL_WEBUI_CANDIDATE_MODEL_ID"
 SWE_JUDGE_MODEL_ENV = "LMEVAL_WEBUI_JUDGE_MODEL_ID"
+SWE_PROVIDER_TIMEOUT_MS_ENV = "LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS"
 
 
 def normalize_swe_mini_judge_model(
@@ -83,7 +87,8 @@ class SweMiniRequest:
     model_tag: str | None = None
     timeout_minutes: int = DEFAULT_SWE_MINI_TIMEOUT_MINUTES
     pass_count: int = 1
-    context_window: int | None = None
+    context_window: int | None = DEFAULT_SWE_MINI_CONTEXT_WINDOW
+    provider_timeout_minutes: int = DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES
     extra_args: list[str] | None = None
     models_json_path: str | Path | None = None
 
@@ -154,13 +159,15 @@ def write_swe_mini_models_json(
 def _lemonade_model_entry(
     model_id: str, context_window: int | None = None
 ) -> dict[str, Any]:
+    effective_context = context_window or DEFAULT_SWE_MINI_CONTEXT_WINDOW
+    max_tokens = max(1, min(65536, effective_context // 2))
     return {
         "id": model_id,
         "name": f"{model_id} (Lemonade)",
         "reasoning": False,
         "input": ["text"],
-        "contextWindow": context_window or 131072,
-        "maxTokens": 65536,
+        "contextWindow": effective_context,
+        "maxTokens": max_tokens,
         "cost": {
             "input": 0,
             "output": 0,
@@ -236,6 +243,10 @@ def build_swe_mini_command(request: SweMiniRequest) -> tuple[list[str], dict[str
     env[SWE_OUTPUT_ENV] = str(request.output_path)
     env["PI_BENCH_DIR"] = str(pi_bench_dir)
     env["PI_BENCH_MODELS_JSON"] = str(models_path)
+    provider_timeout_minutes = _positive_int(
+        request.provider_timeout_minutes, DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES
+    )
+    env[SWE_PROVIDER_TIMEOUT_MS_ENV] = str(provider_timeout_minutes * 60 * 1000)
     return command, env
 
 
@@ -326,6 +337,74 @@ def find_swe_mini_result_files(run_dir: str | Path) -> list[Path]:
     if summary.exists():
         return [summary]
     return sorted(root.glob("results-*.json"), key=lambda path: path.stat().st_mtime)
+
+
+def write_swe_mini_summary(
+    run_dir: str | Path, scheduled_tasks: int | None = None
+) -> Path | None:
+    """Rebuild an aggregate summary from completed per-task artifacts."""
+
+    root = Path(run_dir)
+    summary_path = root / "summary.json"
+    result_paths = sorted(
+        path
+        for path in root.glob("results-*.json")
+        if "-attempt" not in path.name
+    )
+    if not result_paths:
+        return summary_path if summary_path.exists() else None
+
+    results: list[dict[str, Any]] = []
+    for path in result_paths:
+        try:
+            result = _load_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if result:
+            results.append(result)
+    if not results:
+        return summary_path if summary_path.exists() else None
+
+    completed_tasks = len(results)
+    passed_tasks = sum(result.get("judgeScore") == 1 for result in results)
+    durations = [
+        duration
+        for result in results
+        if (duration := _finite_float(result.get("durationMs"))) is not None
+    ]
+    total_duration_ms = sum(durations)
+    scheduled = max(completed_tasks, _positive_int(scheduled_tasks, completed_tasks))
+    infrastructure_failures = sum(
+        bool(str(result.get("infrastructureError") or "").strip())
+        for result in results
+    )
+    summary: dict[str, Any] = {}
+    if summary_path.exists():
+        try:
+            summary.update(_load_json(summary_path))
+        except (OSError, json.JSONDecodeError):
+            pass
+    summary.update(
+        {
+            "totalTasks": completed_tasks,
+            "completedTasks": completed_tasks,
+            "scheduledTasks": scheduled,
+            "passedTasks": passed_tasks,
+            "passRate": passed_tasks / completed_tasks,
+            "coverage": completed_tasks / scheduled if scheduled else 0.0,
+            "partial": completed_tasks < scheduled,
+            "infrastructureFailedTasks": infrastructure_failures,
+            "totalDurationMs": total_duration_ms,
+            "averageDurationMs": total_duration_ms / completed_tasks,
+            "results": results,
+        }
+    )
+    temporary_path = summary_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary_path, summary_path)
+    return summary_path
 
 
 def extract_swe_mini_result_rows(

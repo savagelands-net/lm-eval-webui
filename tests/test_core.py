@@ -504,10 +504,17 @@ class LemonadeBenchTests(unittest.TestCase):
 
 
 class SweMiniRunnerTests(unittest.TestCase):
-    def test_swe_mini_agent_timeout_defaults_to_one_hour(self):
+    def test_swe_mini_defaults_bound_agent_context_and_provider_timeout(self):
         SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
         default_timeout = symbol(
             "lm_eval_webui.swe_mini", "DEFAULT_SWE_MINI_TIMEOUT_MINUTES"
+        )
+        default_provider_timeout = symbol(
+            "lm_eval_webui.swe_mini",
+            "DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES",
+        )
+        default_context = symbol(
+            "lm_eval_webui.swe_mini", "DEFAULT_SWE_MINI_CONTEXT_WINDOW"
         )
 
         request = SweMiniRequest(
@@ -517,7 +524,11 @@ class SweMiniRunnerTests(unittest.TestCase):
         )
 
         self.assertEqual(default_timeout, 60)
+        self.assertEqual(default_provider_timeout, 15)
+        self.assertEqual(default_context, 32768)
         self.assertEqual(request.timeout_minutes, 60)
+        self.assertEqual(request.provider_timeout_minutes, 15)
+        self.assertEqual(request.context_window, 32768)
 
     def test_swe_mini_command_uses_repo_owned_wrapper_for_lemonade_judge(self):
         SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
@@ -594,6 +605,7 @@ class SweMiniRunnerTests(unittest.TestCase):
         self.assertEqual(env["SWE_MINI_OUTPUT_PATH"], str(output_path))
         self.assertEqual(env["LMEVAL_WEBUI_LAUNCH_CWD"], str(project_root))
         self.assertEqual(env["PI_BENCH_DIR"], str(pi_bench_dir))
+        self.assertEqual(env["LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS"], "900000")
         self.assertTrue(models_path_exists)
         self.assertEqual(
             model_ids,
@@ -660,6 +672,69 @@ class SweMiniRunnerTests(unittest.TestCase):
             ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
         )
         self.assertEqual(lemonade["models"][0]["contextWindow"], 131072)
+        self.assertEqual(lemonade["models"][0]["maxTokens"], 65536)
+
+    def test_default_swe_model_entry_uses_32k_context_and_16k_generation_cap(self):
+        write_swe_mini_models_json = symbol(
+            "lm_eval_webui.swe_mini", "write_swe_mini_models_json"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            models_path = write_swe_mini_models_json(
+                tmp,
+                base_url="https://llm.example.test",
+                model_id="Model-A",
+            )
+            payload = json.loads(models_path.read_text(encoding="utf-8"))
+
+        model = payload["providers"]["lemonade"]["models"][0]
+        self.assertEqual(model["contextWindow"], 32768)
+        self.assertEqual(model["maxTokens"], 16384)
+
+    def test_swe_summary_is_rebuilt_from_all_partial_task_artifacts(self):
+        write_swe_mini_summary = symbol(
+            "lm_eval_webui.swe_mini", "write_swe_mini_summary"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = {
+                "task": "django__django-1",
+                "judgeScore": 1,
+                "durationMs": 1000,
+            }
+            second = {
+                "task": "django__django-2",
+                "judgeScore": 0,
+                "durationMs": 3000,
+                "infrastructureError": "inference_timeout",
+            }
+            (root / "results-django__django-1.json").write_text(
+                json.dumps(first), encoding="utf-8"
+            )
+            (root / "results-django__django-2.json").write_text(
+                json.dumps(second), encoding="utf-8"
+            )
+            (root / "results-django__django-2-attempt1.json").write_text(
+                json.dumps(second), encoding="utf-8"
+            )
+            (root / "summary.json").write_text(
+                json.dumps({"results": [second]}), encoding="utf-8"
+            )
+
+            summary_path = write_swe_mini_summary(root, scheduled_tasks=50)
+            self.assertIsNotNone(summary_path)
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["completedTasks"], 2)
+        self.assertEqual(summary["scheduledTasks"], 50)
+        self.assertEqual(summary["passedTasks"], 1)
+        self.assertEqual(summary["passRate"], 0.5)
+        self.assertEqual(summary["coverage"], 0.04)
+        self.assertTrue(summary["partial"])
+        self.assertEqual(summary["infrastructureFailedTasks"], 1)
+        self.assertEqual(summary["totalDurationMs"], 4000)
+        self.assertEqual(len(summary["results"]), 2)
 
     def test_find_swe_mini_tasks_reads_verified_mini_task_files(self):
         find_swe_mini_tasks = symbol("lm_eval_webui.swe_mini", "find_swe_mini_tasks")
@@ -1668,6 +1743,77 @@ exit 1
             "lemonade_model_lifecycle",
         )
 
+    def test_wrapper_scores_provider_timeout_zero_and_continues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = root / "runtime"
+            (runtime / "src").mkdir(parents=True)
+            (runtime / "tasks").mkdir()
+            index_path = runtime / "src" / "index.ts"
+            index_path.write_text(
+                Path("third_party/pi-bench/src/index.ts").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            task_id = "django__django-timeout"
+            task_file = runtime / "tasks" / f"{task_id}.json"
+            task_file.write_text(
+                json.dumps({"id": task_id, "repo": "django/django"}),
+                encoding="utf-8",
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_docker = bin_dir / "docker"
+            fake_docker.write_text(
+                """#!/usr/bin/env bash
+if [ "${1:-}" = "volume" ]; then
+    exit 0
+fi
+echo 'Error: Inference backend is unreachable: The operation timed out.'
+exit 2
+""",
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+            output_dir = runtime / "results"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "PI_BENCH_DIR": str(runtime),
+                    "PI_BENCH_RUN_DIR": str(runtime),
+                    "PI_BENCH_SKIP_CHOWN": "1",
+                    "SWE_MINI_OUTPUT_PATH": str(output_dir),
+                    "LMEVAL_WEBUI_JOB_ID": "timeout-test",
+                    "LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS": "900000",
+                }
+            )
+
+            completed = subprocess.run(
+                ["bash", "scripts/run-swe-mini.sh", str(task_file)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            summary = json.loads(
+                (output_dir / "summary.json").read_text(encoding="utf-8")
+            )
+            patched_index = index_path.read_text(encoding="utf-8")
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("scoring this attempt zero and continuing", completed.stdout)
+        self.assertEqual(summary["totalTasks"], 1)
+        self.assertEqual(summary["passedTasks"], 0)
+        self.assertEqual(summary["infrastructureFailedTasks"], 1)
+        self.assertEqual(
+            summary["results"][0]["infrastructureError"], "inference_timeout"
+        )
+        self.assertIn("LMEVAL_WEBUI_EXPLICIT_PROVIDER_TIMEOUT_V1", patched_index)
+        self.assertIn("SettingsManager.inMemory", patched_index)
+        self.assertIn("enabled: false", patched_index)
+        self.assertIn("maxRetries: 0", patched_index)
+
     def test_wrapper_labels_and_cleans_up_cancelled_containers(self):
         script = Path("scripts/run-swe-mini.sh").read_text(encoding="utf-8")
 
@@ -1691,6 +1837,11 @@ exit 1
         self.assertIn('"/internal/pin"', script)
         self.assertIn('"/api/v1/load"', script)
         self.assertIn("MODEL_LIFECYCLE_ENV_ARGS+=(--env", script)
+        self.assertIn("LMEVAL_WEBUI_EXPLICIT_PROVIDER_TIMEOUT_V1", script)
+        self.assertIn("LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS", script)
+        self.assertIn("write_inference_timeout_result", script)
+        self.assertIn("wait_for_candidate_idle", script)
+        self.assertIn("generate_aggregate_summary", script)
 
 
 class TaskCompatibilityTests(unittest.TestCase):
@@ -3030,6 +3181,9 @@ class JobManagerSweMiniTests(unittest.TestCase):
             listed = manager.list_jobs()[0]
 
         self.assertEqual(job["swe_options"]["timeout_minutes"], 60)
+        self.assertEqual(job["swe_options"]["context_window"], 32768)
+        self.assertEqual(job["swe_options"]["provider_timeout_minutes"], 15)
+        self.assertEqual(job["swe_options"]["provider_max_retries"], 0)
         self.assertEqual(listed["progress"]["current"], 2)
         self.assertEqual(listed["progress"]["total"], 3)
         self.assertAlmostEqual(listed["progress"]["percent"], 66.6666666667)
@@ -3137,6 +3291,7 @@ class JobManagerSweMiniTests(unittest.TestCase):
         self.assertIn("2", commands[0])
         self.assertEqual(envs[0]["PI_BENCH_DIR"], str(pi_bench_dir))
         self.assertEqual(envs[0]["LMEVAL_WEBUI_LAUNCH_CWD"], str(project_root))
+        self.assertEqual(envs[0]["LMEVAL_WEBUI_SWE_PROVIDER_TIMEOUT_MS"], "900000")
         self.assertEqual(
             envs[0]["LMEVAL_WEBUI_LEMONADE_BASE_URL"],
             "https://llm.savagelands.net",
@@ -3235,6 +3390,9 @@ class JobManagerSweMiniTests(unittest.TestCase):
         )
         self.assertEqual(rerun_job["swe_options"]["pass_count"], 3)
         self.assertEqual(rerun_job["swe_options"]["timeout_minutes"], 60)
+        self.assertEqual(rerun_job["swe_options"]["context_window"], 32768)
+        self.assertEqual(rerun_job["swe_options"]["provider_timeout_minutes"], 15)
+        self.assertEqual(rerun_job["swe_options"]["provider_max_retries"], 0)
         self.assertNotEqual(rerun_job["output_path"], original_job["output_path"])
         self.assertIn("--pass", commands[1])
         self.assertIn("3", commands[1])
@@ -4452,12 +4610,19 @@ class SmokeTests(unittest.TestCase):
         fewshot_control = index[
             index.index('id="numFewshot"') - 80 : index.index('id="numFewshot"') + 120
         ]
+        swe_context_control = index[
+            index.index('id="sweContextWindow"') - 80 : index.index(
+                'id="sweContextWindow"'
+            )
+            + 160
+        ]
 
         self.assertNotIn("value=", limit_control)
         self.assertNotIn("value=", fewshot_control)
         self.assertIn('id="maxGenToks" type="number" value="32768"', index)
         self.assertIn('id="timeout" type="number" value="7200"', index)
         self.assertIn('id="sweTimeout" type="number" min="1" value="60"', index)
+        self.assertIn('value="32768"', swe_context_control)
         self.assertIn("const DEFAULT_SWE_TIMEOUT_MINUTES = 60", script)
         self.assertIn("Limit (blank = all)", index)
         self.assertIn("Few-shot (blank = task default)", index)
