@@ -104,6 +104,9 @@ const DEFAULT_LEMONADE_BENCH_RUNS = 3;
 const DEFAULT_LEMONADE_BENCH_TIMEOUT = 300;
 const DEFAULT_SWE_JUDGE_MODEL = "gpt-oss-120b-mxfp-GGUF";
 const DEFAULT_SWE_TIMEOUT_MINUTES = 60;
+const DEFAULT_SWE_CONTEXT_WINDOW = 65536;
+const DEFAULT_SWE_MAX_OUTPUT_TOKENS = 16384;
+const DEFAULT_SWE_PROVIDER_TIMEOUT_MINUTES = 15;
 const ACTIVE_JOB_STATUSES = new Set(["queued", "running", "cancelling"]);
 const TERMINAL_JOB_STATUSES = new Set(["cancelled", "failed", "succeeded"]);
 const RESULT_PAGE_SIZE = 2000;
@@ -1365,6 +1368,18 @@ function renderSweMiniLeaderboard(list, entries) {
 			cell: (row) => leaderboardCell(displayJudgeModel(row.entry.judge_model)),
 		},
 		{
+			key: "context",
+			label: "Context",
+			sortValue: (row) => numberOrNull(row.entry.context_window),
+			cell: (row) => leaderboardCell(formatContext(row.entry.context_window)),
+		},
+		{
+			key: "max-output",
+			label: "Max output",
+			sortValue: (row) => numberOrNull(row.entry.max_output_tokens),
+			cell: (row) => leaderboardCell(formatContext(row.entry.max_output_tokens)),
+		},
+		{
 			key: "passed",
 			label: "Passed",
 			sortValue: (row) => numberOrNull(row.entry.passed_tasks),
@@ -1833,7 +1848,7 @@ async function startJobs() {
 		max_concurrent_jobs:
 			suite === "lemonade_bench" ? 1 : Number($("maxConcurrentJobs").value || 1),
 	};
-	if (suite !== "lemonade_bench") {
+	if (suite === "lm_eval") {
 		body.llamacpp_backend = $("llamacppBackend").value || null;
 	}
 	if (suite === "lemonade_bench") {
@@ -1863,11 +1878,26 @@ async function startJobs() {
 			bench_log_responses: $("benchLogResponses").checked,
 		});
 	} else if (suite === "swe_mini") {
+		const contextWindow =
+			numberOrNull($("sweContextWindow").value) || DEFAULT_SWE_CONTEXT_WINDOW;
+		const maxOutputTokens =
+			numberOrNull($("sweMaxOutputTokens").value) ||
+			DEFAULT_SWE_MAX_OUTPUT_TOKENS;
+		if (maxOutputTokens > contextWindow) {
+			$("setupMessage").textContent =
+				"Maximum output tokens cannot exceed the context window.";
+			return;
+		}
 		Object.assign(body, {
 			judge_model: $("sweJudgeModel").value.trim() || DEFAULT_SWE_JUDGE_MODEL,
 			swe_timeout: Number($("sweTimeout").value || DEFAULT_SWE_TIMEOUT_MINUTES),
 			pass_count: Number($("swePassCount").value || 1),
-			context_window: numberOrNull($("sweContextWindow").value),
+			context_window: contextWindow,
+			max_output_tokens: maxOutputTokens,
+			swe_provider_timeout: Number(
+				$("sweProviderTimeout").value || DEFAULT_SWE_PROVIDER_TIMEOUT_MINUTES,
+			),
+			recipe_policy: "lemonade_unchanged",
 		});
 	} else {
 		Object.assign(body, {
@@ -2078,6 +2108,21 @@ function jobDetailMeta(job) {
 			? `Judge: ${displayJudgeModel(options.judge_model)}`
 			: null,
 		options.pass_count ? `Pass attempts: ${options.pass_count}` : null,
+		options.context_window
+			? `Agent context: ${formatContext(options.context_window)}`
+			: null,
+		options.max_output_tokens
+			? `Max output: ${formatContext(options.max_output_tokens)}`
+			: null,
+		options.provider_timeout_minutes
+			? `Provider timeout: ${options.provider_timeout_minutes}m`
+			: null,
+		options.provider_max_retries !== undefined
+			? `Provider retries: ${options.provider_max_retries}`
+			: null,
+		options.recipe_policy === "lemonade_unchanged"
+			? "Recipe policy: Lemonade unchanged"
+			: null,
 		jobSuite(job) === "lemonade_bench"
 			? `Runs: ${benchOptions.measurement_runs || DEFAULT_LEMONADE_BENCH_RUNS}`
 			: null,
@@ -2408,7 +2453,7 @@ function updateSuiteUi() {
 	$("lmEvalProfilePicker").hidden = !isLmEval;
 	$("lmEvalCategoryFilters").hidden = !isLmEval;
 	$("lmEvalCompatibilityFilters").hidden = !isLmEval;
-	$("modelRuntimeOptions").hidden = isLemonadeBench;
+	$("modelRuntimeOptions").hidden = !isLmEval;
 	$("lemonadeBenchOptions").hidden = !isLemonadeBench;
 	$("lmEvalBenchmarkOptions").hidden = !isLmEval;
 	$("sweMiniBenchmarkOptions").hidden = !isSweMini;

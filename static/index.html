@@ -282,18 +282,45 @@
               <input id="swePassCount" type="number" min="1" value="1" />
             </label>
             <label
-              >Context window override
+              >Context window
               <input
                 id="sweContextWindow"
                 type="number"
                 min="1"
-                value="32768"
+                value="65536"
               />
             </label>
+            <label
+              >Maximum output tokens
+              <input
+                id="sweMaxOutputTokens"
+                type="number"
+                min="1"
+                value="16384"
+              />
+            </label>
+            <label
+              >Provider timeout minutes
+              <input
+                id="sweProviderTimeout"
+                type="number"
+                min="1"
+                value="15"
+              />
+            </label>
+            <label
+              >Provider retries
+              <input id="sweProviderRetries" type="number" value="0" disabled />
+            </label>
+            <label class="check"
+              ><input id="sweRecipePolicy" type="checkbox" checked disabled />
+              Use Lemonade recipe unchanged</label
+            >
           </div>
           <p id="sweMiniJudgeHint" class="hint" hidden>
-            SWE Mini judging uses the selected Lemonade model from the
-            configured OpenAI-compatible endpoint.
+            SWE Mini uses client-side context, output, and timeout limits. It
+            loads the selected candidate and judge as configured but never
+            overrides or saves Lemonade recipe, backend, slot, or MTP options.
           </p>
         </details>
         <div class="row actions">

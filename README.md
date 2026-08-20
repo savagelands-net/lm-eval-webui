@@ -225,15 +225,23 @@ pinned across every task batch, and unpin it when the job succeeds, fails, or is
 cancelled. A competing model request receives HTTP 409 instead of evicting the
 benchmark model. SWE Mini temporarily unpins the candidate and pins the
 configured Lemonade judge while judging each task, then restores the candidate
-pin before continuing. SWE Mini advertises a 32,768-token context and a
-16,384-token generation cap by default so long agent transcripts compact before
-large prefills become request-timeout risks. Its provider request timeout is 15
-minutes, automatic provider retries are disabled, and the 60-minute agent task
-timeout remains independent. A provider timeout is recorded as a zero-score
+pin before continuing. SWE Mini advertises a 65,536-token context and an
+independent 16,384-token generation cap by default. This preserves typical
+40K-token agent conversations while bounding generation and keeping a full cold
+prefill inside the default 15-minute provider timeout. Automatic provider
+retries are disabled, and the 60-minute agent task timeout remains independent.
+Context, maximum output tokens, and provider timeout are configurable in the SWE
+Mini benchmark options; provider retries are visibly locked to zero.
+
+SWE Mini treats each Lemonade registration as read-only configuration. It loads
+and pins the selected candidate and judge as already configured, but never
+passes recipe, backend, slot, speculative-decoding/MTP, or save-options
+overrides. The effective policy is persisted with each job as
+`lemonade_unchanged`. A provider timeout is recorded as a zero-score
 infrastructure failure; the runner waits for the candidate backend to become
 idle before continuing so stale requests cannot overlap. Aggregate summaries
 are rebuilt from every completed per-task artifact, including after partial
-runs. The context can still be overridden in the benchmark options.
+runs.
 
 Lemonade Bench is intentionally not pinned because the
 upstream CLI reloads models between scenarios and backend/context combinations.

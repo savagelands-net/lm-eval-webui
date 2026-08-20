@@ -31,7 +31,9 @@ DEFAULT_SWE_MINI_PLATFORM = "lemonade-swe"
 DEFAULT_SWE_MINI_TIMEOUT_MINUTES = 60
 DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES = 15
 DEFAULT_SWE_MINI_PROVIDER_MAX_RETRIES = 0
-DEFAULT_SWE_MINI_CONTEXT_WINDOW = 32768
+DEFAULT_SWE_MINI_CONTEXT_WINDOW = 65536
+DEFAULT_SWE_MINI_MAX_OUTPUT_TOKENS = 16384
+SWE_MINI_RECIPE_POLICY = "lemonade_unchanged"
 DEFAULT_SWE_MINI_JUDGE_PROVIDER = "lemonade"
 DEFAULT_SWE_MINI_JUDGE_MODEL_ID = "gpt-oss-120b-mxfp-GGUF"
 DEFAULT_SWE_MINI_JUDGE_MODEL = (
@@ -88,6 +90,7 @@ class SweMiniRequest:
     timeout_minutes: int = DEFAULT_SWE_MINI_TIMEOUT_MINUTES
     pass_count: int = 1
     context_window: int | None = DEFAULT_SWE_MINI_CONTEXT_WINDOW
+    max_output_tokens: int | None = DEFAULT_SWE_MINI_MAX_OUTPUT_TOKENS
     provider_timeout_minutes: int = DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES
     extra_args: list[str] | None = None
     models_json_path: str | Path | None = None
@@ -119,6 +122,7 @@ def write_swe_mini_models_json(
     base_url: str,
     model_id: str,
     context_window: int | None = None,
+    max_output_tokens: int | None = None,
     judge_model_id: str | None = None,
 ) -> Path:
     output = Path(output_dir)
@@ -145,7 +149,8 @@ def write_swe_mini_models_json(
                     "supportsStrictMode": False,
                 },
                 "models": [
-                    _lemonade_model_entry(model, context_window) for model in model_ids
+                    _lemonade_model_entry(model, context_window, max_output_tokens)
+                    for model in model_ids
                 ],
             }
         }
@@ -157,10 +162,15 @@ def write_swe_mini_models_json(
 
 
 def _lemonade_model_entry(
-    model_id: str, context_window: int | None = None
+    model_id: str,
+    context_window: int | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
-    effective_context = context_window or DEFAULT_SWE_MINI_CONTEXT_WINDOW
-    max_tokens = max(1, min(65536, effective_context // 2))
+    effective_context = _positive_int(context_window, DEFAULT_SWE_MINI_CONTEXT_WINDOW)
+    requested_output = _positive_int(
+        max_output_tokens, DEFAULT_SWE_MINI_MAX_OUTPUT_TOKENS
+    )
+    max_tokens = min(effective_context, requested_output)
     return {
         "id": model_id,
         "name": f"{model_id} (Lemonade)",
@@ -211,6 +221,7 @@ def build_swe_mini_command(request: SweMiniRequest) -> tuple[list[str], dict[str
             base_url=request.openai_base_url,
             model_id=request.model_id,
             context_window=request.context_window,
+            max_output_tokens=request.max_output_tokens,
             judge_model_id=swe_mini_judge_model_id(judge_model),
         )
     )
@@ -467,6 +478,10 @@ def extract_swe_mini_leaderboard_entry(
         "provider_backend": provider_backend,
         "lemonade_backend": provider_backend,
         "context_window": job.get("context_window"),
+        "max_output_tokens": swe_options.get("max_output_tokens"),
+        "provider_timeout_minutes": swe_options.get("provider_timeout_minutes"),
+        "provider_max_retries": swe_options.get("provider_max_retries"),
+        "recipe_policy": swe_options.get("recipe_policy"),
         "status": job.get("status"),
         "overall_score": overall_score,
         "category_scores": [

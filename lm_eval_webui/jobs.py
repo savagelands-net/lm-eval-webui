@@ -59,12 +59,14 @@ from .runner import (
 from .swe_mini import (  # type: ignore[reportMissingImports]
     DEFAULT_SWE_MINI_CONTEXT_WINDOW,
     DEFAULT_SWE_MINI_JUDGE_MODEL,
+    DEFAULT_SWE_MINI_MAX_OUTPUT_TOKENS,
     DEFAULT_SWE_MINI_PLATFORM,
     DEFAULT_SWE_MINI_PROVIDER_MAX_RETRIES,
     DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES,
     DEFAULT_SWE_MINI_TIMEOUT_MINUTES,
     LAUNCH_CWD_ENV,
     SWE_JUDGE_MODEL_ENV,
+    SWE_MINI_RECIPE_POLICY,
     SWE_MINI_SUITE,
     SweMiniRequest,
     build_swe_mini_command,
@@ -96,7 +98,7 @@ SWE_MINI_COMPLETE_RE = re.compile(
 )
 ACTIVE_JOB_STATUSES = {"queued", "running", "cancelling"}
 TERMINAL_JOB_STATUSES = {"cancelled", "failed", "succeeded"}
-RESULT_SUMMARY_VERSION = 4
+RESULT_SUMMARY_VERSION = 5
 CANCEL_GRACE_SECONDS = 10.0
 
 
@@ -804,6 +806,11 @@ class JobManager:
         context_window = self._int_or_default(
             payload.get("context_window"), DEFAULT_SWE_MINI_CONTEXT_WINDOW
         )
+        max_output_tokens = self._int_or_default(
+            payload.get("max_output_tokens", payload.get("swe_max_output_tokens")),
+            DEFAULT_SWE_MINI_MAX_OUTPUT_TOKENS,
+        )
+        max_output_tokens = min(context_window, max_output_tokens)
         provider_timeout_minutes = self._int_or_default(
             payload.get("swe_provider_timeout"),
             DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES,
@@ -826,14 +833,12 @@ class JobManager:
             timeout_minutes=timeout_minutes,
             pass_count=pass_count,
             context_window=context_window,
+            max_output_tokens=max_output_tokens,
             provider_timeout_minutes=provider_timeout_minutes,
         )
         command, env = build_swe_mini_command(request)
         env["LMEVAL_WEBUI_JOB_ID"] = job_id
         now = time.time()
-        llamacpp_backend = self._optional_llamacpp_backend(
-            payload.get("llamacpp_backend")
-        )
         swe_options = {
             "provider": provider,
             "judge_model": judge_model,
@@ -842,8 +847,10 @@ class JobManager:
             "timeout_minutes": timeout_minutes,
             "pass_count": pass_count,
             "context_window": context_window,
+            "max_output_tokens": max_output_tokens,
             "provider_timeout_minutes": provider_timeout_minutes,
             "provider_max_retries": DEFAULT_SWE_MINI_PROVIDER_MAX_RETRIES,
+            "recipe_policy": SWE_MINI_RECIPE_POLICY,
             "task_target": task_target,
             "pi_bench_dir": str(self.pi_bench_dir),
             "openai_base_url": str(openai_base_url),
@@ -873,16 +880,7 @@ class JobManager:
             job["rerun_of"] = str(payload["rerun_of"])
         if context_window:
             job["context_window"] = context_window
-        if llamacpp_backend:
-            job.update(
-                {
-                    "requested_llamacpp_backend": llamacpp_backend,
-                    "provider_backend": llamacpp_backend,
-                    "lemonade_backend": llamacpp_backend,
-                    "runtime_backend": llamacpp_backend,
-                    "llamacpp_backend": llamacpp_backend,
-                }
-            )
+        job["max_output_tokens"] = max_output_tokens
         self._write_job(job)
         return self._public_job(job)
 
@@ -1518,6 +1516,10 @@ class JobManager:
             context_window=self._int_or_default(
                 options.get("context_window"), DEFAULT_SWE_MINI_CONTEXT_WINDOW
             ),
+            max_output_tokens=self._int_or_default(
+                options.get("max_output_tokens"),
+                DEFAULT_SWE_MINI_MAX_OUTPUT_TOKENS,
+            ),
             provider_timeout_minutes=self._int_or_default(
                 options.get("provider_timeout_minutes"),
                 DEFAULT_SWE_MINI_PROVIDER_TIMEOUT_MINUTES,
@@ -1706,6 +1708,7 @@ class JobManager:
                 "pass_count": "pass_count",
                 "timeout_minutes": "swe_timeout",
                 "context_window": "context_window",
+                "max_output_tokens": "max_output_tokens",
                 "provider_timeout_minutes": "swe_provider_timeout",
                 "provider": "swe_provider",
                 "openai_base_url": "openai_base_url",

@@ -516,6 +516,10 @@ class SweMiniRunnerTests(unittest.TestCase):
         default_context = symbol(
             "lm_eval_webui.swe_mini", "DEFAULT_SWE_MINI_CONTEXT_WINDOW"
         )
+        default_max_output = symbol(
+            "lm_eval_webui.swe_mini", "DEFAULT_SWE_MINI_MAX_OUTPUT_TOKENS"
+        )
+        recipe_policy = symbol("lm_eval_webui.swe_mini", "SWE_MINI_RECIPE_POLICY")
 
         request = SweMiniRequest(
             model_id="Model-A",
@@ -525,10 +529,13 @@ class SweMiniRunnerTests(unittest.TestCase):
 
         self.assertEqual(default_timeout, 60)
         self.assertEqual(default_provider_timeout, 15)
-        self.assertEqual(default_context, 32768)
+        self.assertEqual(default_context, 65536)
+        self.assertEqual(default_max_output, 16384)
+        self.assertEqual(recipe_policy, "lemonade_unchanged")
         self.assertEqual(request.timeout_minutes, 60)
         self.assertEqual(request.provider_timeout_minutes, 15)
-        self.assertEqual(request.context_window, 32768)
+        self.assertEqual(request.context_window, 65536)
+        self.assertEqual(request.max_output_tokens, 16384)
 
     def test_swe_mini_command_uses_repo_owned_wrapper_for_lemonade_judge(self):
         SweMiniRequest = symbol("lm_eval_webui.swe_mini", "SweMiniRequest")
@@ -566,6 +573,7 @@ class SweMiniRunnerTests(unittest.TestCase):
                     timeout_minutes=45,
                     pass_count=2,
                     context_window=131072,
+                    max_output_tokens=16384,
                 )
             )
             models_path = Path(env["PI_BENCH_MODELS_JSON"])
@@ -610,6 +618,12 @@ class SweMiniRunnerTests(unittest.TestCase):
         self.assertEqual(
             model_ids,
             ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
+        )
+        self.assertTrue(
+            all(
+                model["maxTokens"] == 16384
+                for model in models_payload["providers"]["lemonade"]["models"]
+            )
         )
 
     def test_swe_mini_lifecycle_env_switches_lemonade_candidate_and_judge(self):
@@ -656,6 +670,7 @@ class SweMiniRunnerTests(unittest.TestCase):
                 base_url="https://llm.savagelands.net",
                 model_id="Gemma-4-26B-A4B-it-GGUF",
                 context_window=131072,
+                max_output_tokens=16384,
                 judge_model_id="gpt-oss-120b-mxfp-GGUF",
             )
             try:
@@ -672,9 +687,9 @@ class SweMiniRunnerTests(unittest.TestCase):
             ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
         )
         self.assertEqual(lemonade["models"][0]["contextWindow"], 131072)
-        self.assertEqual(lemonade["models"][0]["maxTokens"], 65536)
+        self.assertEqual(lemonade["models"][0]["maxTokens"], 16384)
 
-    def test_default_swe_model_entry_uses_32k_context_and_16k_generation_cap(self):
+    def test_default_swe_model_entry_uses_64k_context_and_16k_generation_cap(self):
         write_swe_mini_models_json = symbol(
             "lm_eval_webui.swe_mini", "write_swe_mini_models_json"
         )
@@ -688,7 +703,7 @@ class SweMiniRunnerTests(unittest.TestCase):
             payload = json.loads(models_path.read_text(encoding="utf-8"))
 
         model = payload["providers"]["lemonade"]["models"][0]
-        self.assertEqual(model["contextWindow"], 32768)
+        self.assertEqual(model["contextWindow"], 65536)
         self.assertEqual(model["maxTokens"], 16384)
 
     def test_swe_summary_is_rebuilt_from_all_partial_task_artifacts(self):
@@ -3181,9 +3196,11 @@ class JobManagerSweMiniTests(unittest.TestCase):
             listed = manager.list_jobs()[0]
 
         self.assertEqual(job["swe_options"]["timeout_minutes"], 60)
-        self.assertEqual(job["swe_options"]["context_window"], 32768)
+        self.assertEqual(job["swe_options"]["context_window"], 65536)
+        self.assertEqual(job["swe_options"]["max_output_tokens"], 16384)
         self.assertEqual(job["swe_options"]["provider_timeout_minutes"], 15)
         self.assertEqual(job["swe_options"]["provider_max_retries"], 0)
+        self.assertEqual(job["swe_options"]["recipe_policy"], "lemonade_unchanged")
         self.assertEqual(listed["progress"]["current"], 2)
         self.assertEqual(listed["progress"]["total"], 3)
         self.assertAlmostEqual(listed["progress"]["percent"], 66.6666666667)
@@ -3259,7 +3276,10 @@ class JobManagerSweMiniTests(unittest.TestCase):
                     "swe_timeout": 45,
                     "pass_count": 2,
                     "platform": "lemonade-swe",
-                    "context_window": 131072,
+                    "context_window": 65536,
+                    "max_output_tokens": 16384,
+                    "swe_provider_timeout": 15,
+                    "llamacpp_backend": "vulkan",
                 }
             )
             job = manager.get_job(created[0]["id"])
@@ -3279,6 +3299,12 @@ class JobManagerSweMiniTests(unittest.TestCase):
         )
         self.assertEqual(job["swe_options"]["pass_count"], 2)
         self.assertEqual(job["swe_options"]["timeout_minutes"], 45)
+        self.assertEqual(job["swe_options"]["context_window"], 65536)
+        self.assertEqual(job["swe_options"]["max_output_tokens"], 16384)
+        self.assertEqual(job["swe_options"]["provider_timeout_minutes"], 15)
+        self.assertEqual(job["swe_options"]["provider_max_retries"], 0)
+        self.assertEqual(job["swe_options"]["recipe_policy"], "lemonade_unchanged")
+        self.assertNotIn("requested_llamacpp_backend", job)
         self.assertEqual(
             job["result_files"], [str(Path(job["output_path"]) / "summary.json")]
         )
@@ -3332,6 +3358,12 @@ class JobManagerSweMiniTests(unittest.TestCase):
             [model["id"] for model in models_json["providers"]["lemonade"]["models"]],
             ["Gemma-4-26B-A4B-it-GGUF", "gpt-oss-120b-mxfp-GGUF"],
         )
+        self.assertTrue(
+            all(
+                model["contextWindow"] == 65536 and model["maxTokens"] == 16384
+                for model in models_json["providers"]["lemonade"]["models"]
+            )
+        )
         self.assertEqual(rows[0]["suite"], "swe_mini")
         self.assertEqual(leaderboard[0]["suite"], "swe_mini")
         self.assertEqual(leaderboard[0]["overall_score"], 100.0)
@@ -3376,6 +3408,9 @@ class JobManagerSweMiniTests(unittest.TestCase):
                     "pass_count": 3,
                     "swe_timeout": 60,
                     "platform": "lemonade-swe",
+                    "context_window": 65536,
+                    "max_output_tokens": 16384,
+                    "swe_provider_timeout": 15,
                 }
             )[0]
 
@@ -3390,9 +3425,13 @@ class JobManagerSweMiniTests(unittest.TestCase):
         )
         self.assertEqual(rerun_job["swe_options"]["pass_count"], 3)
         self.assertEqual(rerun_job["swe_options"]["timeout_minutes"], 60)
-        self.assertEqual(rerun_job["swe_options"]["context_window"], 32768)
+        self.assertEqual(rerun_job["swe_options"]["context_window"], 65536)
+        self.assertEqual(rerun_job["swe_options"]["max_output_tokens"], 16384)
         self.assertEqual(rerun_job["swe_options"]["provider_timeout_minutes"], 15)
         self.assertEqual(rerun_job["swe_options"]["provider_max_retries"], 0)
+        self.assertEqual(
+            rerun_job["swe_options"]["recipe_policy"], "lemonade_unchanged"
+        )
         self.assertNotEqual(rerun_job["output_path"], original_job["output_path"])
         self.assertIn("--pass", commands[1])
         self.assertIn("3", commands[1])
@@ -4622,8 +4661,18 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="maxGenToks" type="number" value="32768"', index)
         self.assertIn('id="timeout" type="number" value="7200"', index)
         self.assertIn('id="sweTimeout" type="number" min="1" value="60"', index)
-        self.assertIn('value="32768"', swe_context_control)
+        self.assertIn('value="65536"', swe_context_control)
+        self.assertIn('id="sweMaxOutputTokens"', index)
+        self.assertIn('value="16384"', index)
+        self.assertIn('id="sweProviderTimeout"', index)
+        self.assertIn('value="15"', index)
+        self.assertIn('id="sweProviderRetries" type="number" value="0" disabled', index)
+        self.assertIn('id="sweRecipePolicy" type="checkbox" checked disabled', index)
         self.assertIn("const DEFAULT_SWE_TIMEOUT_MINUTES = 60", script)
+        self.assertIn("const DEFAULT_SWE_CONTEXT_WINDOW = 65536", script)
+        self.assertIn("const DEFAULT_SWE_MAX_OUTPUT_TOKENS = 16384", script)
+        self.assertIn('recipe_policy: "lemonade_unchanged"', script)
+        self.assertIn('if (suite === "lm_eval")', script)
         self.assertIn("Limit (blank = all)", index)
         self.assertIn("Few-shot (blank = task default)", index)
 
