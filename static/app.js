@@ -1881,8 +1881,7 @@ async function startJobs() {
 		const contextWindow =
 			numberOrNull($("sweContextWindow").value) || DEFAULT_SWE_CONTEXT_WINDOW;
 		const maxOutputTokens =
-			numberOrNull($("sweMaxOutputTokens").value) ||
-			DEFAULT_SWE_MAX_OUTPUT_TOKENS;
+			numberOrNull($("sweMaxOutputTokens").value) || DEFAULT_SWE_MAX_OUTPUT_TOKENS;
 		if (maxOutputTokens > contextWindow) {
 			$("setupMessage").textContent =
 				"Maximum output tokens cannot exceed the context window.";
@@ -2117,9 +2116,9 @@ function jobDetailMeta(job) {
 		options.provider_timeout_minutes
 			? `Provider timeout: ${options.provider_timeout_minutes}m`
 			: null,
-		options.provider_max_retries !== undefined
-			? `Provider retries: ${options.provider_max_retries}`
-			: null,
+		options.provider_max_retries === undefined
+			? null
+			: `Provider retries: ${options.provider_max_retries}`,
 		options.recipe_policy === "lemonade_unchanged"
 			? "Recipe policy: Lemonade unchanged"
 			: null,
