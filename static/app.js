@@ -510,17 +510,9 @@ function renderTasks() {
 	const matchingTasks = state.tasks.filter((task) => {
 		if (hideIncompatible && task.compatibility === "incompatible") return false;
 		if (hideGated && task.compatibility === "gated") return false;
-		if (
-			isLmEval &&
-			taskViewMode === "leaves" &&
-			(task.kind || "task") !== "task"
-		)
+		if (isLmEval && taskViewMode === "leaves" && (task.kind || "task") !== "task")
 			return false;
-		if (
-			isLmEval &&
-			taskViewMode === "groups" &&
-			(task.kind || "task") === "task"
-		)
+		if (isLmEval && taskViewMode === "groups" && (task.kind || "task") === "task")
 			return false;
 		if (hideNonEnglish && task.language_scope === "non_english") return false;
 		if (isLmEval && !selectedCategories.has(task.category || "Other"))

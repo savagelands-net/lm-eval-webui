@@ -347,9 +347,7 @@ def write_swe_mini_summary(
     root = Path(run_dir)
     summary_path = root / "summary.json"
     result_paths = sorted(
-        path
-        for path in root.glob("results-*.json")
-        if "-attempt" not in path.name
+        path for path in root.glob("results-*.json") if "-attempt" not in path.name
     )
     if not result_paths:
         return summary_path if summary_path.exists() else None
@@ -375,8 +373,7 @@ def write_swe_mini_summary(
     total_duration_ms = sum(durations)
     scheduled = max(completed_tasks, _positive_int(scheduled_tasks, completed_tasks))
     infrastructure_failures = sum(
-        bool(str(result.get("infrastructureError") or "").strip())
-        for result in results
+        bool(str(result.get("infrastructureError") or "").strip()) for result in results
     )
     summary: dict[str, Any] = {}
     if summary_path.exists():
