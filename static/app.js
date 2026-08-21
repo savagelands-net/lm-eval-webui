@@ -1857,6 +1857,16 @@ async function startJobs() {
 				.filter((model) => (model.labels || []).includes("custom"))
 				.map((model) => model.id),
 		);
+		const configuredModelBackends = Object.fromEntries(
+			state.models
+				.filter(
+					(model) =>
+						modelIds.includes(model.id) &&
+						model.recipe === "llamacpp" &&
+						specificRuntimeBackend(model.llamacpp_backend),
+				)
+				.map((model) => [model.id, model.llamacpp_backend]),
+		);
 		Object.assign(body, {
 			lemonade_model_ids: Object.fromEntries(
 				modelIds.map((modelId) => [
@@ -1864,6 +1874,7 @@ async function startJobs() {
 					customModels.has(modelId) ? `user.${modelId}` : modelId,
 				]),
 			),
+			lemonade_model_backends: configuredModelBackends,
 			bench_backends: splitOptionValues($("benchBackends").value),
 			bench_context_sizes: splitOptionValues($("benchContextSizes").value)
 				.map(Number)
@@ -2130,6 +2141,9 @@ function jobDetailMeta(job) {
 			: null,
 		jobSuite(job) === "lemonade_bench" && benchOptions.backends?.length
 			? `Backends: ${benchOptions.backends.join(", ")}`
+			: null,
+		jobSuite(job) === "lemonade_bench" && benchOptions.backend_source
+			? `Backend source: ${benchOptions.backend_source.replaceAll("_", " ")}`
 			: null,
 		jobSuite(job) === "lemonade_bench" && benchOptions.context_sizes?.length
 			? `Contexts: ${benchOptions.context_sizes.map(formatContext).join(", ")}`

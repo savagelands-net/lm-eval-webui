@@ -37,8 +37,14 @@ Long-context scenarios remain opt-in.
 
 The benchmark options support backend and context-size matrices, measurement
 and warmup counts, request timeout, memory tracking, model reloads between runs,
-and optional response logging. Lemonade Bench jobs are always serialized because
-the CLI controls model loading and unloading on a shared Lemonade server. The
+and optional response logging. With the backend field blank, the WebUI uses each
+llama.cpp model's registered backend instead of asking the CLI to try every
+installed backend; enter explicit backends only for a cross-backend comparison.
+These per-run selections use Lemonade's non-persistent `save_options=false`
+behavior and do not rewrite model registrations. A CLI exit code of zero is
+still classified as a failed job when its result contains no successful
+requests. Lemonade Bench jobs are always serialized because the CLI controls
+model loading and unloading on a shared Lemonade server. The
 container image includes the checksum-pinned Lemonade 11.6 CLI and supports both
 amd64 and arm64 builds. Source-based local runs require a compatible `lemonade`
 CLI on `PATH`; override its location with `LEMONADE_CLI=/path/to/lemonade`.

@@ -23,6 +23,9 @@ LEMONADE_BENCH_RESPONSE_LOG_NAME = "responses.jsonl"
 LEMONADE_BENCH_SCENARIO_RE = re.compile(
     r"^\s*Scenario:\s+(.+?)\s+\(([^)]+)\)\s*$", re.MULTILINE
 )
+LEMONADE_BENCH_CONFIGURATION_RE = re.compile(
+    r"^===\s+\[(.+?)\]\s+(.+?)\s+===$", re.MULTILINE
+)
 
 _FALLBACK_SCENARIOS = (
     ("chat-short", "chat", 20),

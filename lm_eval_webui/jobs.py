@@ -30,6 +30,7 @@ from .lemonade_bench import (  # type: ignore[reportMissingImports]
     DEFAULT_LEMONADE_BENCH_RUNS,
     DEFAULT_LEMONADE_BENCH_TIMEOUT,
     DEFAULT_LEMONADE_BENCH_WARMUP,
+    LEMONADE_BENCH_CONFIGURATION_RE,
     LEMONADE_BENCH_RESULT_NAME,
     LEMONADE_BENCH_SCENARIO_RE,
     LEMONADE_BENCH_SUITE,
@@ -698,6 +699,15 @@ class JobManager:
             "openai_base_url", payload.get("lemonade_base_url", self.openai_base_url)
         )
         backends = self._string_values(payload.get("bench_backends"))
+        backend_source = "requested" if backends else "discovered"
+        if not backends:
+            raw_model_backends = payload.get("lemonade_model_backends")
+            model_backends = (
+                raw_model_backends if isinstance(raw_model_backends, dict) else {}
+            )
+            backends = self._string_values(model_backends.get(model_id))
+            if backends:
+                backend_source = "model_configuration"
         context_sizes = self._positive_int_values(payload.get("bench_context_sizes"))
         measurement_runs = self._int_or_default(
             payload.get("bench_runs"), DEFAULT_LEMONADE_BENCH_RUNS
@@ -743,6 +753,7 @@ class JobManager:
         options = {
             "server_model_id": server_model_id,
             "backends": backends,
+            "backend_source": backend_source,
             "context_sizes": context_sizes,
             "measurement_runs": measurement_runs,
             "warmup_runs": warmup_runs,
@@ -1233,6 +1244,20 @@ class JobManager:
                 self._apply_model_metadata(job)
             self._raise_if_cancelled(job_id, returncode)
             job["status"] = "succeeded" if returncode == 0 else "failed"
+            if (
+                suite == LEMONADE_BENCH_SUITE
+                and returncode == 0
+                and int(job.get("telemetry", {}).get("request_count") or 0) == 0
+            ):
+                failed_requests = int(
+                    job.get("telemetry", {}).get("failed_request_count") or 0
+                )
+                job["status"] = "failed"
+                job["error"] = (
+                    "Lemonade Bench completed without a successful request "
+                    f"({failed_requests} failed)."
+                )
+                self._append_log(Path(job["log_path"]), f"\n[ERROR] {job['error']}\n")
         except JobCancelled as exc:
             job["status"] = "cancelled"
             job["returncode"] = exc.returncode
@@ -1788,10 +1813,8 @@ class JobManager:
             return None
         raw_options = job.get("lemonade_bench_options")
         options = raw_options if isinstance(raw_options, dict) else {}
-        configurations = max(1, len(options.get("backends") or [])) * max(
-            1, len(options.get("context_sizes") or [])
-        )
-        total = len(tasks) * configurations
+        configured_backends = len(options.get("backends") or [])
+        configured_contexts = len(options.get("context_sizes") or [])
         try:
             log_text = Path(str(job.get("log_path") or "")).read_text(
                 encoding="utf-8", errors="replace"
@@ -1799,12 +1822,20 @@ class JobManager:
         except OSError:
             log_text = ""
         matches = LEMONADE_BENCH_SCENARIO_RE.findall(log_text)
-        current = min(total, len(matches))
+        detected_configurations = len(LEMONADE_BENCH_CONFIGURATION_RE.findall(log_text))
+        configurations = (
+            max(1, configured_backends) * max(1, configured_contexts)
+            if configured_backends or configured_contexts
+            else max(1, detected_configurations)
+        )
+        total = len(tasks) * configurations
+        current = len(matches)
         terminal = str(job.get("status") or "") in TERMINAL_JOB_STATUSES
         if terminal and job.get("result_files"):
             current = total
             completed = total
         else:
+            total = max(total, current + 1)
             completed = max(0, current - 1)
         progress = self._progress_payload(current, total, completed, "scenarios")
         if progress and matches:

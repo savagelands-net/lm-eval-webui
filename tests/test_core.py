@@ -502,6 +502,115 @@ class LemonadeBenchTests(unittest.TestCase):
         )
         self.assertEqual(commands[1][-1], "user.Qwen/Model-A")
 
+    def test_job_uses_registered_backend_and_fails_when_all_requests_fail(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+        commands = []
+
+        def launcher(command, _env, _log_path):
+            commands.append(command)
+            output_path = Path(command[command.index("--output") + 1])
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "models": [
+                            {
+                                "model": "user.Qwen/Model-A",
+                                "config": {"measurement_runs": 2},
+                                "results": [
+                                    {
+                                        "recipe": "llamacpp",
+                                        "backend": "system",
+                                        "ctx_size": 0,
+                                        "scenarios": [
+                                            {
+                                                "name": "chat-short",
+                                                "category": "chat",
+                                                "all_runs_failed": True,
+                                                "failed_runs": 2,
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=tmp,
+                launcher=launcher,
+                run_async=False,
+            )
+            created = manager.create_jobs(
+                {
+                    "suite": "lemonade_bench",
+                    "model_ids": ["Qwen/Model-A"],
+                    "lemonade_model_ids": {"Qwen/Model-A": "user.Qwen/Model-A"},
+                    "lemonade_model_backends": {"Qwen/Model-A": "system"},
+                    "tasks": ["chat-short"],
+                    "openai_base_url": "https://llm.example.test/v1",
+                    "bench_backends": [],
+                    "bench_runs": 2,
+                }
+            )[0]
+            job = manager.get_job(created["id"])
+
+        backend_index = commands[0].index("--backend")
+        self.assertEqual(commands[0][backend_index + 1], "system")
+        self.assertEqual(job["lemonade_bench_options"]["backends"], ["system"])
+        self.assertEqual(
+            job["lemonade_bench_options"]["backend_source"],
+            "model_configuration",
+        )
+        self.assertEqual(job["returncode"], 0)
+        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["telemetry"]["request_count"], 0)
+        self.assertEqual(job["telemetry"]["failed_request_count"], 2)
+        self.assertIn("without a successful request", job["error"])
+
+    def test_progress_counts_discovered_backend_configurations(self):
+        JobManager = symbol("lm_eval_webui.jobs", "JobManager")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = JobManager(
+                data_dir=Path(tmp) / "data",
+                project_root=tmp,
+                run_async=False,
+            )
+            log_path = Path(tmp) / "bench.log"
+            log_path.write_text(
+                """=== [Model-A] llamacpp/rocm ===
+  Scenario: chat-short (chat)
+  Scenario: code-short (coding)
+=== [Model-A] llamacpp/system ===
+  Scenario: chat-short (chat)
+""",
+                encoding="utf-8",
+            )
+            progress = manager._lemonade_bench_progress(
+                {
+                    "status": "running",
+                    "tasks": ["chat-short", "code-short"],
+                    "log_path": str(log_path),
+                    "lemonade_bench_options": {
+                        "backends": [],
+                        "context_sizes": [],
+                    },
+                }
+            )
+
+        self.assertIsNotNone(progress)
+        self.assertEqual(progress["current"], 3)
+        self.assertEqual(progress["completed"], 2)
+        self.assertEqual(progress["total"], 4)
+        self.assertEqual(progress["percent"], 75.0)
+        self.assertEqual(progress["current_scenario"], "chat-short")
+
 
 class SweMiniRunnerTests(unittest.TestCase):
     def test_swe_mini_defaults_bound_agent_context_and_provider_timeout(self):
@@ -4697,6 +4806,7 @@ class SmokeTests(unittest.TestCase):
         )
         self.assertIn('id="lemonadeBenchOptions"', index)
         self.assertIn('id="benchBackends"', index)
+        self.assertIn("blank = each model's configured backend", index)
         self.assertIn('id="benchContextSizes"', index)
         self.assertIn('id="benchRuns" type="number" min="1" value="3"', index)
         self.assertIn('id="benchWarmup" type="number" min="0" value="0"', index)
@@ -4705,6 +4815,8 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('activeSuite: "lemonade_bench"', script)
         self.assertIn('resultSuite: "lemonade_bench"', script)
         self.assertIn("function renderLemonadeBenchLeaderboard", script)
+        self.assertIn("lemonade_model_backends: configuredModelBackends", script)
+        self.assertIn('model.recipe === "llamacpp"', script)
         self.assertIn(
             'renderLeaderboardTable(list, rows, columns, "lemonade_bench")', script
         )
