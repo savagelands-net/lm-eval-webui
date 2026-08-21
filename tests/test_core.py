@@ -4735,6 +4735,10 @@ class SmokeTests(unittest.TestCase):
         )
 
         self.assertIn("persist-credentials: false", workflow)
+        self.assertIn(
+            "group: docker-${{ github.workflow }}-${{ github.ref }}", workflow
+        )
+        self.assertIn("cancel-in-progress: true", workflow)
         self.assertNotRegex(workflow, r"uses: [^\n]+@v\d")
         self.assertRegex(workflow, r"uses: actions/checkout@[0-9a-f]{40}")
         self.assertRegex(workflow, r"uses: docker/login-action@[0-9a-f]{40}")

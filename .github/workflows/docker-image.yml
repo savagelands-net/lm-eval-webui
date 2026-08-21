@@ -12,9 +12,9 @@ on:
 permissions:
   contents: read
 
-env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/lm-eval-webui
-  SMOKE_TAG: lm-eval-webui:smoke
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   docker:
@@ -45,7 +45,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/lm-eval-webui
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=branch
@@ -58,13 +58,13 @@ jobs:
           context: .
           file: deploy/Dockerfile
           load: true
-          tags: ${{ env.SMOKE_TAG }}
+          tags: lm-eval-webui:smoke
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke test
         run: |
-          docker run -d --name lm-eval-webui-smoke -p 8080:8080 "${SMOKE_TAG}"
+          docker run -d --name lm-eval-webui-smoke -p 8080:8080 lm-eval-webui:smoke
 
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/api/health; then
