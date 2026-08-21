@@ -3,6 +3,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -276,9 +277,17 @@ class LemonadeBenchTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            command[:3],
-            ["/usr/local/bin/lemonade", "--host", "https://llm.example.test"],
+            command[:6],
+            [
+                sys.executable,
+                "-m",
+                "lm_eval_webui.lemonade_bench_proxy",
+                "--upstream",
+                "https://llm.example.test",
+                "--",
+            ],
         )
+        self.assertEqual(command[6:8], ["/usr/local/bin/lemonade", "bench"])
         self.assertIn("bench", command)
         self.assertIn("--json", command)
         self.assertIn("--output", command)
@@ -294,6 +303,68 @@ class LemonadeBenchTests(unittest.TestCase):
         self.assertIn("--response-log", command)
         self.assertEqual(command[-1], "user.Qwen/Model-A")
         self.assertEqual(env["NO_COLOR"], "1")
+
+    def test_loopback_proxy_forwards_cli_requests_to_upstream(self):
+        import http.server
+
+        run_with_proxy = symbol("lm_eval_webui.lemonade_bench_proxy", "run_with_proxy")
+        requests = []
+
+        class UpstreamHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                size = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(size)
+                requests.append((self.path, body, self.headers.get("X-Test")))
+                payload = json.dumps({"ok": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_cli = Path(tmp) / "fake-lemonade"
+            fake_cli.write_text(
+                """#!/usr/bin/env python3
+import argparse
+import json
+import urllib.request
+parser = argparse.ArgumentParser()
+parser.add_argument("--host", required=True)
+args, _ = parser.parse_known_args()
+request = urllib.request.Request(
+    args.host + "/api/v1/test",
+    data=b'{"ping":true}',
+    headers={"Content-Type": "application/json", "X-Test": "yes"},
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    assert json.load(response) == {"ok": True}
+""",
+                encoding="utf-8",
+            )
+            fake_cli.chmod(0o755)
+            try:
+                returncode = run_with_proxy(
+                    f"http://127.0.0.1:{server.server_port}/prefix",
+                    [str(fake_cli), "bench"],
+                    timeout=10,
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(
+            requests,
+            [("/prefix/api/v1/test", b'{"ping":true}', "yes")],
+        )
 
     def test_scenario_catalog_reads_lemonade_resource_schema(self):
         find_scenarios = symbol(

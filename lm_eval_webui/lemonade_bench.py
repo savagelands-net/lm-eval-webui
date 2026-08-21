@@ -7,6 +7,7 @@ import math
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -111,10 +112,15 @@ def build_lemonade_bench_command(
 
     output_path = Path(request.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    upstream = lemonade_cli_target(request.openai_base_url)
     command = [
+        sys.executable,
+        "-m",
+        "lm_eval_webui.lemonade_bench_proxy",
+        "--upstream",
+        upstream,
+        "--",
         find_lemonade_cli(request.lemonade_cli),
-        "--host",
-        lemonade_cli_target(request.openai_base_url),
         "bench",
         "--json",
         "--output",
