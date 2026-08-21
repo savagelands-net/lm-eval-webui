@@ -44,7 +44,9 @@ These per-run selections use Lemonade's non-persistent `save_options=false`
 behavior and do not rewrite model registrations. The CLI runs through a
 loopback-only HTTP bridge so Python handles the remote TLS connection; this
 avoids Lemonade CLI 11.6 `Failed to read connection` errors on valid responses
-without changing the Lemonade server or benchmark result format. A CLI exit code
+without changing the Lemonade server or benchmark result format. The WebUI uses
+a 1,800-second request timeout by default so the opt-in 64K/128K and image
+scenarios are not constrained by the CLI's five-minute default. A CLI exit code
 of zero is still classified as a failed job when its result contains no
 successful requests. Lemonade Bench jobs are always serialized because the CLI controls
 model loading and unloading on a shared Lemonade server. The

@@ -634,6 +634,7 @@ with urllib.request.urlopen(request, timeout=10) as response:
         backend_index = commands[0].index("--backend")
         self.assertEqual(commands[0][backend_index + 1], "system")
         self.assertEqual(job["lemonade_bench_options"]["backends"], ["system"])
+        self.assertEqual(job["lemonade_bench_options"]["timeout"], 1800)
         self.assertEqual(
             job["lemonade_bench_options"]["backend_source"],
             "model_configuration",
@@ -4881,11 +4882,13 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('id="benchContextSizes"', index)
         self.assertIn('id="benchRuns" type="number" min="1" value="3"', index)
         self.assertIn('id="benchWarmup" type="number" min="0" value="0"', index)
+        self.assertIn('id="benchTimeout" type="number" min="1" value="1800"', index)
         self.assertIn('id="benchMemoryTracking" type="checkbox" checked', index)
         self.assertIn('id="benchReloadBetweenRuns" type="checkbox" checked', index)
         self.assertIn('activeSuite: "lemonade_bench"', script)
         self.assertIn('resultSuite: "lemonade_bench"', script)
         self.assertIn("function renderLemonadeBenchLeaderboard", script)
+        self.assertIn("const DEFAULT_LEMONADE_BENCH_TIMEOUT = 1800", script)
         self.assertIn("lemonade_model_backends: configuredModelBackends", script)
         self.assertIn('model.recipe === "llamacpp"', script)
         self.assertIn(
